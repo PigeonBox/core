@@ -3,12 +3,30 @@ package logger
 import (
 	"os"
 	"strings"
+	"sync"
 
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
 
 var Logger *zap.Logger
+
+// once 保护惰性兜底初始化：core 是可嵌入库（server/fnos 库式调用、单元测试
+// 都可能不经过 bootstrap 的 Init），宿主未初始化时日志降级到默认 logger 而非 panic。
+var once sync.Once
+
+func get() *zap.Logger {
+	once.Do(func() {
+		if Logger == nil {
+			l, err := zap.NewProduction()
+			if err != nil {
+				l = zap.NewNop()
+			}
+			Logger = l
+		}
+	})
+	return Logger
+}
 
 type Config struct {
 	Level      string
@@ -81,23 +99,23 @@ func Sync() {
 }
 
 func Debug(msg string, fields ...zap.Field) {
-	Logger.Debug(msg, fields...)
+	get().Debug(msg, fields...)
 }
 
 func Info(msg string, fields ...zap.Field) {
-	Logger.Info(msg, fields...)
+	get().Info(msg, fields...)
 }
 
 func Warn(msg string, fields ...zap.Field) {
-	Logger.Warn(msg, fields...)
+	get().Warn(msg, fields...)
 }
 
 func Error(msg string, fields ...zap.Field) {
-	Logger.Error(msg, fields...)
+	get().Error(msg, fields...)
 }
 
 func Fatal(msg string, fields ...zap.Field) {
-	Logger.Fatal(msg, fields...)
+	get().Fatal(msg, fields...)
 }
 
 func With(fields ...zap.Field) *zap.Logger {
