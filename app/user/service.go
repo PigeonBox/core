@@ -33,15 +33,17 @@ type UpdateUserReq struct {
 }
 
 type Service struct {
-	repo       *dao.UserRepository
-	apiKeyRepo *dao.UserAPIKeyRepository
+	repo         *dao.UserRepository
+	apiKeyRepo   *dao.UserAPIKeyRepository
+	fileCodeRepo *dao.FileCodeRepository
 }
 
 func NewService() *Service {
 	// 延迟初始化 repository，确保数据库已经准备好
 	return &Service{
-		repo:       nil, // 延迟初始化
-		apiKeyRepo: nil, // 延迟初始化
+		repo:         nil, // 延迟初始化
+		apiKeyRepo:   nil, // 延迟初始化
+		fileCodeRepo: nil, // 延迟初始化
 	}
 }
 
@@ -52,6 +54,9 @@ func (s *Service) ensureRepository() {
 	}
 	if s.apiKeyRepo == nil {
 		s.apiKeyRepo = dao.NewUserAPIKeyRepository()
+	}
+	if s.fileCodeRepo == nil {
+		s.fileCodeRepo = dao.NewFileCodeRepository()
 	}
 }
 
@@ -278,12 +283,19 @@ func (s *Service) GetStats(ctx context.Context, userID uint) (*model.UserStats, 
 		return nil, err
 	}
 
+	// 文件数从 FileCode 表实时统计(替代原 TODO 硬编码 0)
+	fileCount, err := s.fileCodeRepo.CountByUserID(ctx, userID)
+	if err != nil {
+		// 统计失败不阻塞整体返回,记 0
+		fileCount = 0
+	}
+
 	return &model.UserStats{
 		UserID:         user.ID,
 		TotalUploads:   user.TotalUploads,
 		TotalDownloads: user.TotalDownloads,
 		TotalStorage:   user.TotalStorage,
-		FileCount:      0, // TODO: 从 FileCode 表统计
+		FileCount:      int(fileCount),
 	}, nil
 }
 
