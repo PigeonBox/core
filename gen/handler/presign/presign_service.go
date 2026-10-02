@@ -4,15 +4,17 @@ package presign
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/redis/go-redis/v9"
 
+	"github.com/filescodebox/contracts/errcode"
 	presignmodel "github.com/filescodebox/contracts/gen/presign"
 	presignapp "github.com/filescodebox/core/app/presign"
-	"github.com/filescodebox/contracts/errcode"
 	"github.com/filescodebox/core/pkg/resp"
+	"github.com/filescodebox/core/pkg/utils"
 )
 
 var presignSvc *presignapp.Service
@@ -46,14 +48,41 @@ func Init(ctx context.Context, c *app.RequestContext) {
 		resp.NewErrorWithMessage(c, errcode.CodeInvalidParam, err.Error())
 		return
 	}
+	// 密码保护:require_auth 时密码必填,bcrypt 哈希后随 meta 存储
+	// (修复:此前密码未传,导致大文件分享的密码保护形同虚设)
+	passwordHash := ""
+	if boolDeref(req.RequireAuth) {
+		// 密码经 JSON body 传递(InitReq 模型无此字段);兼容 form 提交
+		password := c.DefaultPostForm("password", "")
+		if password == "" {
+			var pwBody struct {
+				Password string `json:"password"`
+			}
+			if b := c.Request.Body(); len(b) > 0 {
+				_ = json.Unmarshal(b, &pwBody)
+				password = pwBody.Password
+			}
+		}
+		if password == "" {
+			resp.NewErrorWithMessage(c, errcode.CodeInvalidParam, "开启密码保护时必须提供密码")
+			return
+		}
+		hash, err := utils.HashPassword(password)
+		if err != nil {
+			resp.NewErrorWithMessage(c, errcode.CodeInternal, "密码处理失败")
+			return
+		}
+		passwordHash = hash
+	}
 	meta := presignapp.InitMeta{
-		FileName:    req.FileName,
-		FileSize:    req.FileSize,
-		ContentType: req.ContentType,
-		Scheme:      strDeref(req.Scheme),
-		ExpireValue: i32Deref(req.ExpireValue),
-		ExpireStyle: strDeref(req.ExpireStyle),
-		RequireAuth: boolDeref(req.RequireAuth),
+		FileName:     req.FileName,
+		FileSize:     req.FileSize,
+		ContentType:  req.ContentType,
+		Scheme:       strDeref(req.Scheme),
+		ExpireValue:  i32Deref(req.ExpireValue),
+		ExpireStyle:  strDeref(req.ExpireStyle),
+		RequireAuth:  boolDeref(req.RequireAuth),
+		PasswordHash: passwordHash,
 	}
 	result, err := getService().Init(ctx, meta)
 	if err != nil {

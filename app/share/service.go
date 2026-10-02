@@ -176,8 +176,13 @@ func (s *Service) ShareText(ctx context.Context, req *ShareTextReq) (*ShareResp,
 	return s.modelToResp(fileCode), nil
 }
 
-// ShareTextWithAuth 带认证的文本分享（用于 Handler）
-func (s *Service) ShareTextWithAuth(ctx context.Context, text string, expireValue int, expireStyle string, userID *uint, ownerIP string) (*ShareResp, error) {
+// ShareTextWithAuth 带认证的文本分享（用于 Handler）。
+// requireAuth=true 时必须提供非空 passwordHash(handler 侧负责哈希),
+// 传入空哈希会被拒绝,防止创建出"密码保护形同虚设"的分享。
+func (s *Service) ShareTextWithAuth(ctx context.Context, text string, expireValue int, expireStyle string, requireAuth bool, passwordHash string, userID *uint, ownerIP string) (*ShareResp, error) {
+	if requireAuth && passwordHash == "" {
+		return nil, errors.New("开启密码保护时必须提供密码")
+	}
 	// 计算过期时间
 	expireTime := utils.CalculateExpireTime(expireValue, expireStyle)
 	expireCount := utils.CalculateExpireCount(expireStyle, expireValue)
@@ -191,6 +196,8 @@ func (s *Service) ShareTextWithAuth(ctx context.Context, text string, expireValu
 		Text:         text,
 		ExpiredAt:    expireTime,
 		ExpiredCount: expireCount,
+		RequireAuth:  requireAuth,
+		PasswordHash: passwordHash,
 		UserID:       userID,
 		UploadType:   uploadType,
 		OwnerIP:      ownerIP,
@@ -374,6 +381,11 @@ func (s *Service) GetFileWithUsage(ctx context.Context, code, password, viewerIP
 
 	// 真实密码校验（替代原 TODO：仅检查非空）
 	if fileCode.RequireAuth {
+		// 防御历史脏数据:require_auth=true 但哈希缺失 → 一律拒绝,
+		// 而非以"密码错误"之外的方式放行(CheckPassword 对空哈希已收紧为全拒)
+		if fileCode.PasswordHash == "" {
+			return nil, errors.New("该分享的密码保护配置异常，请联系分享者")
+		}
 		if !utils.CheckPassword(fileCode.PasswordHash, password) {
 			return nil, errors.New("密码错误")
 		}

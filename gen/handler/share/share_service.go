@@ -85,12 +85,37 @@ func ShareText(ctx context.Context, c *app.RequestContext) {
 	// 获取客户端 IP
 	ownerIP := c.ClientIP()
 
+	// 密码保护:require_auth 时密码必填,bcrypt 哈希后入库(明文不落库)
+	// 注:密码经 form 传递(ShareTextReq 模型无此字段,DefaultPostForm 直读)
+	passwordHash := ""
+	if req.RequireAuth {
+		password := c.DefaultPostForm("password", "")
+		if password == "" {
+			c.JSON(consts.StatusBadRequest, map[string]interface{}{
+				"code":    400,
+				"message": "开启密码保护时必须提供密码",
+			})
+			return
+		}
+		hash, err := utils.HashPassword(password)
+		if err != nil {
+			c.JSON(consts.StatusInternalServerError, map[string]interface{}{
+				"code":    500,
+				"message": "密码处理失败",
+			})
+			return
+		}
+		passwordHash = hash
+	}
+
 	// 调用 service（使用转义后的安全文本）
 	result, err := getShareService().ShareTextWithAuth(
 		ctx,
 		safeText,
 		int(req.ExpireValue),
 		req.ExpireStyle,
+		req.RequireAuth,
+		passwordHash,
 		userID,
 		ownerIP,
 	)
@@ -194,6 +219,28 @@ func ShareFile(ctx context.Context, c *app.RequestContext) {
 		uploadType = "authenticated"
 	}
 
+	// 10.5 密码保护:require_auth 时密码必填,bcrypt 哈希后入库(修复:此前 password
+	// 被读取后直接丢弃,导致 PasswordHash 落库为空,取件侧空哈希校验形同虚设)
+	passwordHash := ""
+	if requireAuth {
+		if password == "" {
+			c.JSON(consts.StatusBadRequest, map[string]interface{}{
+				"code":    400,
+				"message": "开启密码保护时必须提供密码",
+			})
+			return
+		}
+		hash, err := utils.HashPassword(password)
+		if err != nil {
+			c.JSON(consts.StatusInternalServerError, map[string]interface{}{
+				"code":    500,
+				"message": "密码处理失败",
+			})
+			return
+		}
+		passwordHash = hash
+	}
+
 	// 11. 构建分享请求
 	shareReq := &shareService.ShareFileReq{
 		FilePath:     result.FilePath,
@@ -202,6 +249,7 @@ func ShareFile(ctx context.Context, c *app.RequestContext) {
 		ExpiredAt:    expireTime,
 		ExpiredCount: expireCount,
 		RequireAuth:  requireAuth,
+		PasswordHash: passwordHash,
 		UserID:       userID,
 		UploadType:   uploadType,
 		OwnerIP:      ownerIP,
@@ -229,9 +277,6 @@ func ShareFile(ctx context.Context, c *app.RequestContext) {
 			URL:  fullShareURL,
 		},
 	}
-
-	// 保存 password 用于验证（如果需要）
-	_ = password // TODO: 实现密码验证逻辑
 
 	c.JSON(consts.StatusOK, resp)
 }
@@ -394,19 +439,27 @@ func GetShare(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
-	// 检查是否需要密码
-	if fileCode.RequireAuth && password == "" {
-		c.JSON(consts.StatusUnauthorized, map[string]interface{}{
-			"code":    401,
-			"message": "需要密码",
-			"data": map[string]interface{}{
-				"has_password": true,
-			},
-		})
-		return
+	// 密码保护校验(修复:此处响应包含分享正文,空密码提示后必须真正校验密码,
+	// 此前 TODO 未实现导致任意非空密码均可取到内容)
+	if fileCode.RequireAuth {
+		if password == "" {
+			c.JSON(consts.StatusUnauthorized, map[string]interface{}{
+				"code":    401,
+				"message": "需要密码",
+				"data": map[string]interface{}{
+					"has_password": true,
+				},
+			})
+			return
+		}
+		if fileCode.PasswordHash == "" || !utils.CheckPassword(fileCode.PasswordHash, password) {
+			c.JSON(consts.StatusUnauthorized, map[string]interface{}{
+				"code":    401,
+				"message": "密码错误",
+			})
+			return
+		}
 	}
-
-	// TODO: 验证密码
 
 	// 构建响应
 	resp := &sharemodel.GetShareResp{

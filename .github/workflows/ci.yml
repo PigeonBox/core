@@ -11,12 +11,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26"
-          # contracts 尚未发布 tag 时经 replace 取同 checkout;发布后可改为 go-version-file + 正式 require
-      - name: Point contracts to sibling checkout
-        run: |
-          go mod edit -replace github.com/filescodebox/contracts=/dev/null 2>/dev/null || true
-          git clone --depth=1 https://github.com/filescodebox/contracts.git /tmp/contracts
-          go mod edit -replace github.com/filescodebox/contracts=/tmp/contracts
+          cache-dependency-path: core/go.sum
       - name: Build
         run: go build ./...
       - name: Vet

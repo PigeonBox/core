@@ -88,6 +88,8 @@ type InitMeta struct {
 	ExpireValue int32     `json:"expire_value"`
 	ExpireStyle string    `json:"expire_style"`
 	RequireAuth bool      `json:"require_auth"`
+	// PasswordHash 为 require_auth=true 时分享密码的 bcrypt 哈希(明文不落存储)
+	PasswordHash string   `json:"password_hash,omitempty"`
 }
 
 // InitResult init 返回
@@ -239,6 +241,11 @@ func (s *Service) createShareRecord(ctx context.Context, meta *InitMeta, ownerIP
 		uploadType = "presign_authenticated"
 	}
 
+	if meta.RequireAuth && meta.PasswordHash == "" {
+		// 防御:历史 init 记录可能无密码哈希,拒绝创建"密码保护形同虚设"的分享
+		return "", "", "", errors.New("该上传未设置访问密码，无法完成分享")
+	}
+
 	req := &share.ShareFileReq{
 		FilePath:     meta.ObjectKey,
 		Size:         meta.FileSize,
@@ -246,6 +253,7 @@ func (s *Service) createShareRecord(ctx context.Context, meta *InitMeta, ownerIP
 		ExpiredAt:    expireTime,
 		ExpiredCount: expireCount,
 		RequireAuth:  meta.RequireAuth,
+		PasswordHash: meta.PasswordHash,
 		UserID:       userIDPtr,
 		UploadType:   uploadType,
 		OwnerIP:      ownerIP,

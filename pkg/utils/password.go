@@ -16,10 +16,11 @@ func HashPassword(pw string) (string, error) {
 }
 
 // CheckPassword 校验密码。
-// 空 hash 视为"无密码"：仅当传入密码也为空时通过。
+// 空 hash 一律拒绝:启用密码保护的分享若哈希缺失(配置错误/历史脏数据),
+// 不允许任何密码(包括空密码)通过——防止"空哈希绕过"。
 func CheckPassword(hash, pw string) bool {
 	if hash == "" {
-		return pw == ""
+		return false
 	}
 	return bcrypt.CompareHashAndPassword([]byte(hash), []byte(pw)) == nil
 }
