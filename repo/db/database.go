@@ -102,5 +102,6 @@ func autoMigrate() error {
 		&model.TransferLog{},
 		&model.AdminOperationLog{},
 		&model.UserAPIKey{},
+		&model.SystemConfigRecord{},
 	)
 }

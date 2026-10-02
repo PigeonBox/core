@@ -2,12 +2,16 @@ package admin
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"runtime"
+	"sync"
 	"time"
 
 	"github.com/filescodebox/core/pkg/auth"
 	"github.com/filescodebox/core/pkg/logger"
+	"github.com/filescodebox/core/pkg/middleware"
 	"github.com/filescodebox/core/repo/db/dao"
 	"github.com/filescodebox/core/repo/db/model"
 	"github.com/filescodebox/core/storage"
@@ -51,7 +55,11 @@ type Service struct {
 	adminOperationRepo *dao.AdminOperationLogRepository
 	chunkRepo          *dao.ChunkRepository
 	storage            storage.StorageInterface
-	config             *SystemConfig
+
+	configMu     sync.RWMutex
+	config       *SystemConfig
+	configLoaded bool // 已尝试过 DB 加载（含无记录的情况），避免每次读都打 DB
+	configRepo   *dao.SystemConfigRepository
 }
 
 func NewService() *Service {
@@ -61,13 +69,17 @@ func NewService() *Service {
 		transferLogRepo:    dao.NewTransferLogRepository(),
 		adminOperationRepo: dao.NewAdminOperationLogRepository(),
 		chunkRepo:          dao.NewChunkRepository(),
-		config:             &SystemConfig{}, // 默认配置
+		configRepo:         dao.NewSystemConfigRepository(),
+		// config 保持 nil，由 GetConfig 懒加载默认值 → DB 持久化配置
 	}
 }
 
-// SetConfig 设置配置
+// SetConfig 设置配置（显式注入优先于 DB 持久化配置）
 func (s *Service) SetConfig(config *SystemConfig) {
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
 	s.config = config
+	s.configLoaded = true
 }
 
 // SetStorage 注入存储服务（用于过期清理删物理文件）
@@ -131,16 +143,23 @@ func (s *Service) GetUsers(ctx context.Context, page, pageSize int) ([]*model.Us
 	return resps, total, nil
 }
 
-// DeleteUser 删除用户
+// DeleteUser 删除用户（级联软删其全部分享记录；此前"先删用户文件"逻辑被注释）
 func (s *Service) DeleteUser(ctx context.Context, userID uint) error {
-	// 1. 删除用户的所有文件
-	// files, _ := s.fileCodeRepo.GetByUserID(ctx, userID)
-	// for _, file := range files {
-	// 	s.DeleteFile(ctx, file.ID)
-	// }
+	user, err := s.userRepo.GetByID(ctx, userID)
+	if err != nil {
+		return err
+	}
+
+	// 1. 级联软删用户的分享记录（不删物理文件——管理员可从回收站追溯）
+	if err := s.fileCodeRepo.DeleteByUserID(ctx, userID); err != nil {
+		logger.Warn("soft delete user shares failed", zap.Uint("user_id", userID), zap.Error(err))
+	}
 
 	// 2. 删除用户记录
-	return s.userRepo.Delete(ctx, userID)
+	err = s.userRepo.Delete(ctx, userID)
+	s.logAdminOperation(ctx, "user.delete",
+		fmt.Sprintf("user %d (username=%s) deleted", userID, user.Username), err == nil)
+	return err
 }
 
 // GetFiles 获取文件列表
@@ -148,21 +167,30 @@ func (s *Service) GetFiles(ctx context.Context, page, pageSize int, search strin
 	return s.fileCodeRepo.List(ctx, page, pageSize, search)
 }
 
-// DeleteFile 删除文件
+// DeleteFile 删除文件（DB 记录 + 物理文件；此前物理删除被注释，造成存储泄漏）
 func (s *Service) DeleteFile(ctx context.Context, fileID uint) error {
-	// 1. 获取文件信息
-	// file, err := s.fileCodeRepo.GetByID(ctx, fileID)
-	// if err != nil {
-	// 	return err
-	// }
+	file, err := s.fileCodeRepo.GetByID(ctx, fileID)
+	if err != nil {
+		return err
+	}
 
-	// 2. 删除物理文件（如果实现了存储服务）
-	// if s.storageService != nil && file.FilePath != "" {
-	// 	s.storageService.DeleteFile(ctx, file.FilePath)
-	// }
+	// 1. 删除数据库记录
+	if err := s.fileCodeRepo.Delete(ctx, fileID); err != nil {
+		return err
+	}
 
-	// 3. 删除数据库记录
-	return s.fileCodeRepo.Delete(ctx, fileID)
+	// 2. 删除物理文件（失败记日志不阻断——DB 已删，孤儿文件由清理任务兜底）
+	if s.storage != nil && file.FilePath != "" {
+		if fp := file.GetFilePath(); fp != "" {
+			if err := s.storage.DeleteFile(ctx, fp); err != nil {
+				logger.Warn("admin delete physical file failed", zap.String("path", fp), zap.Error(err))
+			}
+		}
+	}
+
+	s.logAdminOperation(ctx, "file.delete",
+		fmt.Sprintf("file %d (code=%s, name=%s) deleted", fileID, file.Code, file.Text), true)
+	return nil
 }
 
 // GetFileByCode 按取件码获取文件
@@ -189,9 +217,8 @@ func (s *Service) CleanupExpiredFiles(ctx context.Context) (int, error) {
 		return 0, err
 	}
 
-	// TODO: 记录管理员操作日志
-	// s.logAdminOperation(ctx, "maintenance.clean_expired_files", fmt.Sprintf("Cleaned up %d expired files", deletedCount), true)
-
+	s.logAdminOperation(ctx, "maintenance.clean_expired_files",
+		fmt.Sprintf("cleaned %d expired files", deletedCount), err == nil)
 	return deletedCount, nil
 }
 
@@ -214,57 +241,154 @@ func (s *Service) CleanupIncompleteUploads(ctx context.Context, olderThanHours i
 		return 0, err
 	}
 
-	// TODO: 记录管理员操作日志
-	// s.logAdminOperation(ctx, "maintenance.clean_incomplete_uploads", fmt.Sprintf("Cleaned up %d incomplete uploads", deletedCount), true)
-
+	s.logAdminOperation(ctx, "maintenance.clean_incomplete_uploads",
+		fmt.Sprintf("cleaned %d incomplete uploads (older than %dh)", deletedCount, olderThanHours), err == nil)
 	return deletedCount, nil
 }
 
-// TODO: 创建 AdminOperationLogRepository 和相关方法
-// func (s *Service) logAdminOperation(ctx context.Context, action, target string, success bool) {
-// 	// 记录管理员操作日志
-// }
-
-// GetConfig 获取系统配置
-func (s *Service) GetConfig(ctx context.Context) (*SystemConfig, error) {
-	// TODO: 从数据库或配置文件读取
-	// 暂时返回默认配置
-	if s.config == nil {
-		s.config = &SystemConfig{
-			Base: struct {
-				Name        string `json:"name"`
-				Description string `json:"description"`
-				Port        int    `json:"port"`
-			}{
-				Name:        "FileCodeBox",
-				Description: "文件分享平台",
-				Port:        8888,
-			},
-			Storage: struct {
-				Type    string `json:"type"`
-				MaxSize int64  `json:"max_size"`
-			}{
-				Type:    "local",
-				MaxSize: 1024 * 1024 * 1024, // 1GB
-			},
-			Transfer: struct {
-				MaxCount      int `json:"max_count"`
-				ExpireDefault int `json:"expire_default"`
-			}{
-				MaxCount:      100,
-				ExpireDefault: 7, // 7天
-			},
-		}
+// logAdminOperation 写入管理操作审计日志（P0 修复：模型/DAO 早已有之，
+// 此前从未接线——后台所有变更操作零审计）。审计失败只记运行日志，不阻断业务。
+// 操作者从 hertz 请求上下文提取（AdminMiddleware 写入 username）；
+// 定时任务等非请求场景记为 system。
+func (s *Service) logAdminOperation(ctx context.Context, action, target string, success bool) {
+	actorID, actorName, ip := actorFromCtx(ctx)
+	entry := &model.AdminOperationLog{
+		Action:    action,
+		Target:    target,
+		Success:   success,
+		ActorID:   actorID,
+		ActorName: actorName,
+		IP:        ip,
 	}
+	if err := s.adminOperationRepo.Create(ctx, entry); err != nil {
+		logger.Warn("admin audit log write failed", zap.String("action", action), zap.Error(err))
+	}
+}
+
+// actorFromCtx 从请求上下文提取操作者（AuthMiddleware 已将身份写入 ctx value；
+// 定时任务等非请求场景记为 system）。
+func actorFromCtx(ctx context.Context) (*uint, string, string) {
+	var id *uint
+	name := "system"
+	if uid, ok := middleware.UserIDFromContext(ctx); ok {
+		id = &uid
+	}
+	if n := middleware.UsernameFromContext(ctx); n != "" {
+		name = n
+	}
+	ip := middleware.ClientIPFromContext(ctx)
+	return id, name, ip
+}
+
+// defaultSystemConfig 站点配置默认值。
+func defaultSystemConfig() *SystemConfig {
+	cfg := &SystemConfig{}
+	cfg.Base.Name = "FileCodeBox"
+	cfg.Base.Description = "文件分享平台"
+	cfg.Base.Port = 8888
+	cfg.Storage.Type = "local"
+	cfg.Storage.MaxSize = 1024 * 1024 * 1024 // 1GB
+	cfg.Transfer.MaxCount = 100
+	cfg.Transfer.ExpireDefault = 7 // 7天
+	return cfg
+}
+
+// loadPersistedConfig 从 DB 读取持久化配置（单行 system_configs）。
+// 无记录返回 (nil, nil)；DB 不可用/记录损坏仅告警并回退默认值——
+// 配置读取失败不应阻断业务启动。
+func (s *Service) loadPersistedConfig(ctx context.Context) (*SystemConfig, error) {
+	rec, err := s.configRepo.Get(ctx)
+	if err != nil {
+		if errors.Is(err, dao.ErrDBNotInitialized) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if rec == nil {
+		return nil, nil
+	}
+	cfg := defaultSystemConfig()
+	if err := json.Unmarshal([]byte(rec.Data), cfg); err != nil {
+		logger.Error("system config record corrupted, fallback to defaults",
+			zap.String("data", rec.Data), zap.Error(err))
+		return nil, err
+	}
+	return cfg, nil
+}
+
+// ensureConfigLoaded 懒加载：首次访问时用 DB 持久化配置覆盖默认值。
+func (s *Service) ensureConfigLoaded(ctx context.Context) {
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
+	if s.config == nil {
+		s.config = defaultSystemConfig()
+	}
+	if s.configLoaded {
+		return
+	}
+	s.configLoaded = true
+	persisted, err := s.loadPersistedConfig(ctx)
+	switch {
+	case err != nil:
+		logger.Error("failed to load persisted system config, using defaults", zap.Error(err))
+	case persisted != nil:
+		s.config = persisted
+		logger.Info("system config loaded from database",
+			zap.String("site_name", persisted.Base.Name))
+	}
+}
+
+// GetConfig 获取系统配置（首次调用会从 DB 加载管理后台保存的配置）
+func (s *Service) GetConfig(ctx context.Context) (*SystemConfig, error) {
+	s.ensureConfigLoaded(ctx)
+	s.configMu.RLock()
+	defer s.configMu.RUnlock()
 	return s.config, nil
 }
 
-// UpdateConfig 更新系统配置
-func (s *Service) UpdateConfig(ctx context.Context, newConfig *SystemConfig) error {
-	// TODO: 验证配置有效性
-	// TODO: 保存到数据库或配置文件
+// validateSystemConfig 基础有效性校验（写库前的最后一道防线）。
+func validateSystemConfig(cfg *SystemConfig) error {
+	if cfg == nil {
+		return errors.New("config is nil")
+	}
+	if cfg.Base.Port < 0 || cfg.Base.Port > 65535 {
+		return errors.New("base.port out of range (0-65535)")
+	}
+	if cfg.Storage.MaxSize < 0 {
+		return errors.New("storage.max_size must be >= 0")
+	}
+	if cfg.Transfer.MaxCount < 0 {
+		return errors.New("transfer.max_count must be >= 0")
+	}
+	if cfg.Transfer.ExpireDefault < 0 {
+		return errors.New("transfer.expire_default must be >= 0")
+	}
+	return nil
+}
 
+// UpdateConfig 更新系统配置：写穿到 DB（单行），成功后才更新内存。
+func (s *Service) UpdateConfig(ctx context.Context, newConfig *SystemConfig) error {
+	if err := validateSystemConfig(newConfig); err != nil {
+		return err
+	}
+	data, err := json.Marshal(newConfig)
+	if err != nil {
+		return err
+	}
+	rec := &model.SystemConfigRecord{Data: string(data)}
+	if err := s.configRepo.Save(ctx, rec); err != nil {
+		if errors.Is(err, dao.ErrDBNotInitialized) {
+			// DB 不可用时仅更新内存（纯内存运行形态，如部分单测）
+			logger.Warn("system config not persisted: database not initialized")
+		} else {
+			return err
+		}
+	}
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
 	s.config = newConfig
+	s.configLoaded = true
+	s.logAdminOperation(ctx, "config.update", "system config persisted to database", true)
 	return nil
 }
 
@@ -276,7 +400,10 @@ func (s *Service) UpdateUserStatus(ctx context.Context, userID uint, status stri
 	}
 
 	user.Status = status
-	return s.userRepo.Update(ctx, user)
+	err = s.userRepo.Update(ctx, user)
+	s.logAdminOperation(ctx, "user.update_status",
+		fmt.Sprintf("user %d (username=%s) status -> %s", userID, user.Username, status), err == nil)
+	return err
 }
 
 // GenerateTokenForAdmin 生成管理员登录 token

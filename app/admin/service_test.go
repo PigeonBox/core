@@ -53,7 +53,7 @@ func newAdminTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	g, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	require.NoError(t, err)
-	require.NoError(t, g.AutoMigrate(&model.FileCode{}))
+	require.NoError(t, g.AutoMigrate(&model.FileCode{}, &model.SystemConfigRecord{}))
 	db.SetDatabaseInstance(g)
 	t.Cleanup(func() { db.SetDatabaseInstance(nil) })
 	return g
@@ -112,4 +112,111 @@ func TestCleanExpiredFiles_NoStorage(t *testing.T) {
 	deleted, _, err := svc.CleanExpiredFiles(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), deleted)
+}
+
+// --- SystemConfig 持久化 ---
+
+// customTestConfig 构造一份与默认值不同的配置，便于断言。
+func customTestConfig(name string) *SystemConfig {
+	cfg := &SystemConfig{}
+	cfg.Base.Name = name
+	cfg.Base.Description = "自定义描述"
+	cfg.Base.Port = 12345
+	cfg.Storage.Type = "s3"
+	cfg.Storage.MaxSize = 5 * 1024 * 1024 * 1024
+	cfg.Transfer.MaxCount = 50
+	cfg.Transfer.ExpireDefault = 30
+	return cfg
+}
+
+// TestUpdateConfig_PersistsToDB 验证 UpdateConfig 写穿到 system_configs 表
+func TestUpdateConfig_PersistsToDB(t *testing.T) {
+	newAdminTestDB(t)
+	svc := NewService()
+
+	ctx := context.Background()
+	require.NoError(t, svc.UpdateConfig(ctx, customTestConfig("持久化站点")))
+
+	var rec model.SystemConfigRecord
+	require.NoError(t, db.GetDB().First(&rec).Error, "应存在持久化记录")
+	assert.Contains(t, rec.Data, `"name":"持久化站点"`)
+}
+
+// TestGetConfig_PersistedAcrossRestart 验证重启（新 Service 实例）后读到持久化配置
+func TestGetConfig_PersistedAcrossRestart(t *testing.T) {
+	newAdminTestDB(t)
+
+	svc1 := NewService()
+	require.NoError(t, svc1.UpdateConfig(context.Background(), customTestConfig("重启不丢")))
+
+	svc2 := NewService() // 模拟重启后的新实例
+	cfg, err := svc2.GetConfig(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "重启不丢", cfg.Base.Name)
+	assert.Equal(t, 12345, cfg.Base.Port)
+	assert.Equal(t, "s3", cfg.Storage.Type)
+	assert.Equal(t, int64(5*1024*1024*1024), cfg.Storage.MaxSize)
+	assert.Equal(t, 50, cfg.Transfer.MaxCount)
+	assert.Equal(t, 30, cfg.Transfer.ExpireDefault)
+}
+
+// TestGetConfig_DefaultsWhenNoRecord 验证无持久化记录时返回默认值
+func TestGetConfig_DefaultsWhenNoRecord(t *testing.T) {
+	newAdminTestDB(t)
+
+	cfg, err := NewService().GetConfig(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "FileCodeBox", cfg.Base.Name)
+	assert.Equal(t, "local", cfg.Storage.Type)
+	assert.Equal(t, 100, cfg.Transfer.MaxCount)
+}
+
+// TestGetConfig_WithoutDB 验证 DB 未初始化时不 panic，回退默认配置
+func TestGetConfig_WithoutDB(t *testing.T) {
+	db.SetDatabaseInstance(nil)
+	t.Cleanup(func() { db.SetDatabaseInstance(nil) })
+
+	cfg, err := NewService().GetConfig(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "FileCodeBox", cfg.Base.Name)
+}
+
+// TestUpdateConfig_InvalidConfig 验证非法配置被拒绝且不落库
+func TestUpdateConfig_InvalidConfig(t *testing.T) {
+	newAdminTestDB(t)
+	svc := NewService()
+
+	bad := customTestConfig("非法端口")
+	bad.Base.Port = 70000
+	require.Error(t, svc.UpdateConfig(context.Background(), bad))
+
+	neg := customTestConfig("负数上限")
+	neg.Storage.MaxSize = -1
+	require.Error(t, svc.UpdateConfig(context.Background(), neg))
+
+	// 内存与 DB 均未被污染
+	cfg, err := svc.GetConfig(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "FileCodeBox", cfg.Base.Name)
+	var count int64
+	require.NoError(t, db.GetDB().Model(&model.SystemConfigRecord{}).Count(&count).Error)
+	assert.Equal(t, int64(0), count)
+}
+
+// TestUpdateConfig_SingleRow 验证多次更新只保留一行记录
+func TestUpdateConfig_SingleRow(t *testing.T) {
+	newAdminTestDB(t)
+	svc := NewService()
+	ctx := context.Background()
+
+	require.NoError(t, svc.UpdateConfig(ctx, customTestConfig("第一版")))
+	require.NoError(t, svc.UpdateConfig(ctx, customTestConfig("第二版")))
+
+	var count int64
+	require.NoError(t, db.GetDB().Model(&model.SystemConfigRecord{}).Count(&count).Error)
+	assert.Equal(t, int64(1), count)
+
+	cfg, err := svc.GetConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, "第二版", cfg.Base.Name)
 }
