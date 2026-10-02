@@ -46,6 +46,9 @@ import (
 // 使用 internal/conf 包中的统一配置类型
 type Config = conf.AppConfiguration
 
+// staticOpts 保存最近一次 Bootstrap 应用的选项(静态服务等闭包读取)。
+var staticOpts = defaultOptions()
+
 // CORS 跨域中间件（配置化）。
 //
 // 安全策略：
@@ -374,9 +377,17 @@ var (
 	config   *Config
 )
 
-// Bootstrap 应用程序启动入口。
+// Bootstrap 应用程序启动入口(兼容入口,等价于无选项的 BootstrapWithOptions)。
 // configPath 为空时依次回退到 CONFIG_PATH 环境变量、默认 configs/config.yaml。
 func Bootstrap(configPath string) (*server.Hertz, error) {
+	return BootstrapWithOptions(configPath)
+}
+
+// BootstrapWithOptions 带函数选项的启动入口。
+// 可用选项见 options.go(如 WithStaticDir 覆盖前端静态资源目录)。
+func BootstrapWithOptions(configPath string, opts ...Option) (*server.Hertz, error) {
+	staticOpts = applyOptions(opts...)
+
 	// 1. 初始化配置
 	var err error
 	config, err = InitConfig(configPath)
@@ -560,7 +571,7 @@ func customizedRegister(r *server.Hertz) {
 	// 缓存（NoRoute 里手写的 c.File 对大文件 ES module 的 Range/缓冲处理不够稳定，
 	// 会导致浏览器 "Failed to fetch dynamically imported module"）。
 	r.StaticFS("/assets", &app.FS{
-		Root:          "./static/assets",
+		Root:          filepath.Join(staticOpts.StaticDir, "assets"),
 		PathRewrite:   app.NewPathSlashesStripper(1),
 		CacheDuration: 7 * 24 * time.Hour,
 	})
@@ -630,7 +641,7 @@ func customizedRegister(r *server.Hertz) {
 			return
 		}
 		// 其余路径回退到 SPA index.html
-		c.File("./static/index.html")
+		c.File(filepath.Join(staticOpts.StaticDir, "index.html"))
 	})
 }
 
@@ -678,7 +689,7 @@ func tryServeStatic(c *app.RequestContext, path string) bool {
 	}
 	// 去掉前导 /，拼接到 static 根目录；filepath.Join 会清理 ../ 等穿越
 	rel := strings.TrimPrefix(path, "/")
-	fullPath := filepath.Join("./static", rel)
+	fullPath := filepath.Join(staticOpts.StaticDir, rel)
 	info, err := os.Stat(fullPath)
 	if err != nil || info.IsDir() {
 		return false
