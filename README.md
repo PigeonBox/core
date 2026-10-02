@@ -1,0 +1,52 @@
+# core
+
+FileCodeBox 业务核心库:10 个域服务 + 数据访问 + 存储抽象 + HTTP/RPC 装配(bootstrap)。**不含 main、不含静态资源、不含配置文件**——本模块定位是**被复用的库**,消费方:
+
+- [`filescodebox/server`](https://github.com/filescodebox/server) —— 标准独立部署(自托管)
+- `filecodebox-fnos` —— 飞牛 fnOS 应用(单容器库式调用)
+
+## 结构
+
+| 目录 | 说明 |
+|------|------|
+| `bootstrap/` | 库入口:`Bootstrap(configPath)` 拉起全部业务,返回 `*server.Hertz` |
+| `app/` | 10 个域服务:share / chunk / anonymous / presign / admin / user / notify / qrcode / setup / storage(模块间近零耦合,仅 presign→share) |
+| `repo/` | 数据访问:db(gorm dao/model)、redis |
+| `storage/` | 存储抽象(OpenDAL 多后端) |
+| `pkg/` | auth / logger / middleware / resp / errors / utils 等横切设施 |
+| `transport/` | 手写 http handler 与中间件(生成代码之外的补充) |
+| `preview/` | 文件预览服务 |
+| `conf/` | 配置结构定义 |
+| `gen/` | thrift 生成的 handler / router(模型类型在 [`filescodebox/contracts`](https://github.com/filescodebox/contracts)) |
+
+## 分层职责(继承自原仓库 internal 设计)
+
+1. `app/` —— 业务逻辑层,不依赖具体传输协议,不直接操作数据库(经 repo 层)
+2. `transport/` + `gen/` —— 传输层,协议适配,调用 app 层服务
+3. `repo/` —— 数据访问层,封装 DB/Redis/外部服务
+4. `pkg/` —— 项目内横切工具(不含对外通用库)
+
+## 库用法
+
+```go
+import "github.com/filescodebox/core/bootstrap"
+
+h, err := bootstrap.Bootstrap("/path/to/config.yaml")
+if err != nil { log.Fatal(err) }
+defer bootstrap.Cleanup()
+go h.Spin()
+```
+
+## 依赖规则(强制)
+
+```
+core ──► contracts ──► (thrift runtime)
+  └─ 不允许 import server / frontend;不引入任何 UI 与部署物
+```
+
+- thrift 版本约束由 contracts 以 `require` 传递,**下游无需任何 replace**(这是从原仓库拆出的重要修复:原仓库靠 `replace thrift => v0.13.0` 钉版本,库使用者被迫复述该约束)。
+- 显式钉 `bytedance/sonic v1.15.0`:hertz 声明的 v1.12.7 在 go1.27/arm64 有 linkname 链接错误。
+
+## 来源
+
+拆分自 [zy84338719/fileCodeBox](https://github.com/zy84338719/FileCodeBox) 的 `backend/api`、`backend/gen/http/{handler,router}`、`backend/cmd/server/bootstrap`,import 路径机械替换,业务逻辑零变更。
