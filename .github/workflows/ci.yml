@@ -1,0 +1,30 @@
+name: CI
+on:
+  push: { branches: [main] }
+  pull_request: { branches: [main] }
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          # contracts 尚未发布 tag 时经 replace 取同 checkout;发布后可改为 go-version-file + 正式 require
+      - name: Point contracts to sibling checkout
+        run: |
+          go mod edit -replace github.com/filescodebox/contracts=/dev/null 2>/dev/null || true
+          git clone --depth=1 https://github.com/filescodebox/contracts.git /tmp/contracts
+          go mod edit -replace github.com/filescodebox/contracts=/tmp/contracts
+      - name: Build
+        run: go build ./...
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test ./...
+      - name: Dep guard(core 不许依赖下游)
+        run: |
+          BAD=$(go list -deps ./... | grep -E '^github.com/filescodebox/(server|frontend|filecodebox-fnos)' || true)
+          if [ -n "$BAD" ]; then echo "✗ core 违规依赖:"; echo "$BAD"; exit 1; fi
+          echo "✓ 依赖方向合规"
