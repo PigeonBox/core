@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"strings"
 	"time"
 
 	"github.com/filescodebox/contracts/errcode"
@@ -32,6 +33,9 @@ import (
 // 6 位取件码字符表（去掉易混淆字符 0/O/1/I/L）
 const codeAlphabet = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
 const codeLength = 6
+
+// shareCode 分享码长度（file_codes.code，字母数字混合、区分大小写）
+const shareCodeLength = 8
 
 // Redis key 模板（仅存映射 + 展示信息，真实状态查 DB）
 const (
@@ -122,23 +126,71 @@ func (s *Service) GenerateCode(ctx context.Context, meta CodeMeta, expireAt time
 	return "", errors.New("failed to generate unique code after 10 retries")
 }
 
+// lookupShareCode 把用户输入解析为分享码：
+// 6 位输入按取件码处理（容忍小写，规范化后查 Redis 映射）；
+// Redis 未命中且输入形如 8 位分享码时回退 DB 直查——
+// 文本分享没有取件码（不写 Redis），用户手里只有分享成功弹窗里的 8 位码。
+func (s *Service) lookupShareCode(ctx context.Context, code string) (string, error) {
+	trimmed := strings.TrimSpace(code)
+	if len(trimmed) == codeLength {
+		trimmed = strings.ToUpper(trimmed)
+	}
+	shareCode, err := s.rdb.Get(ctx, fmt.Sprintf(keyPickupCodeMapping, trimmed)).Result()
+	if err == nil {
+		return shareCode, nil
+	}
+	if !errors.Is(err, redis.Nil) {
+		return "", err
+	}
+	if isShareCodeShape(trimmed) {
+		fc, dbErr := s.fileCodeRepo.GetByCode(ctx, trimmed)
+		if dbErr != nil || fc == nil {
+			return "", ErrCodeNotFound
+		}
+		return fc.Code, nil
+	}
+	return "", ErrCodeNotFound
+}
+
+// isShareCodeShape 判断是否形如 8 位分享码（字母数字，区分大小写）
+func isShareCodeShape(code string) bool {
+	if len(code) != shareCodeLength {
+		return false
+	}
+	for i := 0; i < len(code); i++ {
+		c := code[i]
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z') {
+			return false
+		}
+	}
+	return true
+}
+
+// enrichMetaFromDB 分享码直查路径没有 Redis 展示信息，用 DB 记录补齐
+func enrichMetaFromDB(meta *CodeMeta, fc *model.FileCode) {
+	if meta.FileName == "" {
+		meta.FileName = fc.UUIDFileName
+	}
+	if meta.FileSize == 0 {
+		meta.FileSize = fc.Size
+	}
+	meta.RequireAuth = fc.RequireAuth
+}
+
 // Retrieve 按取件码取件（校验 + 扣减次数，DB 为准）。
 // 返回展示信息 CodeMeta。每次成功调用扣减一次剩余次数。
 func (s *Service) Retrieve(ctx context.Context, code, password string) (*CodeMeta, error) {
 	if s.rdb == nil {
 		return nil, errors.New("redis 未配置，匿名取件功能不可用")
 	}
-	// 1. 取 share_code（仅映射）
-	shareCode, err := s.rdb.Get(ctx, fmt.Sprintf(keyPickupCodeMapping, code)).Result()
-	if errors.Is(err, redis.Nil) {
-		return nil, ErrCodeNotFound
-	}
+	// 1. 解析取件码/分享码 → share_code
+	shareCode, err := s.lookupShareCode(ctx, code)
 	if err != nil {
 		return nil, err
 	}
 
 	// 2. 展示信息（兼容旧格式：解析失败用空值）
-	metaStr, _ := s.rdb.Get(ctx, fmt.Sprintf(keyPickupCodeMeta, code)).Result()
+	metaStr, _ := s.rdb.Get(ctx, fmt.Sprintf(keyPickupCodeMeta, strings.ToUpper(strings.TrimSpace(code)))).Result()
 	meta := parseMeta(metaStr, shareCode)
 
 	// 3. 查 DB 真实状态
@@ -146,6 +198,7 @@ func (s *Service) Retrieve(ctx context.Context, code, password string) (*CodeMet
 	if err != nil {
 		return nil, ErrCodeNotFound
 	}
+	enrichMetaFromDB(meta, fc)
 
 	// 4. 校验过期（时间 + 次数）
 	if fc.IsExpired() {
@@ -192,19 +245,17 @@ func (s *Service) Peek(ctx context.Context, code string) (*CodeMeta, *model.File
 	if s.rdb == nil {
 		return nil, nil, errors.New("redis 未配置，匿名取件功能不可用")
 	}
-	shareCode, err := s.rdb.Get(ctx, fmt.Sprintf(keyPickupCodeMapping, code)).Result()
-	if errors.Is(err, redis.Nil) {
-		return nil, nil, ErrCodeNotFound
-	}
+	shareCode, err := s.lookupShareCode(ctx, code)
 	if err != nil {
 		return nil, nil, err
 	}
-	metaStr, _ := s.rdb.Get(ctx, fmt.Sprintf(keyPickupCodeMeta, code)).Result()
+	metaStr, _ := s.rdb.Get(ctx, fmt.Sprintf(keyPickupCodeMeta, strings.ToUpper(strings.TrimSpace(code)))).Result()
 	meta := parseMeta(metaStr, shareCode)
 	fc, err := s.fileCodeRepo.GetByCode(ctx, shareCode)
 	if err != nil {
 		return nil, nil, ErrCodeNotFound
 	}
+	enrichMetaFromDB(meta, fc)
 	if fc.IsBlockedShare() {
 		return nil, nil, &BlockedError{Status: fc.Status}
 	}

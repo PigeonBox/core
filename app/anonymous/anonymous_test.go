@@ -2,6 +2,7 @@ package anonymous
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -215,4 +216,79 @@ func TestGenerateCode_ExpiredAtPast(t *testing.T) {
 	svc, _, _ := newTestService(t)
 	_, err := svc.GenerateCode(context.Background(), CodeMeta{ShareCode: "X"}, time.Now().Add(-time.Hour))
 	assert.Error(t, err)
+}
+
+// TestRetrieve_ShareCodeFallback 8 位分享码直查兜底：
+// 文本分享没有取件码（不写 Redis），用户手里只有分享成功弹窗里的 8 位码，
+// 取件页必须能用它取件（回归 2026-10-03 自测：两套码体系在 UI 断链）。
+func TestRetrieve_ShareCodeFallback(t *testing.T) {
+	svc, _, _ := newTestService(t)
+	ctx := context.Background()
+	require.NoError(t, svc.fileCodeRepo.Create(ctx, &model.FileCode{
+		Code: "Piqck7ZN", UUIDFileName: "note.txt", Size: 42, FilePath: "uploads/x/note.txt", ExpiredCount: 3,
+	}))
+
+	meta, err := svc.Retrieve(ctx, "Piqck7ZN", "")
+	require.NoError(t, err)
+	assert.Equal(t, "Piqck7ZN", meta.ShareCode)
+	assert.Equal(t, "note.txt", meta.FileName)
+	assert.Equal(t, int64(42), meta.FileSize)
+
+	// 次数照常扣减
+	fc, _ := svc.fileCodeRepo.GetByCode(ctx, "Piqck7ZN")
+	assert.Equal(t, 2, fc.ExpiredCount)
+}
+
+// TestRetrieve_ShareCodeFallback_CaseSensitive 分享码区分大小写
+func TestRetrieve_ShareCodeFallback_CaseSensitive(t *testing.T) {
+	svc, _, _ := newTestService(t)
+	ctx := context.Background()
+	require.NoError(t, svc.fileCodeRepo.Create(ctx, &model.FileCode{Code: "Piqck7ZN", FilePath: "uploads/x/a", ExpiredCount: -1}))
+
+	_, err := svc.Retrieve(ctx, "PIQCK7ZN", "")
+	assert.ErrorIs(t, err, ErrCodeNotFound)
+}
+
+// TestRetrieve_ShareCodeFallback_RespectsPassword 兜底路径同样校验密码
+func TestRetrieve_ShareCodeFallback_RespectsPassword(t *testing.T) {
+	svc, _, _ := newTestService(t)
+	ctx := context.Background()
+	hash, err := utils.HashPassword("secret1")
+	require.NoError(t, err)
+	require.NoError(t, svc.fileCodeRepo.Create(ctx, &model.FileCode{
+		Code: "Passw0rd", PasswordHash: hash, RequireAuth: true, FilePath: "uploads/x/a", ExpiredCount: -1,
+	}))
+
+	_, err = svc.Retrieve(ctx, "Passw0rd", "")
+	assert.ErrorIs(t, err, ErrPasswordWrong)
+
+	meta, err := svc.Retrieve(ctx, "Passw0rd", "secret1")
+	require.NoError(t, err)
+	assert.Equal(t, "Passw0rd", meta.ShareCode)
+	assert.True(t, meta.RequireAuth)
+}
+
+// TestPeek_ShareCodeFallback Peek（search/下载令牌签发）同样支持分享码兜底
+func TestPeek_ShareCodeFallback(t *testing.T) {
+	svc, _, _ := newTestService(t)
+	ctx := context.Background()
+	require.NoError(t, svc.fileCodeRepo.Create(ctx, &model.FileCode{Code: "AbCdEf12", FilePath: "uploads/x/a", ExpiredCount: -1}))
+
+	meta, fc, err := svc.Peek(ctx, "AbCdEf12")
+	require.NoError(t, err)
+	assert.Equal(t, "AbCdEf12", meta.ShareCode)
+	assert.Equal(t, "AbCdEf12", fc.Code)
+}
+
+// TestRetrieve_PickupCodeLowercaseInput 6 位取件码容忍小写输入（规范化为大写后查映射）
+func TestRetrieve_PickupCodeLowercaseInput(t *testing.T) {
+	svc, _, _ := newTestService(t)
+	ctx := context.Background()
+	require.NoError(t, svc.fileCodeRepo.Create(ctx, &model.FileCode{Code: "SHARE_LC", FilePath: "uploads/x/a", ExpiredCount: -1}))
+	code, err := svc.GenerateCode(ctx, CodeMeta{ShareCode: "SHARE_LC", FileName: "f.bin"}, time.Now().Add(time.Hour))
+	require.NoError(t, err)
+
+	meta, err := svc.Retrieve(ctx, strings.ToLower(code), "")
+	require.NoError(t, err)
+	assert.Equal(t, "SHARE_LC", meta.ShareCode)
 }

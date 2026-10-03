@@ -968,6 +968,9 @@ func publicConfigHandler(ctx context.Context, c *app.RequestContext) {
 		"uploadSize":  config.Upload.UploadSize,
 		"enableChunk": config.Upload.EnableChunk,
 		"openUpload":  config.Upload.OpenUpload,
+		// 注册开关以 user.allow_user_registration（yaml/env）为准——
+		// 与 /user/register 的判定同源，前端据此隐藏注册入口
+		"registerEnabled": config.User.AllowUserRegistration,
 		// 前端 expireStyle 下拉选项（与 utils.CalculateExpireTime 支持的风格对齐）
 		"expireStyle": []string{"minute", "hour", "day", "week", "month", "year", "forever"},
 		"initialized": initialized,

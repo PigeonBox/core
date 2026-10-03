@@ -7,16 +7,19 @@ import (
 	"context"
 	"errors"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
 	"github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
 
 	"github.com/filescodebox/contracts/errcode"
 	anonmodel "github.com/filescodebox/contracts/gen/share_anonymous"
 	anonapp "github.com/filescodebox/core/app/anonymous"
 	"github.com/filescodebox/core/pkg/gate"
+	"github.com/filescodebox/core/pkg/logger"
 	"github.com/filescodebox/core/pkg/middleware"
 	"github.com/filescodebox/core/pkg/resp"
 	"github.com/filescodebox/core/pkg/security"
@@ -24,6 +27,22 @@ import (
 )
 
 var anonSvc *anonapp.Service
+
+// sanitizeInternalMsg 内部（基础设施）错误不透出原文——
+// dial tcp / redis 等细节对匿名调用方是信息泄露，只保留 trace_id 可追踪，
+// 全文进服务端日志。业务类错误（参数/过期等可读文案）原样返回。
+func sanitizeInternalMsg(err error) string {
+	msg := err.Error()
+	lower := strings.ToLower(msg)
+	if strings.Contains(lower, "dial tcp") ||
+		strings.Contains(lower, "connection refused") ||
+		strings.Contains(lower, "redis") ||
+		strings.Contains(lower, "timeout") {
+		logger.Warn("anonymous internal error", zap.Error(err))
+		return "服务暂时不可用，请稍后重试"
+	}
+	return msg
+}
 
 // SetService 注入 service
 func SetService(rdb *redis.Client) {
@@ -107,7 +126,7 @@ func GenerateCode(ctx context.Context, c *app.RequestContext) {
 		Password:       password,
 	})
 	if err != nil {
-		resp.NewErrorWithMessage(c, errcode.CodeInternal, err.Error())
+		resp.NewErrorWithMessage(c, errcode.CodeInternal, sanitizeInternalMsg(err))
 		return
 	}
 	resp.Success(c, &anonmodel.GenerateCodeData{
@@ -170,7 +189,7 @@ func Retrieve(ctx context.Context, c *app.RequestContext) {
 			_, _ = lock.RecordFailure(ctx, lockKey)
 			resp.NewErrorByCode(c, errcode.CodeSharePasswordWrong)
 		default:
-			resp.NewErrorWithMessage(c, errcode.CodeInternal, err.Error())
+			resp.NewErrorWithMessage(c, errcode.CodeInternal, sanitizeInternalMsg(err))
 		}
 		return
 	}
@@ -217,7 +236,13 @@ func Download(ctx context.Context, c *app.RequestContext) {
 			resp.NewTypedError(c, blocked)
 			return
 		}
-		resp.NewErrorByCode(c, errcode.CodePickupCodeNotFound)
+		if errors.Is(err, anonapp.ErrCodeNotFound) {
+			resp.NewErrorByCode(c, errcode.CodePickupCodeNotFound)
+			return
+		}
+		// 基础设施故障（如 Redis 不可达）不能伪装成"码不存在"——
+		// 那会把服务故障遮蔽成业务 404，调用方无法区分
+		resp.NewErrorWithMessage(c, errcode.CodeInternal, sanitizeInternalMsg(err))
 		return
 	}
 	if fc.IsExpired() {
@@ -263,7 +288,12 @@ func SearchByCode(ctx context.Context, c *app.RequestContext) {
 			resp.NewTypedError(c, blocked)
 			return
 		}
-		resp.NewErrorByCode(c, errcode.CodePickupCodeNotFound)
+		if errors.Is(err, anonapp.ErrCodeNotFound) {
+			resp.NewErrorByCode(c, errcode.CodePickupCodeNotFound)
+			return
+		}
+		// 同 Download：基础设施故障不得遮蔽为"码不存在"
+		resp.NewErrorWithMessage(c, errcode.CodeInternal, sanitizeInternalMsg(err))
 		return
 	}
 	maxCount := int32(0)
