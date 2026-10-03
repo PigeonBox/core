@@ -8,14 +8,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/glebarez/sqlite"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 	"github.com/filescodebox/core/app/moderation"
 	"github.com/filescodebox/core/pkg/utils"
 	"github.com/filescodebox/core/repo/db"
 	"github.com/filescodebox/core/repo/db/model"
 	"github.com/filescodebox/core/storage"
+	"github.com/glebarez/sqlite"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 )
 
@@ -35,6 +35,11 @@ func newTestDB(t *testing.T) *gorm.DB {
 	gormDB, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	require.NoError(t, err)
 	require.NoError(t, gormDB.AutoMigrate(&model.FileCode{}))
+	// glebarez/sqlite 的 :memory: 每条连接是独立库，多连接会拿到无表空库；
+	// 钉死单连接消除该 flake（异步 goroutine 与主流程并发取连接时必现）。
+	sqlDB, err := gormDB.DB()
+	require.NoError(t, err)
+	sqlDB.SetMaxOpenConns(1)
 	// 注入到全局，使 DAO 的 db.GetDB() 指向测试库
 	db.SetDatabaseInstance(gormDB)
 	t.Cleanup(func() {
@@ -123,7 +128,7 @@ func (m *mockUserService) GetUploadSizeCap(_ context.Context, _ uint) int64 {
 // ===== mock: NotifyServiceInterface =====
 
 type mockNotifyService struct {
-	called int
+	called     int
 	lastUserID uint
 }
 
@@ -476,7 +481,9 @@ func (m *mockModerator) InspectFile(context.Context, moderation.UploadMeta) mode
 
 type mockFlagEmitter struct{ codes []string }
 
-func (m *mockFlagEmitter) EmitShareFlagged(code, reason, ownerIP string) { m.codes = append(m.codes, code) }
+func (m *mockFlagEmitter) EmitShareFlagged(code, reason, ownerIP string) {
+	m.codes = append(m.codes, code)
+}
 
 func TestShareText_Moderation(t *testing.T) {
 	t.Run("reject 拦截返回30013", func(t *testing.T) {

@@ -4,11 +4,11 @@ import (
 	"context"
 	"testing"
 
+	"github.com/filescodebox/core/repo/db"
+	"github.com/filescodebox/core/repo/db/model"
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/filescodebox/core/repo/db"
-	"github.com/filescodebox/core/repo/db/model"
 	"gorm.io/gorm"
 )
 
@@ -17,6 +17,11 @@ func newExpireTestDB(t *testing.T) *gorm.DB {
 	g, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	require.NoError(t, err)
 	require.NoError(t, g.AutoMigrate(&model.FileCode{}))
+	// glebarez/sqlite 的 :memory: 每条连接是独立库，多连接会拿到无表空库；
+	// 钉死单连接消除该 flake（异步 goroutine 与主流程并发取连接时必现）。
+	sqlDB, err := g.DB()
+	require.NoError(t, err)
+	sqlDB.SetMaxOpenConns(1)
 	db.SetDatabaseInstance(g)
 	t.Cleanup(func() { db.SetDatabaseInstance(nil) })
 	return g
