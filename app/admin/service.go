@@ -257,7 +257,7 @@ func (s *Service) CleanupExpiredFiles(ctx context.Context) (int, error) {
 // CleanupIncompleteUploads 清理未完成的上传
 func (s *Service) CleanupIncompleteUploads(ctx context.Context, olderThanHours int) (int, error) {
 	// 获取未完成的上传
-	incompleteUploads, err := s.chunkRepo.GetIncompleteUploads(ctx, olderThanHours)
+	incompleteUploads, err := s.chunkRepo.GetIncompleteUploads(ctx, time.Duration(olderThanHours)*time.Hour)
 	if err != nil {
 		return 0, err
 	}
@@ -551,8 +551,8 @@ func (s *Service) CleanExpiredFiles(ctx context.Context) (int64, int64, error) {
 
 // CleanTempFiles 清理临时文件
 func (s *Service) CleanTempFiles(ctx context.Context) (int64, int64, error) {
-	// 获取24小时前的临时文件
-	incompleteUploads, err := s.chunkRepo.GetIncompleteUploads(ctx, 24)
+	// 获取24小时前未完成的会话
+	incompleteUploads, err := s.chunkRepo.GetIncompleteUploads(ctx, 24*time.Hour)
 	if err != nil {
 		return 0, 0, err
 	}

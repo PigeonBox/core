@@ -45,9 +45,9 @@ import (
 	userService "github.com/filescodebox/core/app/user"
 	adminHandler "github.com/filescodebox/core/gen/handler/admin"
 	chunkHandler "github.com/filescodebox/core/gen/handler/chunk"
-	previewHandler "github.com/filescodebox/core/gen/handler/preview"
 	notifyHandler "github.com/filescodebox/core/gen/handler/notify"
 	presignHandler "github.com/filescodebox/core/gen/handler/presign"
+	previewHandler "github.com/filescodebox/core/gen/handler/preview"
 	ratelimitHandler "github.com/filescodebox/core/gen/handler/ratelimit"
 	shareHandler "github.com/filescodebox/core/gen/handler/share"
 	anonHandler "github.com/filescodebox/core/gen/handler/share_anonymous"
@@ -1206,6 +1206,11 @@ func startMaintenanceJanitor() {
 			logger.Warn("log retention cleanup failed", zap.Error(err))
 		} else if n > 0 {
 			logger.Info("retention logs cleaned", zap.Int64("count", n))
+		}
+		if dirs, err := j.CleanupStaleUploads(ctx, 24*time.Hour); err != nil {
+			logger.Warn("stale chunk session cleanup failed", zap.Error(err))
+		} else if dirs > 0 {
+			logger.Info("stale chunk dirs cleaned", zap.Int("count", dirs))
 		}
 	}
 	run()

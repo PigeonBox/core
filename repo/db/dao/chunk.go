@@ -100,11 +100,41 @@ func (r *ChunkRepository) GetUploadList(ctx context.Context, page, pageSize int)
 	return chunks, total, err
 }
 
-func (r *ChunkRepository) GetIncompleteUploads(ctx context.Context, olderThan int) ([]*model.UploadChunk, error) {
+// GetIncompleteUploads 超过 maxAge 未完成的控制记录（chunk_index=-1）。
+// cutoff 由 Go 侧计算后传参——修复：此前用 SQLite 专属的
+// datetime('now', '-' || ? || ' hours')，MySQL/Postgres 部署直接 SQL 报错。
+func (r *ChunkRepository) GetIncompleteUploads(ctx context.Context, maxAge time.Duration) ([]*model.UploadChunk, error) {
+	cutoff := time.Now().Add(-maxAge)
 	var chunks []*model.UploadChunk
-	err := r.db().WithContext(ctx).Where("chunk_index = -1 AND status != 'completed' AND created_at < datetime('now', '-' || ? || ' hours')", olderThan).
+	err := r.db().WithContext(ctx).
+		Where("chunk_index = -1 AND status != 'completed' AND updated_at < ?", cutoff).
 		Find(&chunks).Error
 	return chunks, err
+}
+
+// DeleteStaleSessions 删除过期会话的全部行（控制记录 + 分片行）。
+// completed 为 true 时清理已完成会话的旧行（控制表防膨胀）。
+func (r *ChunkRepository) DeleteStaleSessions(ctx context.Context, maxAge time.Duration, completed bool) (int64, error) {
+	cutoff := time.Now().Add(-maxAge)
+	q := r.db().WithContext(ctx).Where("updated_at < ?", cutoff)
+	if completed {
+		q = q.Where("chunk_index = -1 AND status = 'completed'")
+	} else {
+		q = q.Where("chunk_index = -1 AND status != 'completed'")
+	}
+	var controls []*model.UploadChunk
+	if err := q.Find(&controls).Error; err != nil {
+		return 0, err
+	}
+	if len(controls) == 0 {
+		return 0, nil
+	}
+	ids := make([]string, 0, len(controls))
+	for _, c := range controls {
+		ids = append(ids, c.UploadID)
+	}
+	res := r.db().WithContext(ctx).Where("upload_id IN ?", ids).Delete(&model.UploadChunk{})
+	return res.RowsAffected, res.Error
 }
 
 func (r *ChunkRepository) GetOldChunks(ctx context.Context, cutoffTime time.Time) ([]*model.UploadChunk, error) {
@@ -140,4 +170,11 @@ func (r *ChunkRepository) FirstOrCreateChunk(ctx context.Context, chunk *model.U
 	return r.db().WithContext(ctx).Where("upload_id = ? AND chunk_index = ?", chunk.UploadID, chunk.ChunkIndex).
 		Assign(chunk).
 		FirstOrCreate(chunk).Error
+}
+
+// UpdateOwner 更新会话归属字段（IP 漂移后的会话接管）
+func (r *ChunkRepository) UpdateOwner(ctx context.Context, uploadID string, updates map[string]interface{}) error {
+	return r.db().WithContext(ctx).Model(&model.UploadChunk{}).
+		Where("upload_id = ? AND chunk_index = -1", uploadID).
+		Updates(updates).Error
 }

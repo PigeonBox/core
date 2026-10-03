@@ -20,6 +20,7 @@ import (
 
 	"github.com/filescodebox/core/pkg/logger"
 	"github.com/filescodebox/core/repo/db"
+	"github.com/filescodebox/core/repo/db/dao"
 	"github.com/filescodebox/core/repo/db/model"
 	"github.com/filescodebox/core/storage"
 	"go.uber.org/zap"
@@ -147,4 +148,38 @@ func (j *Janitor) CleanupLogs(ctx context.Context) (int64, error) {
 			zap.Int64("deleted", total), zap.Int("retention_days", j.retentionDays))
 	}
 	return total, nil
+}
+
+// CleanupStaleUploads 清理弃管的分片会话（治理 2026-10-03）：
+// init 后永不 complete 的会话此前永久滞留（目录 + DB 行），且唯一的
+// 手动清理在非 SQLite 库上直接 SQL 报错。incomplete 超龄 → 删目录 + 删行；
+// 已完成会话旧行单独清理（防 upload_chunks 表无限膨胀）。
+func (j *Janitor) CleanupStaleUploads(ctx context.Context, maxAge time.Duration) (dirsRemoved int, err error) {
+	repo := dao.NewChunkRepository()
+
+	stale, err := repo.GetIncompleteUploads(ctx, maxAge)
+	if err != nil {
+		return 0, err
+	}
+	for _, c := range stale {
+		if j.svc != nil {
+			if cerr := j.svc.CleanChunks(ctx, c.UploadID); cerr != nil {
+				logger.Warn("stale chunk dir cleanup failed", zap.String("upload_id", c.UploadID), zap.Error(cerr))
+			} else {
+				dirsRemoved++
+			}
+		}
+	}
+	if _, err := repo.DeleteStaleSessions(ctx, maxAge, false); err != nil {
+		return dirsRemoved, err
+	}
+	// 已完成会话的旧行（7 天）只删 DB 行，物理目录已在合并成功时清理
+	if _, err := repo.DeleteStaleSessions(ctx, 7*24*time.Hour, true); err != nil {
+		return dirsRemoved, err
+	}
+	if len(stale) > 0 {
+		logger.Info("stale chunk sessions cleaned",
+			zap.Int("sessions", len(stale)), zap.Int("dirs_removed", dirsRemoved))
+	}
+	return dirsRemoved, nil
 }

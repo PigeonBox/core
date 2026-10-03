@@ -5,11 +5,14 @@ package chunk
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
 	"crypto/md5"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"strconv"
 	"time"
@@ -20,11 +23,13 @@ import (
 	chunkmodel "github.com/filescodebox/contracts/gen/chunk"
 	chunkService "github.com/filescodebox/core/app/chunk"
 	shareService "github.com/filescodebox/core/app/share"
+	"github.com/filescodebox/core/conf"
 	"github.com/filescodebox/core/pkg/gate"
 	"github.com/filescodebox/core/pkg/middleware"
 	"github.com/filescodebox/core/pkg/resp"
 	"github.com/filescodebox/core/pkg/security"
 	"github.com/filescodebox/core/pkg/utils"
+	"github.com/filescodebox/core/repo/db/model"
 	"github.com/filescodebox/core/storage"
 	"github.com/google/uuid"
 )
@@ -192,6 +197,12 @@ func ChunkUploadInit(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
+	// 会话令牌随响应头下发（X-Upload-Token）：客户端在后续
+	// chunk/complete/status/cancel 请求回传，可在 IP 漂移后仍通过归属校验
+	if tk := chunkSessionToken(result.UploadID); tk != "" {
+		c.Header("X-Upload-Token", tk)
+	}
+
 	resp := &chunkmodel.ChunkUploadInitResp{
 		Code:    200,
 		Message: "初始化成功",
@@ -228,6 +239,15 @@ func ChunkUpload(ctx context.Context, c *app.RequestContext) {
 		c.JSON(consts.StatusBadRequest, map[string]interface{}{
 			"code":    400,
 			"message": "分片索引格式错误",
+		})
+		return
+	}
+
+	// 归属校验（治理）：防向他人会话覆盖分片（同尺寸分片可替换内容而不触发大小校验）
+	if info, ierr := getChunkService().GetUploadInfo(ctx, uploadID); ierr == nil && !ownedByCaller(info, c) {
+		c.JSON(consts.StatusForbidden, map[string]interface{}{
+			"code":    errcode.CodeForbidden,
+			"message": "无权操作该上传会话",
 		})
 		return
 	}
@@ -332,6 +352,15 @@ func ChunkUploadStatus(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
+	// 归属校验（治理）：会话元数据（文件名/进度）不向第三方泄露
+	if !ownedByCaller(info, c) {
+		c.JSON(consts.StatusForbidden, map[string]interface{}{
+			"code":    errcode.CodeForbidden,
+			"message": "无权操作该上传会话",
+		})
+		return
+	}
+
 	// 获取已上传分片索引
 	uploadedIndexes, err := getChunkService().GetUploadedChunkIndexes(ctx, uploadID)
 	if err != nil {
@@ -378,6 +407,53 @@ func ChunkUploadStatus(ctx context.Context, c *app.RequestContext) {
 	c.JSON(consts.StatusOK, resp)
 }
 
+// chunkSessionToken 会话令牌：HMAC(uploadID, 密钥)。客户端从 init 响应头
+// X-Upload-Token 取得并在后续请求回传，即可在 IP 漂移（移动网络/CGNAT）后
+// 仍通过归属校验。密钥复用 presign 签名密钥（FCB_PRESIGN_SIGNING_KEY，缺省
+// 回退 jwt_secret）。
+func chunkSessionToken(uploadID string) string {
+	key := os.Getenv("FCB_PRESIGN_SIGNING_KEY")
+	if key == "" {
+		if cfg := conf.GetGlobalConfig(); cfg != nil {
+			key = cfg.User.JWTSecret
+		}
+	}
+	if key == "" {
+		return ""
+	}
+	mac := hmac.New(sha256.New, []byte(key))
+	_, _ = mac.Write([]byte("chunk-session:" + uploadID))
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+// verifyChunkToken 客户端回传的会话令牌是否有效
+func verifyChunkToken(uploadID, token string) bool {
+	want := chunkSessionToken(uploadID)
+	return want != "" && token != "" && hmac.Equal([]byte(want), []byte(token))
+}
+
+// ownedByCaller 归属校验（治理）：控制记录记有 OwnerIP 时，要求 IP 一致、
+// 同一登录用户或持有效会话令牌。老数据（OwnerIP 为空）跳过保持兼容。
+func ownedByCaller(info *model.UploadChunk, c *app.RequestContext) bool {
+	if info.OwnerIP == "" {
+		return true
+	}
+	if info.OwnerIP == middleware.ClientIP(c) {
+		return true
+	}
+	if verifyChunkToken(info.UploadID, string(c.GetHeader("X-Upload-Token"))) {
+		return true
+	}
+	if info.UserID != nil {
+		if uid, exists := c.Get("user_id"); exists {
+			if uidUint, ok := uid.(uint); ok && uidUint == *info.UserID {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // ChunkUploadComplete .
 // @router /chunk/upload/complete/:upload_id [POST]
 func ChunkUploadComplete(ctx context.Context, c *app.RequestContext) {
@@ -414,24 +490,13 @@ func ChunkUploadComplete(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
-	// 归属校验（治理）：控制记录已记 OwnerIP/UserID 时，仅归属方可 Complete，
-	// 防猜中 uploadID 劫持他人上传会话（老数据 OwnerIP 为空跳过，保持兼容）
-	if info.OwnerIP != "" && info.OwnerIP != middleware.ClientIP(c) {
-		sameUser := false
-		if info.UserID != nil {
-			if uid, exists := c.Get("user_id"); exists {
-				if uidUint, ok := uid.(uint); ok && uidUint == *info.UserID {
-					sameUser = true
-				}
-			}
-		}
-		if !sameUser {
-			c.JSON(consts.StatusForbidden, map[string]interface{}{
-				"code":    errcode.CodeForbidden,
-				"message": "无权操作该上传会话",
-			})
-			return
-		}
+	// 归属校验（治理）：仅归属方可 Complete，防猜中 uploadID 劫持他人上传会话
+	if !ownedByCaller(info, c) {
+		c.JSON(consts.StatusForbidden, map[string]interface{}{
+			"code":    errcode.CodeForbidden,
+			"message": "无权操作该上传会话",
+		})
+		return
 	}
 
 	// 检查所有分片是否已上传
@@ -661,6 +726,15 @@ func ChunkUploadCancel(ctx context.Context, c *app.RequestContext) {
 		c.JSON(consts.StatusBadRequest, map[string]interface{}{
 			"code":    400,
 			"message": "上传ID不能为空",
+		})
+		return
+	}
+
+	// 归属校验（治理）：防第三方取消/删除他人分片
+	if info, ierr := getChunkService().GetUploadInfo(ctx, uploadID); ierr == nil && !ownedByCaller(info, c) {
+		c.JSON(consts.StatusForbidden, map[string]interface{}{
+			"code":    errcode.CodeForbidden,
+			"message": "无权操作该上传会话",
 		})
 		return
 	}

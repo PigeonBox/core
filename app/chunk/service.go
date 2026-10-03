@@ -76,6 +76,18 @@ func (s *Service) InitiateUpload(ctx context.Context, req *InitiateUploadReq) (*
 	// 由客户端经 status 续传——此前直接报错，秒传未命中时同哈希重传必 500。
 	existing, err := s.chunkRepo.GetByUploadID(ctx, req.UploadID)
 	if err == nil && existing != nil {
+		// 会话接管（治理回归）：确定性 uploadID（客户端自报哈希）下，匿名用户
+		// 换网络后 IP 漂移会让 Complete 恒 403、分片成孤儿。未完成的会话按
+		// "最后写入者 wins" 重新绑定归属；已完成会话不动。
+		if existing.Status != "completed" && req.OwnerIP != "" && existing.OwnerIP != req.OwnerIP {
+			updates := map[string]interface{}{"owner_ip": req.OwnerIP}
+			if req.UserID != nil {
+				updates["user_id"] = *req.UserID
+			}
+			if err := s.chunkRepo.UpdateOwner(ctx, existing.UploadID, updates); err == nil {
+				existing.OwnerIP = req.OwnerIP
+			}
+		}
 		return controlToResp(existing), nil
 	}
 
