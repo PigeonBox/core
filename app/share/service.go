@@ -558,7 +558,7 @@ func (s *Service) UpdateFileUsage(ctx context.Context, code string) (bool, error
 }
 
 // GetFileWithUsage 获取文件并校验密码（不扣次数，扣次数由下载链路调 UpdateFileUsage）。
-// viewerIP 由 handler 从 c.ClientIP() 注入。
+// viewerIP 由 handler 从可信解析 middleware.ClientIP(c) 注入。
 // authedByToken：调用方已校验有效下载令牌（令牌由取件查询在密码/取件校验通过后
 // 签发，等价于已认证——否则密码保护分享"凭令牌下载"还要再输一次密码，令牌失效）。
 func (s *Service) GetFileWithUsage(ctx context.Context, code, password, viewerIP string, authedByToken bool) (*model.FileCode, error) {
@@ -591,7 +591,7 @@ func (s *Service) GetFileWithUsage(ctx context.Context, code, password, viewerIP
 }
 
 // RecordViewerAndNotify 记录取件人 + 给 owner 发通知。
-//   - viewerIP: 取件人 IP（由 handler 从 c.ClientIP() 注入）
+//   - viewerIP: 取件人 IP（由 handler 从可信解析 middleware.ClientIP(c) 注入）
 //   - viewerDetail: 额外通知内容
 //
 // 通知去重：同 code 5 分钟内只通知一次（用 LastNotifiedAt 字段）。

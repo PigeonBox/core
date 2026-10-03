@@ -25,7 +25,9 @@ func AccessLog() app.HandlerFunc {
 
 		latency := time.Since(start)
 		status := c.Response.StatusCode()
-		ip := c.ClientIP()
+		// 可信解析(XFF 右向左跳过可信网段),与限流/身份同源;
+		// 不用 hertz c.ClientIP()(无私有网段门控,XFF 可伪造日志)
+		ip := ClientIP(c)
 
 		fields := []zap.Field{
 			zap.String("method", method),
