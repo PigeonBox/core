@@ -235,12 +235,16 @@ func HardDeleteUserShare(ctx context.Context, c *app.RequestContext) {
 	c.JSON(consts.StatusOK, map[string]interface{}{"code": 200, "message": "ok"})
 }
 
-// OpenAPISpec 返回 OpenAPI 3.0 规范（尝试多个路径）
+// OpenAPISpec 返回 OpenAPI 3.0 规范
 // GET /openapi.json
-// 路径说明：./static/openapi.json = server 镜像布局（/app/static，由 Dockerfile
-// 从 frontend 快照复制；拆分前单体时代的 ./backend/docs 路径在拆分后不存在，
-// 曾导致容器部署时前端 API 文档页的 Swagger UI 永远拉不到 spec）。
+// 主路径：bootstrap 在路由注册完成后由运行时路由表生成（openapi_gen.go），
+// 与实际注册路由零漂移。文件探测仅作兜底（./static/openapi.json = server
+// 镜像布局；保留以兼容外置 spec 的部署方式）。
 func OpenAPISpec(_ context.Context, c *app.RequestContext) {
+	if len(openapiSpecBytes) > 0 {
+		c.Data(consts.StatusOK, "application/json", openapiSpecBytes)
+		return
+	}
 	candidates := []string{
 		"./static/openapi.json",
 		"./docs/openapi.json",

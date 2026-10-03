@@ -672,6 +672,20 @@ func BootstrapWithOptions(configPath string, opts ...Option) (*server.Hertz, err
 	// 7. 注册自定义路由
 	customizedRegister(h)
 
+	// 8. 生成 openapi.json（运行时路由表 → 契约级骨架规范，根治快照漂移/容器 404）
+	routes := make([]customHandler.OpenAPIRoute, 0, len(h.Routes()))
+	for _, rt := range h.Routes() {
+		routes = append(routes, customHandler.OpenAPIRoute{Method: rt.Method, Path: rt.Path})
+	}
+	baseURL := ""
+	if cfg := conf.GetGlobalConfig(); cfg != nil {
+		baseURL = cfg.Server.BaseURL
+	}
+	customHandler.SetOpenAPISpecBytes(customHandler.BuildOpenAPISpec(routes, customHandler.SpecInfo{
+		Version: "1.1.0",
+		BaseURL: baseURL,
+	}))
+
 	logger.Info("Application bootstrap completed successfully")
 	return h, nil
 }
