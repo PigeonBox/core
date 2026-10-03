@@ -159,3 +159,28 @@ func TestListWithFilter_ExpiredOrEscape(t *testing.T) {
 }
 
 func boolPtr(b bool) *bool { return &b }
+
+func TestGetByHashAndSize_GovernanceFilter(t *testing.T) {
+	// 回归：秒传检索只命中 normal + 无密码的分享
+	newGovernanceTestDB(t)
+	repo := NewFileCodeRepository()
+	ctx := context.Background()
+
+	fixtures := []*model.FileCode{
+		{Code: "QOKAAAAA", FileHash: "h1", Size: 100, Status: model.StatusNormal},
+		{Code: "QBLKBBBB", FileHash: "h2", Size: 100, Status: model.StatusBlocked},
+		{Code: "QPWCCCCC", FileHash: "h3", Size: 100, Status: model.StatusNormal, RequireAuth: true, PasswordHash: "x"},
+	}
+	for _, f := range fixtures {
+		require.NoError(t, repo.Create(ctx, f))
+	}
+
+	fc, err := repo.GetByHashAndSize(ctx, "h1", 100)
+	assert.NoError(t, err)
+	assert.Equal(t, "QOKAAAAA", fc.Code)
+
+	_, err = repo.GetByHashAndSize(ctx, "h2", 100)
+	assert.Error(t, err, "blocked 分享不得作为秒传源")
+	_, err = repo.GetByHashAndSize(ctx, "h3", 100)
+	assert.Error(t, err, "密码分享不得作为秒传源")
+}

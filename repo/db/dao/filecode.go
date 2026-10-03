@@ -43,9 +43,16 @@ func (r *FileCodeRepository) GetByCode(ctx context.Context, code string) (*model
 	return &fileCode, nil
 }
 
+// GetByHashAndSize 秒传检索：仅命中"正常态 + 无密码"的分享。
+// 回归（2026-10-03）：不过滤 status 会把 blocked/待审分享当秒传源（存在性
+// oracle + 假成功 UX）；不过滤 require_auth 会让持同哈希文件者借令牌穿透
+// 原分享的密码校验。
 func (r *FileCodeRepository) GetByHashAndSize(ctx context.Context, fileHash string, size int64) (*model.FileCode, error) {
 	var fileCode model.FileCode
-	err := r.db().WithContext(ctx).Where("file_hash = ? AND size = ? AND deleted_at IS NULL", fileHash, size).First(&fileCode).Error
+	err := r.db().WithContext(ctx).
+		Where("file_hash = ? AND size = ? AND deleted_at IS NULL AND status = ? AND require_auth = ?",
+			fileHash, size, model.StatusNormal, false).
+		First(&fileCode).Error
 	if err != nil {
 		return nil, err
 	}
@@ -156,7 +163,9 @@ func (r *FileCodeRepository) CheckCodeExists(ctx context.Context, code string, e
 
 func (r *FileCodeRepository) GetByHash(ctx context.Context, fileHash string, fileSize int64) (*model.FileCode, error) {
 	var existingFile model.FileCode
-	err := r.db().WithContext(ctx).Where("file_hash = ? AND size = ? AND deleted_at IS NULL", fileHash, fileSize).
+	err := r.db().WithContext(ctx).
+		Where("file_hash = ? AND size = ? AND deleted_at IS NULL AND status = ? AND require_auth = ?",
+			fileHash, fileSize, model.StatusNormal, false).
 		First(&existingFile).Error
 	if err != nil {
 		return nil, err
