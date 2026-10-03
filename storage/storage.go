@@ -400,6 +400,38 @@ func (s *StorageService) SaveFile(ctx context.Context, file *multipart.FileHeade
 	}, nil
 }
 
+// SaveStream 流式写入 reader 到相对路径（presign 中转大文件使用，避免整文件进内存）。
+// expectedSize > 0 时远端驱动按确切 size 写入；返回实际写入字节数。
+// 路径防御与 SaveBytes 一致（相对 DataPath，逃逸即拒绝）。
+func (s *StorageService) SaveStream(ctx context.Context, savePath string, r io.Reader, expectedSize int64) (int64, error) {
+	cfg, op := s.current()
+	root := filepath.Clean(cfg.DataPath)
+	clean := filepath.Clean(filepath.Join(root, savePath))
+	rel, err := filepath.Rel(root, clean)
+	if err != nil || clean == root || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return 0, fmt.Errorf("illegal save path")
+	}
+	if op != nil {
+		if expectedSize <= 0 {
+			return 0, fmt.Errorf("remote backend requires exact size")
+		}
+		if err := op.WriteStream(ctx, savePath, r, expectedSize); err != nil {
+			return 0, err
+		}
+		return expectedSize, nil
+	}
+	fullPath := filepath.Join(root, savePath)
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+		return 0, err
+	}
+	dst, err := os.Create(fullPath)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = dst.Close() }()
+	return io.Copy(dst, r)
+}
+
 // SaveBytes 写入内存数据到相对路径（presign 直传使用）。
 // 路径防御收敛在此处：相对 DataPath 计算清洗后的偏移，逃逸（../）即拒绝。
 func (s *StorageService) SaveBytes(ctx context.Context, savePath string, data []byte) error {

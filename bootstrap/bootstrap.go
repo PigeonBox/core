@@ -560,14 +560,22 @@ func BootstrapWithOptions(configPath string, opts ...Option) (*server.Hertz, err
 	if port == 0 {
 		port = 12345
 	}
-	// 上传 body 上限（应用层强制，覆盖 Hertz 默认无限制）
+	// 上传 body 上限（应用层强制，覆盖 Hertz 默认无限制）。
+	// 配置了 max_file_size（整文件上限，presign 中转同样过 HTTP 层）时取较大值
+	// ——修复：local/webdav 下 ≥100MB 走 presign 中转被全局 10MB 拦成 413，
+	// 大文件上传链路整条不通（前端 ≥100MB 只走 presign 且无 chunk 回退）。
 	uploadSize := int(config.Upload.UploadSize)
 	if uploadSize <= 0 {
 		uploadSize = 10 * 1024 * 1024 // 默认 10MB
 	}
+	if maxFile := int(config.Upload.MaxFileSize); maxFile > uploadSize {
+		uploadSize = maxFile
+	}
 	h := server.New(
 		server.WithHostPorts(fmt.Sprintf("%s:%d", config.Server.Host, port)),
 		server.WithMaxRequestBodySize(uploadSize),
+		// 请求体流式透传：presign 中转（upload-direct）按流落盘，大文件不整体进内存
+		server.WithStreamBody(true),
 	)
 
 	// 可观测性：初始化 Prometheus 指标（在注册中间件前完成）

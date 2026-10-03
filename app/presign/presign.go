@@ -19,6 +19,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/filescodebox/core/storage"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -70,6 +72,7 @@ const (
 // 单方法接口避免反向依赖存储包，也保持既有 StorageInterface/mock 不动。
 type StorageWriter interface {
 	SaveBytes(ctx context.Context, savePath string, data []byte) error
+	DeleteFile(ctx context.Context, filePath string) error
 }
 
 // ObjectStore 真预签名直传能力（由 *storage.StorageService 实现）。
@@ -331,7 +334,7 @@ func (s *Service) createShareRecord(ctx context.Context, meta *InitMeta, ownerIP
 	}
 
 	req := &share.ShareFileReq{
-		Channel: "presign",
+		Channel:      "presign",
 		FilePath:     meta.ObjectKey,
 		Size:         meta.FileSize,
 		Text:         utils.SanitizeFileName(meta.FileName),
@@ -390,9 +393,11 @@ func (s *Service) GetMeta(ctx context.Context, uploadID string) (*InitMeta, erro
 	return &meta, nil
 }
 
-// UploadDirect 处理预签名直传：校验 token → 写文件到 data 目录（meta.ObjectKey 路径）。
+// UploadDirect 处理预签名直传：校验 token → 流式写文件（meta.ObjectKey 路径）。
 // 由 bootstrap 注册的 PUT /api/v1/presign/upload-direct/:uploadID 端点调用。
-func (s *Service) UploadDirect(ctx context.Context, uploadID, token string, data []byte) error {
+// body 流式消费（配合 hertz StreamRequestBody），大文件不再整体进内存；
+// 写入字节数必须与 init 申报的 meta.FileSize 完全一致，超出即拒并清理。
+func (s *Service) UploadDirect(ctx context.Context, uploadID, token string, body io.Reader, declaredSize int64) error {
 	// 1. 读 meta
 	meta, err := s.GetMeta(ctx, uploadID)
 	if err != nil {
@@ -408,17 +413,31 @@ func (s *Service) UploadDirect(ctx context.Context, uploadID, token string, data
 	if !hmac.Equal([]byte(expected), []byte(token)) {
 		return ErrTokenInvalid
 	}
-	// 4. 校验大小（body 实际大小 vs meta 声明）
-	if err := utils.CheckUploadSize(int64(len(data)), utils.GetMaxUploadSize()); err != nil {
-		return fmt.Errorf("文件过大")
+	if meta.FileSize <= 0 {
+		return fmt.Errorf("文件大小必须大于0")
 	}
-	// 5. 写入存储：注入了存储服务时走统一分派（路径防御已收敛在 SaveBytes，
-	// local/s3/webdav 一致）；未注入时保留本地盘直写（纯单测/降级形态）。
-	if s.storage != nil {
+	// 4. 流式写入 + 内容哈希：超出申报大小立即截断报错（防多传绕过大小校验）
+	hasher := sha256.New()
+	limited := io.LimitReader(body, meta.FileSize+1)
+	tee := io.TeeReader(limited, hasher)
+
+	var written int64
+	if ss, ok := s.storage.(*storage.StorageService); ok {
+		if written, err = ss.SaveStream(ctx, meta.ObjectKey, tee, meta.FileSize); err != nil {
+			return fmt.Errorf("write file failed: %w", err)
+		}
+	} else if s.storage != nil {
+		// 其他 StorageInterface 实现（无流式能力）：退化为缓冲写
+		data, rerr := io.ReadAll(tee)
+		if rerr != nil {
+			return fmt.Errorf("read body failed: %w", rerr)
+		}
+		written = int64(len(data))
 		if err := s.storage.SaveBytes(ctx, meta.ObjectKey, data); err != nil {
 			return fmt.Errorf("write file failed: %w", err)
 		}
 	} else {
+		// 未注入存储：本地盘直写（纯单测/降级形态）
 		dataPath := "./data"
 		targetPath := filepath.Join(dataPath, meta.ObjectKey)
 		if !filepath.IsLocal(filepath.Clean(targetPath)) ||
@@ -429,14 +448,28 @@ func (s *Service) UploadDirect(ctx context.Context, uploadID, token string, data
 		if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
 			return fmt.Errorf("create dir failed: %w", err)
 		}
-		if err := os.WriteFile(targetPath, data, 0o644); err != nil {
+		f, ferr := os.Create(targetPath)
+		if ferr != nil {
+			return fmt.Errorf("write file failed: %w", ferr)
+		}
+		written, err = io.Copy(f, tee)
+		_ = f.Close()
+		if err != nil {
 			return fmt.Errorf("write file failed: %w", err)
 		}
 	}
-	// 6. 计算内容 SHA-256 并回写 meta（Complete 时写入 file_codes.file_hash）
-	fileHash := utils.HashBytes(data)
-	meta.FileHash = fileHash
-	if updated, err := json.Marshal(meta); err == nil {
+	if written != meta.FileSize {
+		// 大小不符：清掉半成品
+		if s.storage != nil {
+			_ = s.storage.DeleteFile(ctx, meta.ObjectKey)
+		} else {
+			_ = os.Remove(filepath.Join("./data", meta.ObjectKey))
+		}
+		return fmt.Errorf("文件大小与申报不符（实际 %d / 申报 %d）", written, meta.FileSize)
+	}
+	// 5. 内容 SHA-256 回写 meta（Complete 时写入 file_codes.file_hash）
+	meta.FileHash = hex.EncodeToString(hasher.Sum(nil))
+	if updated, merr := json.Marshal(meta); merr == nil {
 		remaining := time.Until(meta.ExpireAt)
 		if remaining > 0 {
 			s.rdb.Set(ctx, fmt.Sprintf(keyUploadMeta, uploadID), updated, remaining)

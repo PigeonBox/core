@@ -77,6 +77,15 @@ func TestReconcileOrphans(t *testing.T) {
 	orphanChunk := filepath.Join(root, "chunks", "orphan-upload")
 	require.NoError(t, os.MkdirAll(orphanChunk, 0o755))
 
+	// mtime 宽限（24h）下的对账只清"足够老"的孤儿——把孤儿文件/目录时间回拨 48h
+	old := time.Now().Add(-48 * time.Hour)
+	past := func(paths ...string) {
+		for _, p := range paths {
+			require.NoError(t, os.Chtimes(p, old, old))
+		}
+	}
+	past(orphanAbs, orphanChunk)
+
 	j := NewJanitor(svc, 90)
 	scanned, removed, err := j.ReconcileOrphans(ctx)
 	require.NoError(t, err)
@@ -93,6 +102,15 @@ func TestReconcileOrphans(t *testing.T) {
 	assert.NoError(t, err, "活跃分片目录应保留")
 	_, err = os.Stat(orphanChunk)
 	assert.True(t, os.IsNotExist(err), "孤儿分片目录应删除")
+
+	// 新鲜孤儿（mtime 在宽限期内）放过不删
+	freshAbs := filepath.Join(root, "uploads/2026/10/03/fresh-orphan.txt")
+	require.NoError(t, os.WriteFile(freshAbs, []byte("fresh"), 0o644))
+	_, removed2, err := j.ReconcileOrphans(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 0, removed2, "宽限期内的文件不得删除")
+	_, err = os.Stat(freshAbs)
+	assert.NoError(t, err, "新鲜孤儿应保留")
 }
 
 func TestCleanupLogs(t *testing.T) {

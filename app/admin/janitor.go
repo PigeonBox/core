@@ -76,7 +76,12 @@ func (j *Janitor) ReconcileOrphans(ctx context.Context) (int, int, error) {
 		activeChunks[id] = true
 	}
 
-	// 3. 遍历物理目录（只看 uploads/ 与 chunks/ 两个受管子树）
+	// 3. 遍历物理目录（只看 uploads/ 与 chunks/ 两个受管子树）。
+	// mtime 宽限期（默认 24h）：在途 presign 直传/新建分片文件的 DB 引用要等
+	// Complete 才落库，先取快照再扫盘存在竞态窗口——只清理"无引用且足够老"的
+	// 文件，正在写入/刚写完的文件一律放过（回归：曾误删在途 presign 直传）。
+	grace := 24 * time.Hour
+	olderThan := time.Now().Add(-grace)
 	scanned, removed := 0, 0
 	cleanFile := func(path string) {
 		scanned++
@@ -87,6 +92,9 @@ func (j *Janitor) ReconcileOrphans(ctx context.Context) (int, int, error) {
 		rel = filepath.ToSlash(filepath.Clean(rel))
 		if referenced[rel] {
 			return
+		}
+		if fi, serr := os.Stat(path); serr == nil && fi.ModTime().After(olderThan) {
+			return // 太新，可能是正在上传的文件
 		}
 		if err := j.svc.DeleteFile(ctx, rel); err != nil {
 			logger.Warn("orphan file delete failed", zap.String("path", rel), zap.Error(err))
@@ -114,6 +122,9 @@ func (j *Janitor) ReconcileOrphans(ctx context.Context) (int, int, error) {
 				continue
 			}
 			dir := filepath.Join(chunksDir, e.Name())
+			if fi, serr := os.Stat(dir); serr == nil && fi.ModTime().After(olderThan) {
+				continue // 太新，可能是活跃会话
+			}
 			if err := os.RemoveAll(dir); err != nil {
 				logger.Warn("orphan chunk dir delete failed", zap.String("dir", dir), zap.Error(err))
 				continue

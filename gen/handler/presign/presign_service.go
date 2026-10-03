@@ -3,9 +3,11 @@
 package presign
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"strings"
 
 	"github.com/cloudwego/hertz/pkg/app"
@@ -109,9 +111,9 @@ func Init(ctx context.Context, c *app.RequestContext) {
 	if fileHash != "" {
 		if qu, err := getService().CheckQuickUpload(ctx, fileHash, req.FileSize); err == nil && qu != nil {
 			resp.Success(c, map[string]interface{}{
-				"upload_id":      "",
-				"is_quick":       true,
-				"existed":        true,
+				"upload_id":  "",
+				"is_quick":   true,
+				"existed":    true,
 				"share_code": qu.ShareCode,
 				"share_url":  qu.FullShareURL,
 				// 安全修复（2026-10-03）：不再对秒传命中的原分享签发下载令牌——
@@ -298,8 +300,21 @@ func UploadDirect(ctx context.Context, c *app.RequestContext) {
 		resp.NewErrorWithMessage(c, errcode.CodeInvalidParam, "X-Upload-Token required")
 		return
 	}
-	data := c.Request.Body()
-	if err := getService().UploadDirect(ctx, uploadID, token, data); err != nil {
+	// 流式消费请求体（bootstrap 开启 StreamRequestBody 时零整文件缓冲；
+	// 未开启时退化为整读——行为与旧版一致）
+	var body io.Reader
+	declaredSize := int64(-1)
+	if c.Request.IsBodyStream() {
+		body = c.Request.BodyStream()
+	} else {
+		b := c.Request.Body()
+		body = bytes.NewReader(b)
+		declaredSize = int64(len(b))
+	}
+	if cl := c.Request.Header.ContentLength(); cl > 0 {
+		declaredSize = int64(cl)
+	}
+	if err := getService().UploadDirect(ctx, uploadID, token, body, declaredSize); err != nil {
 		switch {
 		case errors.Is(err, presignapp.ErrUploadNotFound):
 			resp.NewErrorByCode(c, errcode.CodeNotFound)
