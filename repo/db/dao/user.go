@@ -111,6 +111,16 @@ func (r *UserRepository) GetByEmail(ctx context.Context, email string) (*model.U
 	return &user, nil
 }
 
+// GetByOIDCSub 按 OIDC subject 精确匹配（P2 SSO）
+func (r *UserRepository) GetByOIDCSub(ctx context.Context, sub string) (*model.User, error) {
+	var user model.User
+	err := r.db().WithContext(ctx).Where("oidc_sub = ?", sub).First(&user).Error
+	if err != nil {
+		return nil, err
+	}
+	return &user, nil
+}
+
 func (r *UserRepository) List(ctx context.Context, page, pageSize int) ([]*model.User, int64, error) {
 	var users []*model.User
 	var total int64

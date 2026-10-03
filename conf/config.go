@@ -50,13 +50,34 @@ type ModerationConfig struct {
 	BlockedWords []string `mapstructure:"blocked_words"`
 	// BlockAction 命中处置策略：reject（默认，直接拒绝）| pending（建分享后置待审，进管理端队列）
 	BlockAction string `mapstructure:"block_action"`
+	// ClamAV 文件病毒扫描（clamd INSTREAM；启用后文件侧审核由扫描器接管）
+	ClamAV ClamAVConfig `mapstructure:"clamav"`
 }
 
-// NotifyConfig 通知配置（站内信 + 外部 Webhook 渠道）
+// ClamAVConfig clamd 病毒扫描配置（默认关闭；详见 app/moderation/clamav.go）
+type ClamAVConfig struct {
+	Enabled        bool   `mapstructure:"enabled"`         // env: FCB_MODERATION_CLAMAV_ENABLED
+	Addr           string `mapstructure:"addr"`            // 默认 localhost:3310；env: FCB_MODERATION_CLAMAV_ADDR
+	TimeoutSeconds int    `mapstructure:"timeout_seconds"` // 单文件扫描超时，默认 60
+	MaxScanBytes   int64  `mapstructure:"max_scan_bytes"`  // 超过跳过扫描，默认 512MB
+}
+
+// NotifyConfig 通知配置（站内信 + 外部 Webhook + SMTP 邮件渠道）
 type NotifyConfig struct {
 	// WebhookURL 外部推送地址：notify.created 事件以 JSON POST 推送（空 = 禁用）。
 	// env: FCB_WEBHOOK_URL
 	WebhookURL string `mapstructure:"webhook_url"`
+	// SMTP 邮件通知（站内信创建后对登记邮箱异步补发；空 host = 禁用）
+	SMTP SMTPConfig `mapstructure:"smtp"`
+}
+
+// SMTPConfig SMTP 邮件配置（P2；默认禁用）
+type SMTPConfig struct {
+	Host     string `mapstructure:"host"`     // env: FCB_SMTP_HOST
+	Port     int    `mapstructure:"port"`     // 465=隐式 TLS；25/587=STARTTLS；env: FCB_SMTP_PORT
+	Username string `mapstructure:"username"` // env: FCB_SMTP_USERNAME
+	Password string `mapstructure:"password"` // env: FCB_SMTP_PASSWORD
+	From     string `mapstructure:"from"`     // 发件地址，空 = 取 Username；env: FCB_SMTP_FROM
 }
 
 // SetGlobalConfig 设置全局配置
@@ -166,6 +187,15 @@ type UploadConfig struct {
 	AnonymousDailyCount int64 `mapstructure:"anonymous_daily_count"`
 	// AnonymousDailyBytes 匿名上传 per-IP 日配额（字节），0 = 不限。
 	AnonymousDailyBytes int64 `mapstructure:"anonymous_daily_bytes"`
+	// LocalImport NAS 本地文件免上传导入（P3：服务器本地白名单目录内的文件
+	// 直接登记为分享，服务端拷贝入存储；默认关闭）
+	LocalImport LocalImportConfig `mapstructure:"local_import"`
+}
+
+// LocalImportConfig 本地文件导入配置
+type LocalImportConfig struct {
+	Enabled bool     `mapstructure:"enabled"` // env: FCB_LOCAL_IMPORT_ENABLED
+	Roots   []string `mapstructure:"roots"`   // 允许导入的绝对目录白名单；env: FCB_LOCAL_IMPORT_ROOTS（逗号分隔）
 }
 
 // DownloadConfig 下载配置
@@ -263,7 +293,7 @@ func (c *AppConfiguration) IsProduction() bool {
 	return c.App.Production || c.Server.Mode == "release"
 }
 
-// SecurityConfig 安全相关配置（CORS / 可信代理 / 下载令牌 / 防爆破锁定 / SSRF / API Key）
+// SecurityConfig 安全相关配置（CORS / 可信代理 / 下载令牌 / 防爆破锁定 / SSRF / API Key / OIDC）
 type SecurityConfig struct {
 	CORS           CORSConfig          `mapstructure:"cors"`
 	TrustedProxies []string            `mapstructure:"trusted_proxies"` // 可信代理 CIDR 列表，如 ["10.0.0.0/8","173.245.48.0/20"]
@@ -271,6 +301,18 @@ type SecurityConfig struct {
 	Lockout        LockoutConfig       `mapstructure:"lockout"`
 	SSRF           SSRFConfig          `mapstructure:"ssrf"`
 	APIToken       APITokenConfig      `mapstructure:"api_token"`
+	OIDC           OIDCConfig          `mapstructure:"oidc"`
+}
+
+// OIDCConfig OIDC 单点登录配置（P2；默认关闭。启用需 issuer/client_id/client_secret，
+// 回调地址 <base_url>/api/v1/user/oidc/callback）
+type OIDCConfig struct {
+	Enabled          bool   `mapstructure:"enabled"`            // env: FCB_OIDC_ENABLED
+	Issuer           string `mapstructure:"issuer"`             // env: FCB_OIDC_ISSUER
+	ClientID         string `mapstructure:"client_id"`          // env: FCB_OIDC_CLIENT_ID
+	ClientSecret     string `mapstructure:"client_secret"`      // env: FCB_OIDC_CLIENT_SECRET
+	Scopes           string `mapstructure:"scopes"`             // 默认 "openid profile email"；env: FCB_OIDC_SCOPES
+	FrontendCallback string `mapstructure:"frontend_callback"`  // 默认 /#/oidc/callback
 }
 
 // APITokenConfig 用户级 API Key（个人访问令牌，fcb_sk_）。

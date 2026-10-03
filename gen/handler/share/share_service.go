@@ -25,6 +25,7 @@ import (
 	"github.com/filescodebox/core/pkg/security"
 	"github.com/filescodebox/core/pkg/transfer"
 	"github.com/filescodebox/core/pkg/utils"
+	"github.com/filescodebox/core/repo/db/model"
 	"github.com/filescodebox/core/storage"
 	"github.com/google/uuid"
 )
@@ -107,8 +108,13 @@ func ShareText(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
-	// XSS 防护：对文本内容进行 HTML 转义
-	safeText := html.EscapeString(req.Text)
+	// XSS 防护：对文本内容进行 HTML 转义。
+	// E2E 密文分享跳过转义（base64 密文无需转义，转义会破坏解密）
+	encrypted := c.DefaultPostForm("encrypted", "false") == "true"
+	safeText := req.Text
+	if !encrypted {
+		safeText = html.EscapeString(req.Text)
+	}
 
 	// 获取用户ID（如果有）
 	var userID *uint
@@ -154,7 +160,15 @@ func ShareText(ctx context.Context, c *app.RequestContext) {
 		passwordHash = hash
 	}
 
-	// 调用 service（使用转义后的安全文本）
+	// 自定义取件码（P3）：仅登录用户可指定（防匿名抢注）
+	customCode := ""
+	if userID != nil {
+		if v := c.DefaultPostForm("custom_code", ""); v != "" {
+			customCode = v
+		}
+	}
+
+	// 调用 service（使用转义后的安全文本；E2E 密文跳过转义，审核由 service 层跳过）
 	result, err := getShareService().ShareTextWithAuth(
 		ctx,
 		safeText,
@@ -164,6 +178,8 @@ func ShareText(ctx context.Context, c *app.RequestContext) {
 		passwordHash,
 		userID,
 		ownerIP,
+		encrypted,
+		customCode,
 	)
 	if err != nil {
 		resp.NewTypedError(c, err) // typed error（如审核 30013）按业务码透传
@@ -267,21 +283,25 @@ func ShareFile(ctx context.Context, c *app.RequestContext) {
 
 	// 4.5 内容安全校验：黑名单 + 白名单优先 + 魔数（修复：直传分享此前完全绕过
 	// 扩展名检查，与 chunk/presign 通道防护不一致；魔数拦截"改扩展名"伪装）
+	// E2E 密文分享跳过魔数复检（密文头是随机字节，必然不过魔数表）
+	encryptedEarly := c.DefaultPostForm("encrypted", "false") == "true"
 	var head []byte
-	if f, err := file.Open(); err == nil {
-		buf := make([]byte, 512)
-		n, rerr := io.ReadFull(f, buf)
-		if rerr == nil || rerr == io.ErrUnexpectedEOF {
-			head = buf[:n]
+	if !encryptedEarly {
+		if f, err := file.Open(); err == nil {
+			buf := make([]byte, 512)
+			n, rerr := io.ReadFull(f, buf)
+			if rerr == nil || rerr == io.ErrUnexpectedEOF {
+				head = buf[:n]
+			}
+			_ = f.Close()
 		}
-		_ = f.Close()
-	}
-	if err := utils.CheckUploadContent(originalFilename, head); err != nil {
-		c.JSON(consts.StatusBadRequest, map[string]interface{}{
-			"code":    errcode.CodeFileTypeDenied,
-			"message": err.Error(),
-		})
-		return
+		if err := utils.CheckUploadContent(originalFilename, head); err != nil {
+			c.JSON(consts.StatusBadRequest, map[string]interface{}{
+				"code":    errcode.CodeFileTypeDenied,
+				"message": err.Error(),
+			})
+			return
+		}
 	}
 
 	// 5. 生成存储路径（按日期分目录）
@@ -348,7 +368,13 @@ func ShareFile(ctx context.Context, c *app.RequestContext) {
 		passwordHash = hash
 	}
 
-	// 11. 构建分享请求
+	// 自定义取件码（P3）：仅登录用户可指定（防匿名抢注）
+	customCode := ""
+	if userID != nil {
+		customCode = c.DefaultPostForm("custom_code", "")
+	}
+
+	// 11. 构建分享请求（encrypted 于 4.5 处解析；E2E 密文分享）
 	shareReq := &shareService.ShareFileReq{
 		Channel:      "direct",
 		FilePath:     result.FilePath,
@@ -362,6 +388,8 @@ func ShareFile(ctx context.Context, c *app.RequestContext) {
 		UploadType:   uploadType,
 		OwnerIP:      ownerIP,
 		FileHash:     result.FileHash,
+		Encrypted:    encryptedEarly,
+		CustomCode:   customCode,
 	}
 
 	// 12. 调用 service 创建分享记录
@@ -625,12 +653,30 @@ func GetShare(ctx context.Context, c *app.RequestContext) {
 		"url":          downloadURL, // 修复：原 /download/:code 无对应路由，落到 SPA fallback
 		"download_url": downloadURL,
 		"has_password": fileCode.RequireAuth,
+		"encrypted":    fileCode.Encrypted, // E2E：前端需以链接 #fragment 中的密钥解密
 	}
 	if tk := security.GenerateDownloadToken(fileCode.Code); tk != "" {
 		data["token"] = tk
 	}
 	if fileCode.ExpiredAt != nil {
 		data["expire_time"] = fileCode.ExpiredAt.Format("2006-01-02 15:04:05")
+	}
+
+	// 多文件列表（P0 多文件）：非文本分享附带 files 数组（含单文件，前端统一渲染）；
+	// is_multi 标记文件数 >1（前端显示"打包下载"）。查询失败静默省略（不阻断取件）。
+	if !shareService.IsTextShare(fileCode) {
+		if items, lerr := getShareService().ListShareFiles(ctx, code); lerr == nil && len(items) > 0 {
+			files := make([]map[string]interface{}, 0, len(items))
+			for _, it := range items {
+				files = append(files, map[string]interface{}{
+					"id":   it.ID,
+					"name": it.Name,
+					"size": it.Size,
+				})
+			}
+			data["files"] = files
+			data["is_multi"] = len(items) > 1
+		}
 	}
 
 	c.JSON(consts.StatusOK, map[string]interface{}{
@@ -655,6 +701,96 @@ func s3DirectDownloadEnabled() bool {
 	return cfg != nil && cfg.Download.S3DirectDownload
 }
 
+// authorizeAndCharge 下载链路公共鉴权段（DownloadFile / ZipDownload 共用）：
+// 下载闸门 → 防爆破锁定 → 下载令牌校验 → 密码校验（GetFileWithUsage）→
+// 原子扣减剩余次数。失败时已写入错误响应并返回 (nil, false)；
+// 成功返回分享记录（已扣次数，调用方无须再扣）。
+func authorizeAndCharge(ctx context.Context, c *app.RequestContext, code, password, token string) (*model.FileCode, bool) {
+	// 下载闸门：download.require_login（服务端 enforce）
+	var dlUserID *uint
+	if v, ok := middleware.UserIDFromContext(ctx); ok {
+		dlUserID = &v
+	}
+	if err := gate.CheckDownloadLogin(dlUserID); err != nil {
+		resp.NewTypedError(c, err)
+		return nil, false
+	}
+
+	// 失败锁定检查（防密码爆破）
+	lock := middleware.GetDefaultLockout()
+	lockKey := middleware.FormatLockKey("download", middleware.ClientIP(c), code)
+	if remain, locked := lock.CheckLocked(ctx, lockKey); locked {
+		c.JSON(consts.StatusTooManyRequests, map[string]interface{}{
+			"code":    errcode.CodeTooManyAttempts,
+			"message": fmt.Sprintf("尝试过于频繁，已临时锁定，请 %d 秒后重试", remain),
+		})
+		return nil, false
+	}
+
+	// 下载令牌校验（security.download_token.enabled，默认开）：
+	// 取件查询/匿名取件接口下发时间窗 HMAC 令牌，恒时比较校验。
+	// 密码保护分享：正确密码或有效令牌任一即可（令牌由密码校验通过后的
+	// 取件查询签发，等价于已认证——回归：此前持有效令牌下载仍被要求密码）。
+	tokenEnabled := downloadTokenEnabled()
+	if tokenEnabled && token == "" && password == "" {
+		c.JSON(consts.StatusUnauthorized, map[string]interface{}{
+			"code":    errcode.CodeDownloadToken,
+			"message": "缺少下载令牌，请重新获取取件信息",
+		})
+		return nil, false
+	}
+	tokenValid := tokenEnabled && token != "" && security.VerifyDownloadToken(code, token)
+	if tokenEnabled && token != "" && !tokenValid {
+		c.JSON(consts.StatusUnauthorized, map[string]interface{}{
+			"code":    errcode.CodeDownloadToken,
+			"message": "下载令牌无效或已过期，请重新获取取件信息",
+		})
+		return nil, false
+	}
+
+	// 获取分享内容并校验密码（viewer IP 由 handler 注入，可信代理解析）
+	viewerIP := middleware.ClientIP(c)
+	fileCode, err := getShareService().GetFileWithUsage(ctx, code, password, viewerIP, tokenValid)
+	if err != nil {
+		var blocked *shareService.ShareBlockedError
+		if errors.As(err, &blocked) {
+			resp.NewTypedError(c, blocked)
+			return nil, false
+		}
+		if err.Error() == "密码错误" {
+			_, _ = lock.RecordFailure(ctx, lockKey)
+			c.JSON(consts.StatusUnauthorized, map[string]interface{}{
+				"code":    errcode.CodeSharePasswordWrong,
+				"message": "密码错误",
+				"data": map[string]interface{}{
+					"has_password": true,
+				},
+			})
+			return nil, false
+		}
+		c.JSON(consts.StatusNotFound, map[string]interface{}{
+			"code":    404,
+			"message": "分享不存在或已过期",
+		})
+		return nil, false
+	}
+	lock.Reset(ctx, lockKey)
+
+	// 原子扣减下载次数（DB 为准）
+	if ok, uerr := getShareService().UpdateFileUsage(ctx, code); uerr != nil {
+		// 记录错误但不阻止下载
+		fmt.Printf("更新下载次数失败: %v\n", uerr)
+	} else if !ok {
+		// 次数已耗尽（并发场景下可能在 GetFileWithUsage 之后耗尽）
+		c.JSON(consts.StatusForbidden, map[string]interface{}{
+			"code":    403,
+			"message": "取件次数已用完",
+		})
+		return nil, false
+	}
+	return fileCode, true
+}
+
 // DownloadFile 下载分享文件
 // @router /share/download [GET]
 func DownloadFile(ctx context.Context, c *app.RequestContext) {
@@ -670,88 +806,11 @@ func DownloadFile(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
-	// 下载闸门：download.require_login（服务端 enforce）
-	var dlUserID *uint
-	if v, ok := middleware.UserIDFromContext(ctx); ok {
-		dlUserID = &v
-	}
-	if err := gate.CheckDownloadLogin(dlUserID); err != nil {
-		resp.NewTypedError(c, err)
+	fileCode, ok := authorizeAndCharge(ctx, c, code, password, token)
+	if !ok {
 		return
 	}
-
-	// 失败锁定检查（防密码爆破）
-	lock := middleware.GetDefaultLockout()
-	lockKey := middleware.FormatLockKey("download", middleware.ClientIP(c), code)
-	if remain, locked := lock.CheckLocked(ctx, lockKey); locked {
-		c.JSON(consts.StatusTooManyRequests, map[string]interface{}{
-			"code":    errcode.CodeTooManyAttempts,
-			"message": fmt.Sprintf("尝试过于频繁，已临时锁定，请 %d 秒后重试", remain),
-		})
-		return
-	}
-
-	// 下载令牌校验（security.download_token.enabled，默认开）：
-	// 取件查询/匿名取件接口下发时间窗 HMAC 令牌，恒时比较校验。
-	// 密码保护分享：正确密码或有效令牌任一即可（令牌由密码校验通过后的
-	// 取件查询签发，等价于已认证——回归：此前持有效令牌下载仍被要求密码）。
-	tokenEnabled := downloadTokenEnabled()
-	if tokenEnabled && token == "" && password == "" {
-		c.JSON(consts.StatusUnauthorized, map[string]interface{}{
-			"code":    errcode.CodeDownloadToken,
-			"message": "缺少下载令牌，请重新获取取件信息",
-		})
-		return
-	}
-	tokenValid := tokenEnabled && token != "" && security.VerifyDownloadToken(code, token)
-	if tokenEnabled && token != "" && !tokenValid {
-		c.JSON(consts.StatusUnauthorized, map[string]interface{}{
-			"code":    errcode.CodeDownloadToken,
-			"message": "下载令牌无效或已过期，请重新获取取件信息",
-		})
-		return
-	}
-
-	// 获取分享内容并校验密码（viewer IP 由 handler 注入，可信代理解析）
 	viewerIP := middleware.ClientIP(c)
-	fileCode, err := getShareService().GetFileWithUsage(ctx, code, password, viewerIP, tokenValid)
-	if err != nil {
-		var blocked *shareService.ShareBlockedError
-		if errors.As(err, &blocked) {
-			resp.NewTypedError(c, blocked)
-			return
-		}
-		if err.Error() == "密码错误" {
-			_, _ = lock.RecordFailure(ctx, lockKey)
-			c.JSON(consts.StatusUnauthorized, map[string]interface{}{
-				"code":    errcode.CodeSharePasswordWrong,
-				"message": "密码错误",
-				"data": map[string]interface{}{
-					"has_password": true,
-				},
-			})
-			return
-		}
-		c.JSON(consts.StatusNotFound, map[string]interface{}{
-			"code":    404,
-			"message": "分享不存在或已过期",
-		})
-		return
-	}
-	lock.Reset(ctx, lockKey)
-
-	// 原子扣减下载次数（DB 为准）
-	if ok, err := getShareService().UpdateFileUsage(ctx, code); err != nil {
-		// 记录错误但不阻止下载
-		fmt.Printf("更新下载次数失败: %v\n", err)
-	} else if !ok {
-		// 次数已耗尽（并发场景下可能在 GetFileWithUsage 之后耗尽）
-		c.JSON(consts.StatusForbidden, map[string]interface{}{
-			"code":    403,
-			"message": "取件次数已用完",
-		})
-		return
-	}
 
 	// 如果是文本分享，直接返回文本（IsTextShare = Text 非空且无文件路径；
 	// 文件分享的原始文件名也存在 Text 字段，不能仅凭 Text 判定——回归 P0）
@@ -759,6 +818,38 @@ func DownloadFile(ctx context.Context, c *app.RequestContext) {
 		c.Header("Content-Type", "text/plain; charset=utf-8")
 		c.Header("Content-Disposition", `inline; filename="text.txt"`)
 		c.SetBodyString(fileCode.Text)
+		return
+	}
+
+	// 多文件分享下载入口（P0 多文件）：
+	//   ?file=<子文件ID> → 单文件流；未指定且文件数 >1 → 直接流式 zip 打包
+	var fileID uint
+	if raw := c.Query("file"); raw != "" {
+		if v, perr := strconv.ParseUint(raw, 10, 64); perr == nil {
+			fileID = uint(v)
+		}
+	}
+	if fileID > 0 {
+		if streamChildFile(ctx, c, code, fileID, viewerIP) {
+			return
+		}
+		c.JSON(consts.StatusNotFound, map[string]interface{}{
+			"code":    404,
+			"message": "文件不存在或不属于该分享",
+		})
+		return
+	}
+	if items, lerr := getShareService().ListShareFiles(ctx, code); lerr == nil && len(items) > 1 {
+		// 多文件：跳转 zip 端点（鉴权段已在上文完成并扣减次数，zip 端点用
+		// 免重复扣减的内部直通：此处直接流式打包，不再 302，避免浏览器二次请求
+		// 丢失鉴权参数）。zip 组装失败回退错误响应。
+		if streamShareZip(ctx, c, fileCode, viewerIP) {
+			return
+		}
+		c.JSON(consts.StatusInternalServerError, map[string]interface{}{
+			"code":    500,
+			"message": "打包下载失败",
+		})
 		return
 	}
 
@@ -813,6 +904,24 @@ func DownloadFile(ctx context.Context, c *app.RequestContext) {
 	}
 
 	// 获取文件读取器
+	fileName := fileCode.UUIDFileName
+	if fileName == "" {
+		// 向后兼容：如果UUIDFileName为空，则使用Prefix + Suffix
+		fileName = fileCode.Prefix + fileCode.Suffix
+	}
+
+	// 本地后端：直接 c.File（原生 Range/断点续传/MIME 推断；P3 下载断点续传）。
+	// 远端后端无本地路径，回退下方流式中转（S3 直下开关可用时流量不经服务器）。
+	if concrete, ok := getStorageService().(*storage.StorageService); ok {
+		if abs := concrete.LocalAbsPath(filePath); abs != "" {
+			logTransfer()
+			c.Header("Content-Type", "application/octet-stream")
+			c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, fileName))
+			c.File(abs)
+			return
+		}
+	}
+
 	reader, fileSize, err := getStorageService().GetFileReader(ctx, filePath)
 	if err != nil {
 		c.JSON(consts.StatusInternalServerError, map[string]interface{}{
@@ -822,12 +931,6 @@ func DownloadFile(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
-	// 设置文件下载头
-	fileName := fileCode.UUIDFileName
-	if fileName == "" {
-		// 向后兼容：如果UUIDFileName为空，则使用Prefix + Suffix
-		fileName = fileCode.Prefix + fileCode.Suffix
-	}
 	logTransfer()
 	c.Header("Content-Type", "application/octet-stream")
 	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, fileName))

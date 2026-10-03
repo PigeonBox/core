@@ -39,6 +39,8 @@ import (
 	mcpApp "github.com/filescodebox/core/app/mcp"
 	moderationApp "github.com/filescodebox/core/app/moderation"
 	notifyAppService "github.com/filescodebox/core/app/notify"
+	oidcApp "github.com/filescodebox/core/app/oidc"
+	requestApp "github.com/filescodebox/core/app/request"
 	setupApp "github.com/filescodebox/core/app/setup"
 	shareService "github.com/filescodebox/core/app/share"
 	storageApp "github.com/filescodebox/core/app/storage"
@@ -284,14 +286,29 @@ var envBindings = map[string][]string{
 	"security.api_token.per_key_burst":     {"FCB_API_TOKEN_PER_KEY_BURST"},
 	"security.lockout.max_attempts":        {"FCB_LOCKOUT_MAX_ATTEMPTS"},
 	"security.ssrf.allow_private_networks": {"FCB_SSRF_ALLOW_PRIVATE"},
+	// security.oidc（单点登录）
+	"security.oidc.enabled":       {"FCB_OIDC_ENABLED"},
+	"security.oidc.issuer":        {"FCB_OIDC_ISSUER"},
+	"security.oidc.client_id":     {"FCB_OIDC_CLIENT_ID"},
+	"security.oidc.client_secret": {"FCB_OIDC_CLIENT_SECRET"},
+	"security.oidc.scopes":        {"FCB_OIDC_SCOPES"},
 	// notify
 	"notify.webhook_url": {"FCB_WEBHOOK_URL", "WEBHOOK_URL"},
+	// notify.smtp（邮件通知渠道）
+	"notify.smtp.host":     {"FCB_SMTP_HOST"},
+	"notify.smtp.port":     {"FCB_SMTP_PORT"},
+	"notify.smtp.username": {"FCB_SMTP_USERNAME"},
+	"notify.smtp.password": {"FCB_SMTP_PASSWORD"},
+	"notify.smtp.from":     {"FCB_SMTP_FROM"},
 	// mcp
 	"mcp.enabled": {"FCB_MCP_ENABLED"},
 	// moderation（内容审核，治理 2026-10-03）
 	"moderation.enabled":       {"FCB_MODERATION_ENABLED"},
 	"moderation.blocked_words": {"FCB_MODERATION_BLOCKED_WORDS"},
 	"moderation.block_action":  {"FCB_MODERATION_BLOCK_ACTION"},
+	// moderation.clamav（文件病毒扫描）
+	"moderation.clamav.enabled": {"FCB_MODERATION_CLAMAV_ENABLED"},
+	"moderation.clamav.addr":    {"FCB_MODERATION_CLAMAV_ADDR"},
 	// admin 运维
 	"admin.log_retention_days": {"FCB_ADMIN_LOG_RETENTION_DAYS"},
 	// upload 安全项
@@ -302,6 +319,9 @@ var envBindings = map[string][]string{
 	"upload.max_save_seconds_cap":  {"FCB_UPLOAD_MAX_SAVE_SECONDS_CAP"},
 	"upload.anonymous_daily_count": {"FCB_UPLOAD_ANON_DAILY_COUNT"},
 	"upload.anonymous_daily_bytes": {"FCB_UPLOAD_ANON_DAILY_BYTES"},
+	// upload.local_import（NAS 本地文件免上传导入）
+	"upload.local_import.enabled": {"FCB_LOCAL_IMPORT_ENABLED"},
+	"upload.local_import.roots":   {"FCB_LOCAL_IMPORT_ROOTS"},
 	// rate_limit
 	"rate_limit.enabled":       {"FCB_RATE_LIMIT_ENABLED"},
 	"rate_limit.global_qps":    {"FCB_RATE_LIMIT_GLOBAL_QPS"},
@@ -316,6 +336,7 @@ var envBindings = map[string][]string{
 // 需按逗号拆分后写入（viper Unmarshal 的 WeaklyTypedInput 不拆分逗号，
 // 会把 ".jpg,.png" 整串当单个元素——此前 allowed_extensions env 一直有此问题）。
 var listValuedKeys = map[string]bool{
+	"upload.local_import.roots":    true,
 	"upload.allowed_extensions":    true,
 	"upload.blocked_extensions":    true,
 	"upload.allowed_expire_styles": true,
@@ -636,6 +657,7 @@ func BootstrapWithOptions(configPath string, opts ...Option) (*server.Hertz, err
 			strings.HasPrefix(path, "/anonymous/retrieve"),
 			strings.HasPrefix(path, "/api/v1/presign"),
 			strings.HasPrefix(path, "/api/v1/chunk"),
+			strings.HasPrefix(path, "/api/v1/share/multi"),
 			strings.HasPrefix(path, "/share/text"),
 			strings.HasPrefix(path, "/share/file"):
 			rl.UploadMiddleware()(ctx, c)
@@ -757,6 +779,40 @@ func customizedRegister(r *server.Hertz) {
 	// ===== 一键吊销全部 API Key（JWT-only：Key 不能管 Key；应急止损，见设计文档 §9.3）=====
 	// 治理规则（§9.1-10）：向 /user/api-keys 或 /api/v1 组新增路由前，必须评估该路由的 API Key 暴露面
 	r.POST("/user/api-keys/revoke-all", middleware.AuthMiddleware(), userHandler.RevokeAllAPIKeys)
+
+	// ===== 多文件分享（P0 多文件，手写路由）：直传 / chunk+presign 绑定 =====
+	// 可选身份（OptionalIdentity）：匿名可用，登录/带 Key 时注入 user_id 走配额与归属
+	multiShare := r.Group("/api/v1/share", middleware.OptionalIdentity()...)
+	{
+		multiShare.POST("/multi-direct", customHandler.MultiShareDirect)
+		multiShare.POST("/multi-bind", customHandler.MultiShareBind)
+	}
+
+	// ===== 寄件码/反向收件（P2）：链接管理（JWT）+ 访客侧（公开） =====
+	// 服务实例在 initThriftIDLServices 装配（依赖 share/notify）
+	r.POST("/api/v1/user/requests", customMw.UserAuth(), customHandler.UserCreateFileRequest)
+	r.GET("/api/v1/user/requests", customMw.UserAuth(), customHandler.UserListFileRequests)
+	r.DELETE("/api/v1/user/requests/:token", customMw.UserAuth(), customHandler.UserDeleteFileRequest)
+	r.GET("/request/:token", customHandler.GetFileRequestPublic)
+	r.POST("/api/v1/request/:token/upload", customHandler.GuestSubmitFiles)
+
+	// ===== NAS 本地文件免上传导入（P3；upload.local_import.enabled 开关在 service 内校验）=====
+	r.POST("/api/v1/user/shares/import-local", middleware.UserOrAPIKey(), customHandler.UserImportLocal)
+
+	// ===== OIDC 单点登录（P2，手写路由；启用时 /api/config 下发 oidcEnabled）=====
+	// 读 bootstrap 包级 config（与 MCP 开关同源；轻量测试环境为最小 config）
+	if config != nil && config.Security.OIDC.Enabled {
+		customHandler.SetOIDCService(oidcApp.NewService(oidcApp.Config{
+			Enabled:          true,
+			Issuer:           config.Security.OIDC.Issuer,
+			ClientID:         config.Security.OIDC.ClientID,
+			ClientSecret:     config.Security.OIDC.ClientSecret,
+			Scopes:           config.Security.OIDC.Scopes,
+			FrontendCallback: config.Security.OIDC.FrontendCallback,
+		}))
+		r.GET("/api/v1/user/oidc/login", customHandler.OIDCLogin)
+		r.GET("/api/v1/user/oidc/callback", customHandler.OIDCCallback)
+	}
 
 	// ===== check-auth 端点（前端启动时校验 token 有效性并取回用户信息）=====
 	r.GET("/api/v1/user/check-auth", customMw.UserAuth(), func(ctx context.Context, c *app.RequestContext) {
@@ -995,6 +1051,8 @@ func publicConfigHandler(ctx context.Context, c *app.RequestContext) {
 		// 前端 expireStyle 下拉选项（与 utils.CalculateExpireTime 支持的风格对齐）
 		"expireStyle": []string{"minute", "hour", "day", "week", "month", "year", "forever"},
 		"initialized": initialized,
+		// OIDC 登录按钮开关（P2 SSO；security.oidc.enabled）
+		"oidcEnabled": conf.GetGlobalConfig().Security.OIDC.Enabled,
 	})
 }
 
@@ -1114,19 +1172,47 @@ func initThriftIDLServices(database *gorm.DB) {
 	customHandler.SetShareService(shareSvc)
 	// 2.3 注入 notify service（取件时给 owner 发通知）
 	shareSvc.SetNotifyService(notifyApp) // *Service 已实现 CreateForUserSimple
-	// 内容审核钩子（治理 2026-10-03）：moderation.enabled=false 或词表为空时全部放行
+	// 内容审核钩子（治理 2026-10-03）：moderation.enabled=false 或词表为空时全部放行；
+	// clamav.enabled 时文件侧由 clamd 扫描接管（词表管文本、ClamAV 管文件的组合审核器）
 	if config.Moderation.Enabled {
-		shareSvc.SetModerator(moderationApp.NewWordListModerator(
-			config.Moderation.BlockedWords, config.Moderation.BlockAction))
+		wordMod := moderationApp.NewWordListModerator(
+			config.Moderation.BlockedWords, config.Moderation.BlockAction)
+		var mod moderationApp.Moderator = wordMod
+		if config.Moderation.ClamAV.Enabled {
+			clam := moderationApp.NewClamAVModerator(
+				config.Moderation.ClamAV.Addr,
+				config.Moderation.ClamAV.TimeoutSeconds,
+				config.Moderation.ClamAV.MaxScanBytes,
+				getBootstrapStorageService())
+			mod = moderationApp.NewCombinedModerator(wordMod, clam)
+			logger.Info("ClamAV file scanning enabled",
+				zap.String("addr", config.Moderation.ClamAV.Addr))
+		}
+		shareSvc.SetModerator(mod)
 	}
 	shareSvc.SetFlagEventEmitter(notifyApp) // *Service 已实现 EmitShareFlagged（webhook 未配置时内部短路）
 	// 2.3.1 外部 Webhook 推送渠道（notify.created 事件；空 = 禁用）
 	notifyApp.SetWebhookURL(config.Notify.WebhookURL)
+	// 2.3.2 SMTP 邮件渠道（P2；notify.smtp.host 空 = 禁用）
+	if config.Notify.SMTP.Host != "" {
+		notifyApp.SetMailer(notifyAppService.NewSMTPMailer(
+			config.Notify.SMTP.Host,
+			config.Notify.SMTP.Port,
+			config.Notify.SMTP.Username,
+			config.Notify.SMTP.Password,
+			config.Notify.SMTP.From,
+		))
+		logger.Info("SMTP mail notifications enabled", zap.String("host", config.Notify.SMTP.Host))
+	}
 	// 2.4 注入 user service：上传统计（此前从未接线，用户统计恒为 0）
 	// + 存储配额强制检查（user_quota / 用户级 max_storage_quota）
 	userSvc := userService.NewService()
 	shareSvc.SetUserService(userSvc)
 	shareSvc.SetQuotaChecker(userSvc)
+
+	// 2.4.1 寄件码/反向收件服务（P2）：依赖 share service 与 notify
+	requestSvcInstance = requestApp.NewService(shareSvc, notifyApp)
+	customHandler.SetRequestService(requestSvcInstance)
 
 	// 3. anonymous service（需要 Redis）
 	anonHandler.SetService(redis.GetClient())
@@ -1162,6 +1248,14 @@ func initThriftIDLServices(database *gorm.DB) {
 	} else {
 		logger.Info("FileCode table migrated (viewer fields added)")
 	}
+	// 多文件子表（P0 多文件）：1 分享 ↔ N 文件
+	if err := database.AutoMigrate(&model.FileCodeFile{}); err != nil {
+		logger.Error("Failed to migrate file_code_files table", zap.Error(err))
+	}
+	// 寄件码表（P2 反向收件）
+	if err := database.AutoMigrate(&model.FileRequest{}); err != nil {
+		logger.Error("Failed to migrate file_requests table", zap.Error(err))
+	}
 
 	// 6. 注入 storage 到 admin handler 的 service（过期清理删物理文件）
 	bootstrapStorage := getBootstrapStorageService()
@@ -1194,6 +1288,9 @@ func initThriftIDLServices(database *gorm.DB) {
 
 // mcpService MCP server 实例（initThriftIDLServices 装配，customizedRegister 挂路由）
 var mcpService *mcpApp.Service
+
+// requestSvcInstance 寄件码服务实例（initThriftIDLServices 装配）
+var requestSvcInstance *requestApp.Service
 
 // cleanupSvcWithStorage 创建带 storage 的 admin service 实例
 func cleanupSvcWithStorage(st storage.StorageInterface) *adminApp.Service {

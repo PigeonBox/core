@@ -31,6 +31,8 @@ type ShareTextReq struct {
 	UserID       *uint
 	UploadType   string
 	OwnerIP      string
+	Encrypted    bool   // E2E：Text 为客户端密文（P1）
+	CustomCode   string // 自定义取件码（P3；登录用户专属，handler 把关）
 }
 
 type ShareFileReq struct {
@@ -48,6 +50,8 @@ type ShareFileReq struct {
 	FileHash     string
 	IsChunked    bool
 	UploadID     string
+	Encrypted    bool   // E2E：存储内容为客户端密文（P1）
+	CustomCode   string // 自定义取件码（P3；登录用户专属，handler 把关）
 }
 
 type ShareResp struct {
@@ -68,6 +72,7 @@ type ShareResp struct {
 	UserID       *uint      `json:"user_id"`
 	UploadType   string     `json:"upload_type"`
 	RequireAuth  bool       `json:"require_auth"`
+	Encrypted    bool       `json:"encrypted"` // E2E 客户端加密标记（P1）
 	OwnerIP      string     `json:"owner_ip"`
 	Status       string     `json:"status"` // 管控状态（normal/blocked/pending_review）
 	ShareURL     string     `json:"share_url"`      // 相对分享链接
@@ -76,6 +81,7 @@ type ShareResp struct {
 
 type Service struct {
 	fileCodeRepo *dao.FileCodeRepository
+	fileFileRepo *dao.FileCodeFileRepository // 多文件子表 DAO（惰性初始化）
 	userService  UserServiceInterface
 	storage      storage.StorageInterface
 	baseURL      string // 基础 URL，用于生成分享链接
@@ -196,6 +202,40 @@ func (s *Service) checkQuota(ctx context.Context, userID *uint, addBytes int64) 
 	return s.quotaChecker.CheckQuota(ctx, *userID, addBytes)
 }
 
+// validCustomCode 自定义取件码合法性（P3）：3-32 位字母/数字/-/_
+func validCustomCode(code string) bool {
+	if len(code) < 3 || len(code) > 32 {
+		return false
+	}
+	for _, r := range code {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// createWithCode 带可选自定义码的写库（CustomCode 合法时直接占用；冲突报错不重试；
+// 空/非法时回退随机码）。customCode 仅登录用户可指定（handler 侧把关，防匿名抢注）。
+func (s *Service) createWithCode(ctx context.Context, customCode string, build func(code string) *model.FileCode) (*model.FileCode, error) {
+	if customCode == "" {
+		return s.createWithRetry(ctx, build)
+	}
+	if !validCustomCode(customCode) {
+		return nil, errors.New("自定义取件码需为 3-32 位字母、数字、- 或 _")
+	}
+	fc := build(customCode)
+	if err := s.fileCodeRepo.Create(ctx, fc); err != nil {
+		if errors.Is(err, gorm.ErrDuplicatedKey) {
+			return nil, errors.New("自定义取件码已被占用，请换一个")
+		}
+		return nil, err
+	}
+	return fc, nil
+}
+
 // GenerateCode 生成分享代码（crypto/rand，8 位字母数字）。
 func (s *Service) GenerateCode() string {
 	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
@@ -232,7 +272,7 @@ func (s *Service) createWithRetry(ctx context.Context, build func(code string) *
 func (s *Service) ShareText(ctx context.Context, req *ShareTextReq) (*ShareResp, error) {
 	s.ensureRepository()
 
-	fileCode, err := s.createWithRetry(ctx, func(code string) *model.FileCode {
+	fileCode, err := s.createWithCode(ctx, req.CustomCode, func(code string) *model.FileCode {
 		return &model.FileCode{
 			Code:         code,
 			Text:         req.Text,
@@ -243,6 +283,7 @@ func (s *Service) ShareText(ctx context.Context, req *ShareTextReq) (*ShareResp,
 			UserID:       req.UserID,
 			UploadType:   req.UploadType,
 			OwnerIP:      req.OwnerIP,
+			Encrypted:    req.Encrypted,
 		}
 	})
 	if err != nil {
@@ -262,7 +303,8 @@ func (s *Service) ShareText(ctx context.Context, req *ShareTextReq) (*ShareResp,
 // ShareTextWithAuth 带认证的文本分享（用于 Handler）。
 // requireAuth=true 时必须提供非空 passwordHash(handler 侧负责哈希),
 // 传入空哈希会被拒绝,防止创建出"密码保护形同虚设"的分享。
-func (s *Service) ShareTextWithAuth(ctx context.Context, text string, expireValue int, expireStyle string, requireAuth bool, passwordHash string, userID *uint, ownerIP string) (*ShareResp, error) {
+// encrypted=true 时 text 为客户端密文（P1 E2E），跳过服务端转义与敏感词审核。
+func (s *Service) ShareTextWithAuth(ctx context.Context, text string, expireValue int, expireStyle string, requireAuth bool, passwordHash string, userID *uint, ownerIP string, encrypted bool, customCode string) (*ShareResp, error) {
 	if requireAuth && passwordHash == "" {
 		return nil, errors.New("开启密码保护时必须提供密码")
 	}
@@ -271,9 +313,10 @@ func (s *Service) ShareTextWithAuth(ctx context.Context, text string, expireValu
 		return nil, fmt.Errorf("%w（上限 %d 字节）", utils.ErrTextTooLarge, maxBytes)
 	}
 
-	// 内容审核钩子（治理 2026-10-03）：reject 建分享前拦截；pending 建分享后置待审
+	// 内容审核钩子（治理 2026-10-03）：reject 建分享前拦截；pending 建分享后置待审。
+	// E2E 密文分享跳过（服务端零知识，无明文可审）。
 	pendingReview := false
-	if s.moderator != nil {
+	if !encrypted && s.moderator != nil {
 		switch s.moderator.InspectText(ctx, text) {
 		case moderation.VerdictReject:
 			metrics.RecordModerationHit("reject")
@@ -303,6 +346,8 @@ func (s *Service) ShareTextWithAuth(ctx context.Context, text string, expireValu
 		UserID:       userID,
 		UploadType:   uploadType,
 		OwnerIP:      ownerIP,
+		Encrypted:    encrypted,
+		CustomCode:   customCode, // 登录用户自定义取件码（匿名传空）
 	}
 
 	resp, err := s.ShareText(ctx, req)
@@ -365,12 +410,13 @@ func (s *Service) CreateShare(ctx context.Context, req *ShareFileReq) (*ShareRes
 	filePending := false
 	if s.moderator != nil {
 		meta := moderation.UploadMeta{
-			FileName:  req.Text, // 直传/分片把原始文件名存 Text
-			Size:      req.Size,
-			OwnerIP:   req.OwnerIP,
-			UserID:    req.UserID,
-			UploadID:  req.UploadID,
-			Channel:   req.Channel,
+			FileName:    req.Text, // 直传/分片把原始文件名存 Text
+			Size:        req.Size,
+			OwnerIP:     req.OwnerIP,
+			UserID:      req.UserID,
+			UploadID:    req.UploadID,
+			Channel:     req.Channel,
+			StoragePath: req.FilePath, // 文件内容扫描（ClamAV）读取路径
 		}
 		switch s.moderator.InspectFile(ctx, meta) {
 		case moderation.VerdictReject:
@@ -383,7 +429,7 @@ func (s *Service) CreateShare(ctx context.Context, req *ShareFileReq) (*ShareRes
 		}
 	}
 
-	fileCode, err := s.createWithRetry(ctx, func(code string) *model.FileCode {
+	fileCode, err := s.createWithCode(ctx, req.CustomCode, func(code string) *model.FileCode {
 		return &model.FileCode{
 			Code:         code,
 			FilePath:     req.FilePath,
@@ -399,10 +445,29 @@ func (s *Service) CreateShare(ctx context.Context, req *ShareFileReq) (*ShareRes
 			FileHash:     req.FileHash,
 			IsChunked:    req.IsChunked,
 			UploadID:     req.UploadID,
+			Encrypted:    req.Encrypted,
 		}
 	})
 	if err != nil {
 		return nil, err
+	}
+
+	// 子表同步写一行（P0 多文件：新旧分享统一经子表读取；失败仅降级为主表读取，不阻断）
+	if fc := fileCode; fc != nil {
+		if rel := fc.GetFilePath(); rel != "" {
+			child := &model.FileCodeFile{
+				FileCodeID:   fc.ID,
+				FileName:     req.Text,
+				UUIDFileName: fc.UUIDFileName,
+				FilePath:     rel,
+				Size:         req.Size,
+				FileHash:     req.FileHash,
+			}
+			if err := s.fileRepo().CreateBatch(ctx, []*model.FileCodeFile{child}); err != nil {
+				logger.Warn("write child file row failed (fallback to legacy fields)",
+					zap.String("code", fc.Code), zap.Error(err))
+			}
+		}
 	}
 
 	// 更新用户统计
@@ -524,11 +589,15 @@ func (s *Service) DeleteFileByCode(ctx context.Context, code string, userID uint
 	}
 
 	// 4. 事务提交成功后，删除物理文件（不可回滚，放事务外，失败记日志不阻断）
-	if file.FilePath != "" && file.UUIDFileName != "" && s.storage != nil {
-		filePath := file.GetFilePath()
-		if filePath != "" {
-			if err := s.storage.DeleteFile(ctx, filePath); err != nil {
-				logger.Warn("delete physical file failed", zap.String("path", filePath), zap.Error(err))
+	//    多文件分享：子表各文件一并删除（legacy 单文件走主表路径）
+	if s.storage != nil {
+		s.deletePhysicalChildren(ctx, file.ID)
+		if file.FilePath != "" && file.UUIDFileName != "" {
+			filePath := file.GetFilePath()
+			if filePath != "" {
+				if err := s.storage.DeleteFile(ctx, filePath); err != nil {
+					logger.Warn("delete physical file failed", zap.String("path", filePath), zap.Error(err))
+				}
 			}
 		}
 	}
@@ -657,6 +726,7 @@ func (s *Service) modelToResp(fileCode *model.FileCode) *ShareResp {
 		UserID:       fileCode.UserID,
 		UploadType:   fileCode.UploadType,
 		RequireAuth:  fileCode.RequireAuth,
+		Encrypted:    fileCode.Encrypted,
 		OwnerIP:      fileCode.OwnerIP,
 	}
 }

@@ -243,7 +243,7 @@ func (s *Service) execTool(ctx context.Context, name string, args json.RawMessag
 			passwordHash = hash
 		}
 		resp, err := s.shareSvc.ShareTextWithAuth(ctx, text,
-			argInt("expire_value", 1), style, passwordHash != "", passwordHash, nil, "mcp")
+			argInt("expire_value", 1), style, passwordHash != "", passwordHash, nil, "mcp", false, "")
 		if err != nil {
 			return "创建分享失败: " + err.Error(), true
 		}

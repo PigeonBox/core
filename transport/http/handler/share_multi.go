@@ -1,0 +1,600 @@
+// 多文件分享创建端点（P0 多文件，手写路由不走 IDL）：
+//   POST /api/v1/share/multi-direct  multipart 多文件直传（小文件）
+//   POST /api/v1/share/multi-bind    绑定已上传的 chunk 会话/presign 对象为一个多文件分享
+package handler
+
+import (
+	"bytes"
+	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strconv"
+	"time"
+
+	"github.com/cloudwego/hertz/pkg/app"
+	"github.com/cloudwego/hertz/pkg/protocol/consts"
+	"github.com/filescodebox/contracts/errcode"
+	"github.com/filescodebox/core/app/chunk"
+	shareService "github.com/filescodebox/core/app/share"
+	"github.com/filescodebox/core/conf"
+	"github.com/filescodebox/core/pkg/gate"
+	"github.com/filescodebox/core/pkg/middleware"
+	"github.com/filescodebox/core/pkg/resp"
+	"github.com/filescodebox/core/pkg/transfer"
+	"github.com/filescodebox/core/pkg/utils"
+	"github.com/filescodebox/core/repo/db/model"
+	"github.com/filescodebox/core/storage"
+	"github.com/google/uuid"
+)
+
+// multiChunkSvc 多文件绑定的 chunk 会话查询（chunk.Service 无状态，DAO 惰性）
+func multiChunkSvc() *chunk.Service {
+	return chunk.NewService()
+}
+
+// chunkSessionTokenOf 与 gen/handler/chunk 同源的会话令牌（HMAC，密钥同 presign/jwt），
+// 用于绑定时的归属校验（IP 漂移场景）。
+func chunkSessionTokenOf(uploadID string) string {
+	key := os.Getenv("FCB_PRESIGN_SIGNING_KEY")
+	if key == "" {
+		if cfg := conf.GetGlobalConfig(); cfg != nil {
+			key = cfg.User.JWTSecret
+		}
+	}
+	if key == "" {
+		return ""
+	}
+	mac := hmac.New(sha256.New, []byte(key))
+	_, _ = mac.Write([]byte("chunk-session:" + uploadID))
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+// multiCommonParams 多文件创建的公共表单/JSON 参数
+type multiCommonParams struct {
+	ExpireValue  int
+	ExpireStyle  string
+	RequireAuth  bool
+	PasswordHash string
+	Encrypted    bool // E2E：客户端已加密（跳过魔数复检，密文头为随机字节）
+	CustomCode   string // 自定义取件码（P3；登录用户专属）
+	UserID       *uint
+	UploadType   string
+	OwnerIP      string
+}
+
+// parseMultiCommon 解析过期/密码/身份参数（JSON body 版本）。
+// 返回 nil 表示已写出错误响应。
+func parseMultiCommonFromJSON(ctx context.Context, c *app.RequestContext) *multiCommonParams {
+	var body struct {
+		ExpireValue  int    `json:"expire_value"`
+		ExpireStyle  string `json:"expire_style"`
+		RequireAuth  bool   `json:"require_auth"`
+		Password     string `json:"password"`
+		Encrypted    bool   `json:"encrypted"`
+		CustomCode   string `json:"custom_code"`
+		EntriesEmpty bool   `json:"-"`
+	}
+	if err := json.Unmarshal(c.Request.Body(), &body); err != nil {
+		c.JSON(consts.StatusBadRequest, map[string]interface{}{
+			"code":    400,
+			"message": "请求体解析失败: " + err.Error(),
+		})
+		return nil
+	}
+	return finishMultiCommon(ctx, c, body.ExpireValue, body.ExpireStyle, body.RequireAuth, body.Password, body.Encrypted, body.CustomCode)
+}
+
+// parseMultiCommonFromForm multipart 表单版本
+func parseMultiCommonFromForm(ctx context.Context, c *app.RequestContext) *multiCommonParams {
+	expireValue, _ := strconv.Atoi(c.DefaultPostForm("expire_value", "1"))
+	expireStyle := c.DefaultPostForm("expire_style", "day")
+	requireAuth := c.DefaultPostForm("require_auth", "false") == "true"
+	password := c.DefaultPostForm("password", "")
+	encrypted := c.DefaultPostForm("encrypted", "false") == "true"
+	customCode := c.DefaultPostForm("custom_code", "")
+	return finishMultiCommon(ctx, c, expireValue, expireStyle, requireAuth, password, encrypted, customCode)
+}
+
+// finishMultiCommon 公共参数收尾：样式白名单/密码哈希/身份
+func finishMultiCommon(ctx context.Context, c *app.RequestContext, expireValue int, expireStyle string, requireAuth bool, password string, encrypted bool, customCode string) *multiCommonParams {
+	if err := utils.CheckExpireStyleAllowed(expireStyle); err != nil {
+		c.JSON(consts.StatusBadRequest, map[string]interface{}{
+			"code":    400,
+			"message": err.Error(),
+		})
+		return nil
+	}
+	p := &multiCommonParams{
+		ExpireValue: expireValue,
+		ExpireStyle: expireStyle,
+		RequireAuth: requireAuth,
+		Encrypted:   encrypted,
+		OwnerIP:     middleware.ClientIP(c),
+	}
+	if requireAuth {
+		if password == "" {
+			c.JSON(consts.StatusBadRequest, map[string]interface{}{
+				"code":    400,
+				"message": "开启密码保护时必须提供密码",
+			})
+			return nil
+		}
+		hash, err := utils.HashPassword(password)
+		if err != nil {
+			c.JSON(consts.StatusInternalServerError, map[string]interface{}{
+				"code":    500,
+				"message": "密码处理失败",
+			})
+			return nil
+		}
+		p.PasswordHash = hash
+	}
+	if v, ok := middleware.UserIDFromContext(ctx); ok {
+		p.UserID = &v
+		p.UploadType = "authenticated"
+		// 自定义取件码（P3）：仅登录用户可指定（防匿名抢注）
+		p.CustomCode = customCode
+	} else {
+		p.UploadType = "anonymous"
+	}
+	return p
+}
+
+// multiExpire 通用参数 → 过期字段
+func (p *multiCommonParams) multiExpire() (*time.Time, int) {
+	return utils.CalculateExpireTime(p.ExpireValue, p.ExpireStyle),
+		utils.CalculateExpireCount(p.ExpireStyle, p.ExpireValue)
+}
+
+// newRelPath 新存储相对路径（uploads/YYYY/MM/DD/uuid.ext，与单文件直传一致）
+func newRelPath(originalName string) (uuidName, rel string) {
+	ext := filepath.Ext(originalName)
+	uuidName = uuid.New().String() + ext
+	now := time.Now()
+	rel = filepath.Join("uploads", now.Format("2006"), now.Format("01"), now.Format("02"), uuidName)
+	return uuidName, rel
+}
+
+// cleanupStored 失败回滚：删除已落存储的文件（best-effort）
+func cleanupStored(ctx context.Context, st storage.StorageInterface, entries []shareService.StoredFileEntry) {
+	if st == nil {
+		return
+	}
+	for _, e := range entries {
+		_ = st.DeleteFile(ctx, e.RelPath)
+	}
+}
+
+// ==================== 多文件直传（multipart）====================
+
+// MultiShareDirect 多文件直传建分享。
+// @router /api/v1/share/multi-direct [POST]
+func MultiShareDirect(ctx context.Context, c *app.RequestContext) {
+	if shareSvc == nil {
+		c.JSON(consts.StatusInternalServerError, map[string]interface{}{"code": 500, "message": "share service 未就绪"})
+		return
+	}
+	form, err := c.MultipartForm()
+	if err != nil {
+		c.JSON(consts.StatusBadRequest, map[string]interface{}{"code": 400, "message": "解析 multipart 失败: " + err.Error()})
+		return
+	}
+	files := form.File["files"]
+	if len(files) == 0 {
+		files = form.File["file"] // 兼容单文件字段名
+	}
+	if len(files) == 0 {
+		c.JSON(consts.StatusBadRequest, map[string]interface{}{"code": 400, "message": "请上传文件"})
+		return
+	}
+	if len(files) > 100 {
+		c.JSON(consts.StatusBadRequest, map[string]interface{}{"code": 400, "message": "单次分享文件数超过上限（100 个）"})
+		return
+	}
+
+	p := parseMultiCommonFromForm(ctx, c)
+	if p == nil {
+		return
+	}
+
+	// 上传闸门 + 匿名日配额（合计一次校验，先于落盘——治理回归要点）
+	var gateUserID *uint
+	if v, ok := middleware.UserIDFromContext(ctx); ok {
+		gateUserID = &v
+	}
+	if err := gate.CheckUploadAllowed(gateUserID); err != nil {
+		resp.NewTypedError(c, err)
+		return
+	}
+	if err := gate.CheckUploadLogin(gateUserID); err != nil {
+		resp.NewTypedError(c, err)
+		return
+	}
+	var totalDeclared int64
+	for _, f := range files {
+		totalDeclared += f.Size
+	}
+	if gateUserID == nil {
+		if err := gate.CheckAnonymousQuota(ctx, middleware.ClientIP(c), totalDeclared); err != nil {
+			resp.NewTypedError(c, err)
+			return
+		}
+	}
+
+	st := manageStorage
+	var stored []shareService.StoredFileEntry
+	for _, fh := range files {
+		name := utils.SanitizeFileName(fh.Filename)
+		if !utils.IsAllowedExtension(name) {
+			cleanupStored(ctx, st, stored)
+			c.JSON(consts.StatusBadRequest, map[string]interface{}{
+				"code":    errcode.CodeFileTypeDenied,
+				"message": fmt.Sprintf("文件类型禁止上传: %s", name),
+			})
+			return
+		}
+		if maxFile := utils.GetMaxFileSize(); maxFile > 0 && fh.Size > maxFile {
+			cleanupStored(ctx, st, stored)
+			c.JSON(consts.StatusBadRequest, map[string]interface{}{
+				"code":    errcode.CodeTooLarge,
+				"message": fmt.Sprintf("文件 %s 超过单文件大小上限", name),
+			})
+			return
+		}
+		// 魔数 + 扩展名一致性（E2E 密文跳过：密文头为随机字节，必然不过魔数表）
+		var head []byte
+		if !p.Encrypted {
+			if f, oerr := fh.Open(); oerr == nil {
+				buf := make([]byte, 512)
+				n, rerr := io.ReadFull(f, buf)
+				if rerr == nil || rerr == io.ErrUnexpectedEOF {
+					head = buf[:n]
+				}
+				_ = f.Close()
+			}
+			if err := utils.CheckUploadContent(name, head); err != nil {
+				cleanupStored(ctx, st, stored)
+				c.JSON(consts.StatusBadRequest, map[string]interface{}{
+					"code":    errcode.CodeFileTypeDenied,
+					"message": err.Error(),
+				})
+				return
+			}
+		}
+
+		_, rel := newRelPath(name)
+		result, serr := st.SaveFile(ctx, fh, rel)
+		if serr != nil {
+			cleanupStored(ctx, st, stored)
+			c.JSON(consts.StatusInternalServerError, map[string]interface{}{"code": 500, "message": fmt.Sprintf("文件保存失败: %v", serr)})
+			return
+		}
+		stored = append(stored, shareService.StoredFileEntry{
+			RelPath:  result.FilePath,
+			FileName: name,
+			Size:     result.FileSize,
+			FileHash: result.FileHash,
+		})
+	}
+
+	expireAt, expireCount := p.multiExpire()
+	shareResult, err := shareSvc.CreateMultiFileShare(ctx, &shareService.MultiShareReq{
+		Entries:      stored,
+		ExpiredAt:    expireAt,
+		ExpiredCount: expireCount,
+		RequireAuth:  p.RequireAuth,
+		PasswordHash: p.PasswordHash,
+		UserID:       p.UserID,
+		UploadType:   p.UploadType,
+		OwnerIP:      p.OwnerIP,
+		Channel:      "direct",
+		Encrypted:    p.Encrypted,
+		CustomCode:   p.CustomCode,
+	})
+	if err != nil {
+		cleanupStored(ctx, st, stored)
+		resp.NewTypedError(c, err)
+		return
+	}
+
+	transfer.Record(transfer.Entry{
+		Operation: transfer.OpUpload, FileCodeID: shareResult.ID, Code: shareResult.Code,
+		FileName: fmt.Sprintf("%d files", len(stored)), FileSize: shareResult.Size,
+		UserID: p.UserID, APIKeyID: apiKeyIDPtr(ctx),
+		Username: middleware.UsernameFromContext(ctx), IP: p.OwnerIP,
+	})
+
+	c.JSON(consts.StatusOK, map[string]interface{}{
+		"code":    200,
+		"message": "文件上传成功",
+		"data": map[string]interface{}{
+			"code":        shareResult.Code,
+			"url":         shareResult.FullShareURL,
+			"share_url":   fmt.Sprintf("/share/%s", shareResult.Code),
+			"file_count":  len(stored),
+		},
+	})
+}
+
+// ==================== 多文件绑定（chunk 会话 / presign 对象）====================
+
+// MultiShareBind 把多个已上传的 chunk 会话（或 presign 对象 key）绑定为
+// 一个多文件分享。请求体：
+//
+//	{
+//	  "entries": [{"upload_id": "..."} | {"object_key": "...", "file_name": "..."}],
+//	  "expire_value": 1, "expire_style": "day", "require_auth": false, "password": ""
+//	}
+//
+// @router /api/v1/share/multi-bind [POST]
+func MultiShareBind(ctx context.Context, c *app.RequestContext) {
+	if shareSvc == nil {
+		c.JSON(consts.StatusInternalServerError, map[string]interface{}{"code": 500, "message": "share service 未就绪"})
+		return
+	}
+	var body struct {
+		Entries []struct {
+			UploadID  string `json:"upload_id"`
+			ObjectKey string `json:"object_key"`
+			FileName  string `json:"file_name"`
+		} `json:"entries"`
+		ExpireValue int    `json:"expire_value"`
+		ExpireStyle string `json:"expire_style"`
+		RequireAuth bool   `json:"require_auth"`
+		Password    string `json:"password"`
+		Encrypted   bool   `json:"encrypted"`
+	}
+	if err := json.Unmarshal(c.Request.Body(), &body); err != nil {
+		c.JSON(consts.StatusBadRequest, map[string]interface{}{"code": 400, "message": "请求体解析失败: " + err.Error()})
+		return
+	}
+	if len(body.Entries) == 0 || len(body.Entries) > 100 {
+		c.JSON(consts.StatusBadRequest, map[string]interface{}{"code": 400, "message": "entries 需为 1-100 项"})
+		return
+	}
+	p := parseMultiCommonFromJSON(ctx, c)
+	if p == nil {
+		return
+	}
+	// E2E（multi-bind 的 encrypted 已在 parseMultiCommonFromJSON 读入 p.Encrypted）
+	_ = body.Encrypted
+
+	var gateUserID *uint
+	if v, ok := middleware.UserIDFromContext(ctx); ok {
+		gateUserID = &v
+	}
+	if err := gate.CheckUploadAllowed(gateUserID); err != nil {
+		resp.NewTypedError(c, err)
+		return
+	}
+	if err := gate.CheckUploadLogin(gateUserID); err != nil {
+		resp.NewTypedError(c, err)
+		return
+	}
+
+	st := manageStorage
+	chunkSvc := multiChunkSvc()
+	bound := make([]shareService.StoredFileEntry, 0, len(body.Entries))
+	mergedUploadIDs := make([]string, 0, len(body.Entries))
+
+	// 第一遍：收集申报大小做匿名配额预检（fail-fast，先于合并落盘）
+	var declared int64
+	for _, e := range body.Entries {
+		if e.UploadID == "" && e.ObjectKey == "" {
+			c.JSON(consts.StatusBadRequest, map[string]interface{}{"code": 400, "message": "entry 缺少 upload_id/object_key"})
+			return
+		}
+		if info, gerr := chunkSvc.GetUploadInfo(ctx, e.UploadID); e.UploadID != "" && gerr == nil {
+			declared += info.FileSize
+		}
+	}
+	if gateUserID == nil {
+		if err := gate.CheckAnonymousQuota(ctx, p.OwnerIP, declared); err != nil {
+			resp.NewTypedError(c, err)
+			return
+		}
+	}
+
+	for _, e := range body.Entries {
+		switch {
+		case e.UploadID != "":
+			entry, uploadID, ok := bindChunkEntry(ctx, c, chunkSvc, st, e.UploadID, p.Encrypted)
+			if !ok {
+				cleanupStored(ctx, st, bound)
+				for _, id := range mergedUploadIDs {
+					_ = st.CleanChunks(ctx, id)
+				}
+				return
+			}
+			bound = append(bound, *entry)
+			if uploadID != "" {
+				mergedUploadIDs = append(mergedUploadIDs, uploadID)
+			}
+		case e.ObjectKey != "":
+			name := utils.SanitizeFileName(e.FileName)
+			if name == "" || !utils.IsAllowedExtension(name) {
+				cleanupStored(ctx, st, bound)
+				c.JSON(consts.StatusBadRequest, map[string]interface{}{
+					"code":    errcode.CodeFileTypeDenied,
+					"message": fmt.Sprintf("文件类型禁止上传: %s", e.FileName),
+				})
+				return
+			}
+			size, serr := st.GetFileSize(ctx, e.ObjectKey)
+			if serr != nil || size <= 0 {
+				cleanupStored(ctx, st, bound)
+				c.JSON(consts.StatusBadRequest, map[string]interface{}{
+					"code":    400,
+					"message": fmt.Sprintf("对象不存在或大小异常: %s", e.ObjectKey),
+				})
+				return
+			}
+			bound = append(bound, shareService.StoredFileEntry{
+				RelPath:  e.ObjectKey,
+				FileName: name,
+				Size:     size,
+			})
+		}
+	}
+
+	expireAt, expireCount := p.multiExpire()
+	shareResult, err := shareSvc.CreateMultiFileShare(ctx, &shareService.MultiShareReq{
+		Entries:      bound,
+		ExpiredAt:    expireAt,
+		ExpiredCount: expireCount,
+		RequireAuth:  p.RequireAuth,
+		PasswordHash: p.PasswordHash,
+		UserID:       p.UserID,
+		UploadType:   p.UploadType,
+		OwnerIP:      p.OwnerIP,
+		Channel:      "chunk",
+		Encrypted:    p.Encrypted,
+		CustomCode:   p.CustomCode,
+	})
+	if err != nil {
+		cleanupStored(ctx, st, bound)
+		for _, id := range mergedUploadIDs {
+			_ = st.CleanChunks(ctx, id)
+		}
+		resp.NewTypedError(c, err)
+		return
+	}
+	// 分享创建成功后清理分片临时目录
+	for _, id := range mergedUploadIDs {
+		_ = st.CleanChunks(ctx, id)
+	}
+
+	transfer.Record(transfer.Entry{
+		Operation: transfer.OpUpload, FileCodeID: shareResult.ID, Code: shareResult.Code,
+		FileName: fmt.Sprintf("%d files", len(bound)), FileSize: shareResult.Size,
+		UserID: p.UserID, APIKeyID: apiKeyIDPtr(ctx),
+		Username: middleware.UsernameFromContext(ctx), IP: p.OwnerIP,
+	})
+
+	c.JSON(consts.StatusOK, map[string]interface{}{
+		"code":    200,
+		"message": "分享创建成功",
+		"data": map[string]interface{}{
+			"code":        shareResult.Code,
+			"url":         shareResult.FullShareURL,
+			"share_url":   fmt.Sprintf("/share/%s", shareResult.Code),
+			"file_count":  len(bound),
+		},
+	})
+}
+
+// bindChunkEntry 校验归属 → 分片齐全 → 合并落盘 → 哈希/魔数/大小复核。
+// encrypted=true 时跳过魔数复检（密文头为随机字节）。
+// ok=false 时已写出错误响应（调用方统一回滚）。
+func bindChunkEntry(ctx context.Context, c *app.RequestContext, chunkSvc *chunk.Service, st storage.StorageInterface, uploadID string, encrypted bool) (*shareService.StoredFileEntry, string, bool) {
+	info, err := chunkSvc.GetUploadInfo(ctx, uploadID)
+	if err != nil {
+		c.JSON(consts.StatusNotFound, map[string]interface{}{"code": 404, "message": "上传记录不存在: " + uploadID})
+		return nil, "", false
+	}
+
+	// 归属校验（与 chunk Complete 同策略）：IP 一致 / 同一登录用户 / 会话令牌
+	if !multiOwnedByCaller(ctx, info, c) {
+		c.JSON(consts.StatusForbidden, map[string]interface{}{"code": errcode.CodeForbidden, "message": "无权操作该上传会话"})
+		return nil, "", false
+	}
+
+	indexes, err := chunkSvc.GetUploadedChunkIndexes(ctx, uploadID)
+	if err != nil || len(indexes) < info.TotalChunks {
+		c.JSON(consts.StatusBadRequest, map[string]interface{}{
+			"code":    400,
+			"name":    info.FileName,
+			"message": fmt.Sprintf("分片未传完（%d/%d）", len(indexes), info.TotalChunks),
+		})
+		return nil, "", false
+	}
+
+	_, rel := newRelPath(info.FileName)
+	if err := st.MergeChunks(ctx, uploadID, info.TotalChunks, rel); err != nil {
+		c.JSON(consts.StatusInternalServerError, map[string]interface{}{"code": 500, "message": "合并分片失败: " + err.Error()})
+		return nil, "", false
+	}
+
+	// 哈希 + 魔数 + 大小复核（与 chunk Complete 一致）
+	fileHash := ""
+	var actualSize int64
+	var head []byte
+	if rc, fsize, rerr := st.GetFileReader(ctx, rel); rerr == nil {
+		actualSize = fsize
+		head = readHead512(rc)
+		fileHash, _ = utils.HashReader(io.MultiReader(bytes.NewReader(head), rc))
+		_ = rc.Close()
+	}
+	if !encrypted && head != nil {
+		if err := utils.CheckUploadContent(info.FileName, head); err != nil {
+			_ = st.DeleteFile(ctx, rel)
+			c.JSON(consts.StatusBadRequest, map[string]interface{}{"code": errcode.CodeFileTypeDenied, "message": err.Error()})
+			return nil, "", false
+		}
+	}
+	if actualSize > 0 {
+		if maxFile := utils.GetMaxFileSize(); maxFile > 0 && actualSize > maxFile {
+			_ = st.DeleteFile(ctx, rel)
+			c.JSON(consts.StatusBadRequest, map[string]interface{}{"code": errcode.CodeTooLarge, "message": fmt.Sprintf("合并后文件大小 %d 超过上限 %d", actualSize, maxFile)})
+			return nil, "", false
+		}
+		if info.FileSize > 0 && actualSize != info.FileSize {
+			_ = st.DeleteFile(ctx, rel)
+			c.JSON(consts.StatusBadRequest, map[string]interface{}{"code": errcode.CodeChunkInvalid, "message": fmt.Sprintf("合并后大小 %d 与申报 %d 不符", actualSize, info.FileSize)})
+			return nil, "", false
+		}
+	}
+
+	_ = chunkSvc.CompleteUpload(ctx, uploadID)
+	return &shareService.StoredFileEntry{
+		RelPath:  rel,
+		FileName: utils.SanitizeFileName(info.FileName),
+		Size:     actualSize,
+		FileHash: fileHash,
+	}, uploadID, true
+}
+
+// multiOwnedByCaller 绑定归属校验（与 gen chunk ownedByCaller 同语义）：
+// 控制记录记有 OwnerIP 时，要求 IP 一致、同一登录用户或持有效会话令牌；
+// 老数据（OwnerIP 为空）跳过保持兼容。
+func multiOwnedByCaller(ctx context.Context, info *model.UploadChunk, c *app.RequestContext) bool {
+	if info.OwnerIP == "" {
+		return true
+	}
+	if info.OwnerIP == middleware.ClientIP(c) {
+		return true
+	}
+	if tok := chunkSessionTokenOf(info.UploadID); tok != "" && hmac.Equal([]byte(tok), c.GetHeader("X-Upload-Token")) {
+		return true
+	}
+	if info.UserID != nil {
+		if uid, ok := middleware.UserIDFromContext(ctx); ok && uid == *info.UserID {
+			return true
+		}
+	}
+	return false
+}
+
+// apiKeyIDPtr 提取 ctx 中的 API Key 归因（JWT/匿名请求返回 nil）
+func apiKeyIDPtr(ctx context.Context) *uint {
+	if id, ok := middleware.APIKeyIDFromContext(ctx); ok {
+		return &id
+	}
+	return nil
+}
+
+// readHead512 读 512 字节头部（ReadCloser 不保证可 Seek；读失败返回 nil 跳过魔数复检）
+func readHead512(rc io.ReadCloser) []byte {
+	buf := make([]byte, 512)
+	n, err := io.ReadFull(rc, buf)
+	if err != nil && err != io.ErrUnexpectedEOF {
+		return nil
+	}
+	return buf[:n]
+}

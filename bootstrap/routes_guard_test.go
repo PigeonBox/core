@@ -18,10 +18,13 @@ import (
 //
 // 路由有意的增删必须同步修改本文件的 expected 表并过 CI 评审。
 func TestRegisteredRoutesMatchContract(t *testing.T) {
-	// 最小全局配置：customizedRegister 注册阶段读 Observability 开关
+	// 最小全局配置：customizedRegister 注册阶段读 Observability/Security 开关
 	// （bootstrap 包用自身 config 包级变量，BootstrapWithOptions 才赋值）
 	prev := config
-	config = &conf.AppConfiguration{MCP: conf.MCPConfig{Enabled: true}}
+	config = &conf.AppConfiguration{
+		MCP:      conf.MCPConfig{Enabled: true},
+		Security: conf.SecurityConfig{OIDC: conf.OIDCConfig{Enabled: true}},
+	}
 	defer func() { config = prev }()
 
 	h := server.New(server.WithHostPorts("127.0.0.1:0"))
@@ -104,6 +107,16 @@ func TestRegisteredRoutesMatchContract(t *testing.T) {
 		"DELETE /api/v1/user/shares/:code/hard",
 		"GET /api/v1/notifies/mine", "GET /api/v1/notifies/unread-count",
 		"POST /api/v1/notifies/mark-read",
+		// ===== 多文件分享（P0 多文件，手写；OptionalIdentity 可选身份）=====
+		"POST /api/v1/share/multi-direct", "POST /api/v1/share/multi-bind",
+		// ===== 寄件码/反向收件（P2 手写）=====
+		"POST /api/v1/user/requests", "GET /api/v1/user/requests",
+		"DELETE /api/v1/user/requests/:token",
+		"GET /request/:token", "POST /api/v1/request/:token/upload",
+		// ===== OIDC SSO（P2 手写；security.oidc.enabled 时注册）=====
+		"GET /api/v1/user/oidc/login", "GET /api/v1/user/oidc/callback",
+		// ===== NAS 本地文件导入（P3 手写）=====
+		"POST /api/v1/user/shares/import-local",
 	}
 
 	// 1. 契约内路由必须全部已注册

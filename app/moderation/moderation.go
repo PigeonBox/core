@@ -42,6 +42,9 @@ type UploadMeta struct {
 	UserID      *uint
 	UploadID    string // 分片会话 ID（分片/秒传通道）
 	Channel     string // 上传通道：direct/chunk/presign
+	// StoragePath 已落存储的相对路径（文件内容扫描用，如 ClamAV；
+	// 直传/绑定入口在审核调用时填充，文本分享为空）
+	StoragePath string
 }
 
 // Moderator 内容审核接口（业务入口唯一依赖）。

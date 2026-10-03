@@ -43,6 +43,7 @@ func (m *mockStorage) GetFileURL(_ context.Context, _ string) (string, error) {
 func (m *mockStorage) GetFileReader(_ context.Context, _ string) (io.ReadCloser, int64, error) {
 	return nil, 0, nil
 }
+func (m *mockStorage) SaveStream(_ context.Context, _ string, _ io.Reader, _ int64) (int64, error) { return 0, nil }
 func (m *mockStorage) SaveChunk(_ context.Context, _ string, _ int, _ []byte) error { return nil }
 func (m *mockStorage) MergeChunks(_ context.Context, _ string, _ int, _ string) error {
 	return nil

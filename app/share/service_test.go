@@ -1,6 +1,7 @@
 package share
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -34,7 +35,7 @@ func newTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	gormDB, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	require.NoError(t, err)
-	require.NoError(t, gormDB.AutoMigrate(&model.FileCode{}))
+	require.NoError(t, gormDB.AutoMigrate(&model.FileCode{}, &model.FileCodeFile{}))
 	// glebarez/sqlite 的 :memory: 每条连接是独立库，多连接会拿到无表空库；
 	// 钉死单连接消除该 flake（异步 goroutine 与主流程并发取连接时必现）。
 	sqlDB, err := gormDB.DB()
@@ -68,6 +69,10 @@ type mockStorage struct {
 	deletedPath  string
 	deleteCalled bool
 	deleteErr    error
+	// deletedPaths 累计全部删除路径（多文件子文件删除断言用）
+	deletedPaths []string
+	// readerBytes GetFileReader 返回内容（zip 流测试用；每次调用返回新流）
+	readerBytes []byte
 }
 
 func newMockStorage() *mockStorage { return &mockStorage{} }
@@ -78,6 +83,7 @@ func (m *mockStorage) SaveFile(_ context.Context, _ *multipart.FileHeader, _ str
 func (m *mockStorage) DeleteFile(_ context.Context, path string) error {
 	m.deleteCalled = true
 	m.deletedPath = path
+	m.deletedPaths = append(m.deletedPaths, path)
 	return m.deleteErr
 }
 func (m *mockStorage) GetFile(_ context.Context, _ string) ([]byte, error) {
@@ -91,7 +97,13 @@ func (m *mockStorage) GetFileURL(_ context.Context, _ string) (string, error) {
 	return "", nil
 }
 func (m *mockStorage) GetFileReader(_ context.Context, _ string) (io.ReadCloser, int64, error) {
-	return nil, 0, nil
+	if m.readerBytes == nil {
+		return nil, 0, nil
+	}
+	return io.NopCloser(bytes.NewReader(m.readerBytes)), int64(len(m.readerBytes)), nil
+}
+func (m *mockStorage) SaveStream(_ context.Context, _ string, _ io.Reader, _ int64) (int64, error) {
+	return 0, nil
 }
 func (m *mockStorage) SaveChunk(_ context.Context, _ string, _ int, _ []byte) error {
 	return nil
@@ -489,7 +501,7 @@ func TestShareText_Moderation(t *testing.T) {
 	t.Run("reject 拦截返回30013", func(t *testing.T) {
 		svc, _, _, _ := newTestService(t)
 		svc.SetModerator(&mockModerator{verdict: moderation.VerdictReject})
-		_, err := svc.ShareTextWithAuth(context.Background(), "some text", 1, "day", false, "", nil, "1.1.1.1")
+		_, err := svc.ShareTextWithAuth(context.Background(), "some text", 1, "day", false, "", nil, "1.1.1.1", false, "")
 		require.Error(t, err)
 		var cre *ContentRejectedError
 		require.True(t, errors.As(err, &cre))
@@ -500,7 +512,7 @@ func TestShareText_Moderation(t *testing.T) {
 		emitter := &mockFlagEmitter{}
 		svc.SetModerator(&mockModerator{verdict: moderation.VerdictPending})
 		svc.SetFlagEventEmitter(emitter)
-		resp, err := svc.ShareTextWithAuth(context.Background(), "some text", 1, "day", false, "", nil, "1.1.1.1")
+		resp, err := svc.ShareTextWithAuth(context.Background(), "some text", 1, "day", false, "", nil, "1.1.1.1", false, "")
 		require.NoError(t, err)
 		assert.Equal(t, model.StatusPendingReview, resp.Status)
 		assert.Len(t, emitter.codes, 1)
@@ -516,7 +528,7 @@ func TestShareText_Moderation(t *testing.T) {
 		emitter := &mockFlagEmitter{}
 		svc.SetModerator(&mockModerator{verdict: moderation.VerdictAllow})
 		svc.SetFlagEventEmitter(emitter)
-		resp, err := svc.ShareTextWithAuth(context.Background(), "some text", 1, "day", false, "", nil, "1.1.1.1")
+		resp, err := svc.ShareTextWithAuth(context.Background(), "some text", 1, "day", false, "", nil, "1.1.1.1", false, "")
 		require.NoError(t, err)
 		assert.Equal(t, model.StatusNormal, resp.Status)
 		assert.Empty(t, emitter.codes)

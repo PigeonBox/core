@@ -31,7 +31,8 @@ var (
 // Service 通知 service
 type Service struct {
 	notifyRepo *dao.NotifyRepository
-	webhookURL string // 外部 Webhook 推送地址（空 = 禁用）
+	webhookURL string      // 外部 Webhook 推送地址（空 = 禁用）
+	mailer     *SMTPMailer // 邮件通知渠道（nil = 禁用；P2 SMTP）
 }
 
 // NewService 创建 service（内部自建 repo，走全局 db.GetDB()）
@@ -388,9 +389,16 @@ func (s *Service) CreateForUserSimple(ctx context.Context, userID uint, title, c
 	// 外部 Webhook 推送（fire-and-forget；对标上游缺口，双方都缺的外部通知渠道）
 	if err == nil {
 		s.dispatchWebhook(ctx, userID, title, content, notifyType, level)
+		// 邮件补发（fire-and-forget；未配置 SMTP/用户无邮箱时内部短路）
+		if s.mailer != nil && s.mailer.Enabled() {
+			go s.mailer.SendToUser(userID, title, content)
+		}
 	}
 	return err
 }
+
+// SetMailer 注入邮件发送器（bootstrap 从 notify.smtp 段构建；nil = 禁用）
+func (s *Service) SetMailer(m *SMTPMailer) { s.mailer = m }
 
 // ==================== Webhook 外部通知渠道 ====================
 

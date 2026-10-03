@@ -559,8 +559,21 @@ func ChunkUploadComplete(ctx context.Context, c *app.RequestContext) {
 		fmt.Println("计算文件哈希失败（分享创建继续，仅失去秒传能力）")
 	}
 
-	// 魔数+扩展名复检（首分片可能绕过 init 校验）
-	if head != nil {
+	// E2E 客户端加密（P1）：客户端上传的已是密文，跳过魔数复检（密文头为随机字节）。
+	// encrypted 经 form 或 JSON body 传递（与 password 同模式）
+	encrypted := c.DefaultPostForm("encrypted", "false") == "true"
+	if !encrypted {
+		var encBody struct {
+			Encrypted bool `json:"encrypted"`
+		}
+		if b := c.Request.Body(); len(b) > 0 {
+			_ = json.Unmarshal(b, &encBody)
+			encrypted = encBody.Encrypted
+		}
+	}
+
+	// 魔数+扩展名复检（首分片可能绕过 init 校验；E2E 密文跳过）
+	if !encrypted && head != nil {
 		if err := utils.CheckUploadContent(info.FileName, head); err != nil {
 			_ = getStorageService().DeleteFile(ctx, relativePath)
 			_ = getChunkService().DeleteUpload(ctx, uploadID)
@@ -656,6 +669,21 @@ func ChunkUploadComplete(ctx context.Context, c *app.RequestContext) {
 		passwordHash = hash
 	}
 
+	// 自定义取件码（P3）：仅登录用户可指定（防匿名抢注）
+	customCode := ""
+	if userID != nil {
+		customCode = c.DefaultPostForm("custom_code", "")
+		if customCode == "" {
+			var ccBody struct {
+				CustomCode string `json:"custom_code"`
+			}
+			if b := c.Request.Body(); len(b) > 0 {
+				_ = json.Unmarshal(b, &ccBody)
+				customCode = ccBody.CustomCode
+			}
+		}
+	}
+
 	// 创建分享记录
 	shareReq := &shareService.ShareFileReq{
 		Channel:      "chunk",
@@ -672,6 +700,8 @@ func ChunkUploadComplete(ctx context.Context, c *app.RequestContext) {
 		FileHash:     fileHash,
 		IsChunked:    true,
 		UploadID:     uploadID,
+		Encrypted:    encrypted,
+		CustomCode:   customCode,
 	}
 
 	shareResult, err := getShareService().ShareFile(ctx, shareReq)

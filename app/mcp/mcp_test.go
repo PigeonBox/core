@@ -28,6 +28,7 @@ func (nopStorage) SaveFile(_ context.Context, _ *multipart.FileHeader, _ string)
 func (nopStorage) DeleteFile(_ context.Context, _ string) error    { return nil }
 func (nopStorage) GetFile(_ context.Context, _ string) ([]byte, error) { return nil, nil }
 func (nopStorage) FileExists(_ context.Context, _ string) bool     { return true }
+func (nopStorage) SaveStream(_ context.Context, _ string, _ io.Reader, _ int64) (int64, error) { return 0, nil }
 func (nopStorage) SaveChunk(_ context.Context, _ string, _ int, _ []byte) error { return nil }
 func (nopStorage) MergeChunks(_ context.Context, _ string, _ int, _ string) error { return nil }
 func (nopStorage) CleanChunks(_ context.Context, _ string) error   { return nil }

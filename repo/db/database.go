@@ -98,6 +98,8 @@ func autoMigrate() error {
 	return DB.AutoMigrate(
 		&model.User{},
 		&model.FileCode{},
+		&model.FileCodeFile{},
+		&model.FileRequest{},
 		&model.UploadChunk{},
 		&model.TransferLog{},
 		&model.AdminOperationLog{},

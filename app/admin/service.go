@@ -659,7 +659,24 @@ func (s *Service) CleanExpiredFiles(ctx context.Context) (int64, int64, error) {
 	}
 
 	freedSpace := int64(0)
+	childRepo := dao.NewFileCodeFileRepository()
 	for _, file := range expiredFiles {
+		// 多文件分享子文件一并清理（P0 多文件；失败不阻断 DB 删除）
+		if s.storage != nil {
+			if children, cerr := childRepo.ListByFileCodeID(ctx, file.ID); cerr == nil {
+				for _, c := range children {
+					if c.FilePath == "" {
+						continue
+					}
+					if err := s.storage.DeleteFile(ctx, c.FilePath); err != nil {
+						logger.Warn("delete child physical file failed during cleanup", zap.String("path", c.FilePath), zap.Error(err))
+					}
+				}
+				if len(children) > 0 {
+					_ = childRepo.SoftDeleteByFileCodeIDs(ctx, []uint{file.ID})
+				}
+			}
+		}
 		// 删物理文件（失败不阻断 DB 删除）
 		if s.storage != nil && file.FilePath != "" {
 			fp := file.GetFilePath()

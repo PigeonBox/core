@@ -18,6 +18,7 @@ type User struct {
 	EmailVerified bool       `gorm:"default:false" json:"email_verified"`    // 邮箱是否验证
 	LastLoginAt   *time.Time `json:"last_login_at"`                          // 最后登录时间
 	LastLoginIP   string     `gorm:"size:45" json:"last_login_ip"`           // 最后登录IP
+	OidcSub       string     `gorm:"index;size:128" json:"-"`                // OIDC subject（P2 SSO；空=非 OIDC）
 
 	// 用户上传统计
 	TotalUploads    int   `gorm:"default:0" json:"total_uploads"`     // 总上传次数

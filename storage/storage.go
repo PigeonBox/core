@@ -53,6 +53,9 @@ type StorageInterface interface {
 	GetFile(ctx context.Context, filePath string) ([]byte, error)
 	FileExists(ctx context.Context, filePath string) bool
 
+	// 流式写入（本地导入/服务端拷贝用；返回写入字节数）
+	SaveStream(ctx context.Context, savePath string, r io.Reader, expectedSize int64) (int64, error)
+
 	// 分片操作
 	SaveChunk(ctx context.Context, uploadID string, chunkIndex int, data []byte) error
 	MergeChunks(ctx context.Context, uploadID string, totalChunks int, savePath string) error
@@ -571,6 +574,22 @@ func (s *StorageService) resolveLocal(rel string) (string, bool) {
 		return alt, true
 	}
 	return p, false
+}
+
+// LocalAbsPath 本地后端下解析存储相对路径为绝对路径（仅 local 后端；远端返回空）。
+// 供下载链路走 c.File（原生 Range/断点续传/MIME 推断）；路径不存在返回空。
+func (s *StorageService) LocalAbsPath(rel string) string {
+	if s.EffectiveType() != StorageTypeLocal {
+		return ""
+	}
+	p, _ := s.resolveLocal(rel)
+	if p == "" {
+		return ""
+	}
+	if info, err := os.Stat(p); err != nil || info.IsDir() {
+		return ""
+	}
+	return p
 }
 
 // GetFileSize 获取文件大小
