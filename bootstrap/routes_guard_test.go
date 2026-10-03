@@ -79,6 +79,8 @@ func TestRegisteredRoutesMatchContract(t *testing.T) {
 		"POST /user/login", "PUT /user/profile", "POST /user/register", "GET /user/stats",
 		// ===== share（IDL）=====
 		"GET /share/download", "POST /share/file/", "GET /share/select/", "POST /share/text/",
+		// 取件元数据（手写：查询不扣次数、不要密码）
+		"GET /share/metadata/:code",
 		// ===== anonymous（IDL）=====
 		"POST /anonymous/generate", "POST /anonymous/retrieve",
 		"GET /anonymous/download/:code", "GET /anonymous/search/:code",

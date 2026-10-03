@@ -800,6 +800,9 @@ func customizedRegister(r *server.Hertz) {
 		multiShare.POST("/multi-bind", customHandler.MultiShareBind)
 	}
 
+	// ===== 取件元数据（对标上游 /share/metadata：查询不扣次数、不要密码）=====
+	r.GET("/share/metadata/:code", customHandler.ShareMetadata)
+
 	// ===== 寄件码/反向收件（P2）：链接管理（JWT）+ 访客侧（公开） =====
 	// 服务实例在 initThriftIDLServices 装配（依赖 share/notify）
 	r.POST("/api/v1/user/requests", customMw.UserAuth(), customHandler.UserCreateFileRequest)
