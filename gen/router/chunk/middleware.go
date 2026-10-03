@@ -4,6 +4,8 @@ package chunk
 
 import (
 	"github.com/cloudwego/hertz/pkg/app"
+
+	"github.com/filescodebox/core/pkg/middleware"
 )
 
 func rootMw() []app.HandlerFunc {
@@ -11,9 +13,11 @@ func rootMw() []app.HandlerFunc {
 	return nil
 }
 
+// _chunkMw 可选认证：注入 user_id 供上传闸门区分匿名/登录（治理 2026-10-03）
 func _chunkMw() []app.HandlerFunc {
-	// your code...
-	return nil
+	return []app.HandlerFunc{
+		middleware.OptionalAuthMiddleware(),
+	}
 }
 
 func _uploadMw() []app.HandlerFunc {

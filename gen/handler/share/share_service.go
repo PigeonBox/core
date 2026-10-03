@@ -233,6 +233,29 @@ func ShareFile(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
+	// 3.5 上传闸门 + 匿名配额（治理回归：此前在 SaveFile 落盘之后才校验，
+	// 被拒请求已把整文件写入存储——local 留孤儿、远端后端永久泄漏）
+	{
+		var gateUserID *uint
+		if v, ok := middleware.UserIDFromContext(ctx); ok {
+			gateUserID = &v
+		}
+		if err := gate.CheckUploadAllowed(gateUserID); err != nil {
+			resp.NewTypedError(c, err)
+			return
+		}
+		if err := gate.CheckUploadLogin(gateUserID); err != nil {
+			resp.NewTypedError(c, err)
+			return
+		}
+		if gateUserID == nil {
+			if err := gate.CheckAnonymousQuota(ctx, middleware.ClientIP(c), file.Size); err != nil {
+				resp.NewTypedError(c, err)
+				return
+			}
+		}
+	}
+
 	// 4. 生成唯一文件名（原始文件名消毒后仅作展示存储，磁盘名用 UUID）
 	originalFilename := utils.SanitizeFileName(file.Filename)
 	fileExt := filepath.Ext(originalFilename)
@@ -290,24 +313,8 @@ func ShareFile(ctx context.Context, c *app.RequestContext) {
 		}
 	}
 
-	// 8.5 上传闸门：匿名总开关 + 登录要求（服务端 enforce）
-	if err := gate.CheckUploadAllowed(userID); err != nil {
-		resp.NewTypedError(c, err)
-		return
-	}
-	if err := gate.CheckUploadLogin(userID); err != nil {
-		resp.NewTypedError(c, err)
-		return
-	}
-
 	// 9. 获取客户端 IP（可信代理解析）
 	ownerIP := middleware.ClientIP(c)
-
-	// 9.25 匿名 per-IP 日配额（治理：此前配额只约束登录用户，匿名直传完全绕过）
-	if err := gate.CheckAnonymousQuota(ctx, ownerIP, file.Size); err != nil {
-		resp.NewTypedError(c, err)
-		return
-	}
 
 	// 10. 确定上传类型
 	uploadType := "anonymous"

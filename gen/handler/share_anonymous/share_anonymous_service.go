@@ -55,18 +55,23 @@ func GenerateCode(ctx context.Context, c *app.RequestContext) {
 		resp.NewErrorWithMessage(c, errcode.CodeInvalidParam, err.Error())
 		return
 	}
-	// 匿名 per-IP 日配额
-	if err := gate.CheckAnonymousQuota(ctx, middleware.ClientIP(c), req.FileSize); err != nil {
-		resp.NewTypedError(c, err)
+	// 上传大小 + 类型校验（登记元信息，整文件上限走 max_file_size；
+	// 前置于配额计数——非法请求不消耗配额，负数 FileSize 不再打进计数器）
+	if req.FileSize <= 0 {
+		resp.NewErrorWithMessage(c, errcode.CodeInvalidParam, "文件大小必须大于0")
 		return
 	}
-	// 上传大小 + 类型校验（登记元信息，整文件上限走 max_file_size）
 	if err := utils.CheckUploadSize(req.FileSize, utils.GetMaxFileSize()); err != nil {
 		resp.NewErrorWithMessage(c, errcode.CodeInvalidParam, "文件过大")
 		return
 	}
 	if !utils.IsAllowedExtension(req.FileName) {
 		resp.NewErrorWithMessage(c, errcode.CodeInvalidParam, "该文件类型禁止上传")
+		return
+	}
+	// 匿名 per-IP 日配额
+	if err := gate.CheckAnonymousQuota(ctx, middleware.ClientIP(c), req.FileSize); err != nil {
+		resp.NewTypedError(c, err)
 		return
 	}
 	safeName := utils.SanitizeFileName(req.FileName)

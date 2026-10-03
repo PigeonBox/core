@@ -120,3 +120,42 @@ func TestListWithFilter(t *testing.T) {
 		assert.Equal(t, int64(2), total)
 	})
 }
+
+func TestListWithFilter_ExpiredOrEscape(t *testing.T) {
+	// 回归：expired=true 的 OR 曾缺外层括号，逃逸 AND 链绕过全部过滤条件
+	newGovernanceTestDB(t)
+	repo := NewFileCodeRepository()
+	ctx := context.Background()
+
+	uid := uint(7)
+	fixtures := []*model.FileCode{
+		{Code: "EXPRAAAA", UserID: &uid, OwnerIP: "9.9.9.9", Status: model.StatusNormal, ExpiredCount: 0},  // 次数耗尽
+		{Code: "EXPRBBBB", OwnerIP: "8.8.8.8", Status: model.StatusBlocked, ExpiredCount: 0},              // 次数耗尽+blocked
+		{Code: "EXPRCCCC", UserID: &uid, OwnerIP: "9.9.9.9", Status: model.StatusNormal, ExpiredCount: 5}, // 正常次数
+	}
+	for _, f := range fixtures {
+		require.NoError(t, repo.Create(ctx, f))
+	}
+
+	files, total, err := repo.ListWithFilter(ctx, model.FileCodeQuery{
+		UserID:  &uid,
+		OwnerIP: "9.9.9.9",
+		Status:  model.StatusBlocked,
+		Expired: boolPtr(true),
+	})
+	require.NoError(t, err)
+	// 若 OR 逃逸，会返回全站所有 expired_count=0 的记录（含 EXPRBBBB）
+	assert.Equal(t, int64(0), total, "组合过滤下无满足项，OR 不得逃逸")
+	assert.Empty(t, files)
+
+	// expired=false 与 status 组合同样不被 AND 链破坏
+	_, total, err = repo.ListWithFilter(ctx, model.FileCodeQuery{
+		OwnerIP: "9.9.9.9",
+		Status:  model.StatusNormal,
+		Expired: boolPtr(false),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), total) // EXPRCCCC
+}
+
+func boolPtr(b bool) *bool { return &b }

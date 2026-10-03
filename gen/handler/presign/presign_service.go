@@ -65,12 +65,19 @@ func getService() *presignapp.Service {
 // Init .
 // @router /api/v1/presign/upload [POST]
 func Init(ctx context.Context, c *app.RequestContext) {
-	// 上传闸门：匿名总开关 + 登录要求（presign 为纯匿名通道，服务端 enforce）
-	if err := gate.CheckUploadAllowed(nil); err != nil {
+	// 上传闸门：匿名总开关 + 登录要求（路由已挂 OptionalAuth，登录用户不受
+	// open_upload 限制——修复：此前硬编码 nil，登录用户被当匿名拒绝）
+	var gateUserID *uint
+	if uid, exists := c.Get("user_id"); exists {
+		if uidUint, ok := uid.(uint); ok {
+			gateUserID = &uidUint
+		}
+	}
+	if err := gate.CheckUploadAllowed(gateUserID); err != nil {
 		resp.NewTypedError(c, err)
 		return
 	}
-	if err := gate.CheckUploadLogin(nil); err != nil {
+	if err := gate.CheckUploadLogin(gateUserID); err != nil {
 		resp.NewTypedError(c, err)
 		return
 	}
@@ -80,9 +87,10 @@ func Init(ctx context.Context, c *app.RequestContext) {
 		resp.NewErrorWithMessage(c, errcode.CodeInvalidParam, err.Error())
 		return
 	}
-	// 匿名 per-IP 日配额
-	if err := gate.CheckAnonymousQuota(ctx, middleware.ClientIP(c), int64(req.FileSize)); err != nil {
-		resp.NewTypedError(c, err)
+	// FileSize 必须 >0（修复：负数曾穿透到配额计数与服务层，可把字节日配额
+	// 打成负数绕过、并向登录用户写入负存储统计）
+	if req.FileSize <= 0 {
+		resp.NewErrorWithMessage(c, errcode.CodeInvalidParam, "文件大小必须大于0")
 		return
 	}
 	// 兼容读取 body 中的 file_hash（InitReq thrift 模型无此字段，直读 JSON）。
@@ -104,9 +112,10 @@ func Init(ctx context.Context, c *app.RequestContext) {
 				"upload_id":      "",
 				"is_quick":       true,
 				"existed":        true,
-				"share_code":     qu.ShareCode,
-				"share_url":      qu.FullShareURL,
-				"download_token": security.GenerateDownloadToken(qu.ShareCode),
+				"share_code": qu.ShareCode,
+				"share_url":  qu.FullShareURL,
+				// 安全修复（2026-10-03）：不再对秒传命中的原分享签发下载令牌——
+				// 持同哈希文件者可借令牌跳过原分享的密码校验（穿透）。
 			})
 			return
 		}
@@ -138,6 +147,15 @@ func Init(ctx context.Context, c *app.RequestContext) {
 		}
 		passwordHash = hash
 	}
+
+	// 匿名 per-IP 日配额（秒传未命中、参数校验全过才计数；登录用户不计）
+	if gateUserID == nil {
+		if err := gate.CheckAnonymousQuota(ctx, middleware.ClientIP(c), int64(req.FileSize)); err != nil {
+			resp.NewTypedError(c, err)
+			return
+		}
+	}
+
 	meta := presignapp.InitMeta{
 		FileName:     req.FileName,
 		FileSize:     req.FileSize,
@@ -290,7 +308,7 @@ func UploadDirect(ctx context.Context, c *app.RequestContext) {
 		case errors.Is(err, presignapp.ErrUploadExpired):
 			resp.NewErrorWithMessage(c, errcode.CodeInvalidParam, "upload expired")
 		default:
-			resp.NewErrorWithMessage(c, errcode.CodeInternal, err.Error())
+			resp.NewTypedError(c, err) // 配额/审核等 typed error 按业务码透传
 		}
 		return
 	}

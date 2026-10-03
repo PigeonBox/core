@@ -146,6 +146,10 @@ type InitResult struct {
 
 // Init 申请预签名
 func (s *Service) Init(ctx context.Context, meta InitMeta) (*InitResult, error) {
+	// FileSize 必须 >0（service 层兜底；CheckUploadSize 对 <=0 恒放行）
+	if meta.FileSize <= 0 {
+		return nil, fmt.Errorf("文件大小必须大于0")
+	}
 	// 类型 + 整文件大小校验（presign 为大文件直传通道，上限走
 	// upload.max_file_size 而非单请求体上限；单请求体上限由 HTTP 层约束）
 	if err := utils.CheckUploadSize(meta.FileSize, utils.GetMaxFileSize()); err != nil {

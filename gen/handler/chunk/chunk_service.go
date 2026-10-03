@@ -82,12 +82,19 @@ func getShareService() *shareService.Service {
 // ChunkUploadInit .
 // @router /chunk/upload/init/ [POST]
 func ChunkUploadInit(ctx context.Context, c *app.RequestContext) {
-	// 上传闸门：匿名总开关 + 登录要求（chunk 为纯匿名通道，服务端 enforce）
-	if err := gate.CheckUploadAllowed(nil); err != nil {
+	// 上传闸门：匿名总开关 + 登录要求（路由已挂 OptionalAuth，登录用户不受
+	// open_upload 限制——修复：此前硬编码 nil，登录用户被当匿名拒绝）
+	var gateUserID *uint
+	if uid, exists := c.Get("user_id"); exists {
+		if uidUint, ok := uid.(uint); ok {
+			gateUserID = &uidUint
+		}
+	}
+	if err := gate.CheckUploadAllowed(gateUserID); err != nil {
 		resp.NewTypedError(c, err)
 		return
 	}
-	if err := gate.CheckUploadLogin(nil); err != nil {
+	if err := gate.CheckUploadLogin(gateUserID); err != nil {
 		resp.NewTypedError(c, err)
 		return
 	}
@@ -102,13 +109,9 @@ func ChunkUploadInit(ctx context.Context, c *app.RequestContext) {
 		})
 		return
 	}
-	// 匿名 per-IP 日配额（分片通道按整文件申报大小计数）
-	if err := gate.CheckAnonymousQuota(ctx, middleware.ClientIP(c), req.FileSize); err != nil {
-		resp.NewTypedError(c, err)
-		return
-	}
 
-	// 参数验证
+	// 参数验证（前置于配额计数：非法请求不得消耗配额；负数 FileSize 曾可把
+	// 字节计数打成负数绕过日配额）
 	if req.FileName == "" {
 		c.JSON(consts.StatusBadRequest, map[string]interface{}{
 			"code":    400,
@@ -129,6 +132,14 @@ func ChunkUploadInit(ctx context.Context, c *app.RequestContext) {
 			"message": "分片大小必须大于0",
 		})
 		return
+	}
+
+	// 匿名 per-IP 日配额（分片通道按整文件申报大小计数，仅匿名请求）
+	if gateUserID == nil {
+		if err := gate.CheckAnonymousQuota(ctx, middleware.ClientIP(c), req.FileSize); err != nil {
+			resp.NewTypedError(c, err)
+			return
+		}
 	}
 
 	// 生成上传ID
@@ -600,10 +611,7 @@ func ChunkUploadComplete(ctx context.Context, c *app.RequestContext) {
 
 	shareResult, err := getShareService().ShareFile(ctx, shareReq)
 	if err != nil {
-		c.JSON(consts.StatusInternalServerError, map[string]interface{}{
-			"code":    500,
-			"message": "创建分享记录失败: " + err.Error(),
-		})
+		resp.NewTypedError(c, err) // 配额/单次上限/审核等 typed error 按业务码透传
 		return
 	}
 

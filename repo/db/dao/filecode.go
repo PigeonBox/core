@@ -520,9 +520,10 @@ func (r *FileCodeRepository) ListWithFilter(ctx context.Context, q model.FileCod
 	if q.Expired != nil {
 		now := time.Now()
 		if *q.Expired {
-			query = query.Where("(expired_at IS NOT NULL AND expired_at < ?) OR expired_count = 0", now)
+			// 注意外层括号：缺了会让 OR 逃逸出 AND 链，绕过 status/ip 等全部过滤
+			query = query.Where("((expired_at IS NOT NULL AND expired_at < ?) OR expired_count = 0)", now)
 		} else {
-			query = query.Where("(expired_at IS NULL OR expired_at >= ?) AND expired_count <> 0", now)
+			query = query.Where("((expired_at IS NULL OR expired_at >= ?) AND expired_count <> 0)", now)
 		}
 	}
 
