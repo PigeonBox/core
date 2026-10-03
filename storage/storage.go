@@ -318,6 +318,11 @@ func (s *StorageService) Reload(config *StorageConfig) error {
 }
 
 // EffectiveType 实际生效的存储类型（远端构造失败降级 local 时如实返回 local）。
+// DataPath 本地存储根目录（local 后端为磁盘路径；远端后端为配置值，仅诊断用）。
+func (s *StorageService) DataPath() string {
+	return s.config.DataPath
+}
+
 func (s *StorageService) EffectiveType() StorageType {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

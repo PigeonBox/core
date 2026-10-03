@@ -223,6 +223,7 @@ func setDefaults(v *viper.Viper) {
 	// 内容审核默认关闭、命中默认直接拒绝（治理 2026-10-03）
 	v.SetDefault("moderation.enabled", false)
 	v.SetDefault("moderation.block_action", "reject")
+	v.SetDefault("admin.log_retention_days", 90)
 }
 
 // envBindings 环境变量 → 配置 key 的映射。
@@ -283,6 +284,8 @@ var envBindings = map[string][]string{
 	"moderation.enabled":       {"FCB_MODERATION_ENABLED"},
 	"moderation.blocked_words": {"FCB_MODERATION_BLOCKED_WORDS"},
 	"moderation.block_action":  {"FCB_MODERATION_BLOCK_ACTION"},
+	// admin 运维
+	"admin.log_retention_days": {"FCB_ADMIN_LOG_RETENTION_DAYS"},
 	// upload 安全项
 	"upload.text_max_bytes":        {"FCB_TEXT_MAX_BYTES"},
 	"upload.allowed_extensions":    {"FCB_UPLOAD_ALLOWED_EXTENSIONS"},
@@ -1146,6 +1149,8 @@ func initThriftIDLServices(database *gorm.DB) {
 	cleanupSvc := adminApp.NewService()
 	cleanupSvc.SetStorage(bootstrapStorage)
 	go startExpiredFileCleanup(cleanupSvc)
+	// 存储对账 + 日志保留（治理 2026-10-03）：24h 周期，启动 10 分钟后首跑
+	go startMaintenanceJanitor()
 }
 
 // mcpService MCP server 实例（initThriftIDLServices 装配，customizedRegister 挂路由）
@@ -1173,6 +1178,36 @@ func startExpiredFileCleanup(svc *adminApp.Service) {
 				zap.Int64("count", n),
 				zap.Int64("freed_bytes", freed))
 		}
+	}
+}
+
+// startMaintenanceJanitor 孤儿文件对账 + 日志保留清理（24h 周期，首跑延迟 10 分钟
+// 等启动期写入稳定）。local 后端真删孤儿文件；远端后端仅跳过（报告策略见 janitor）。
+func startMaintenanceJanitor() {
+	retention := 90
+	if config != nil {
+		retention = config.Admin.LogRetentionDays
+	}
+	time.Sleep(10 * time.Minute)
+	j := adminApp.NewJanitor(getBootstrapStorageService(), retention)
+	ctx := context.Background()
+	run := func() {
+		if _, removed, err := j.ReconcileOrphans(ctx); err != nil {
+			logger.Warn("orphan reconcile failed", zap.Error(err))
+		} else if removed > 0 {
+			logger.Info("orphan files removed", zap.Int("count", removed))
+		}
+		if n, err := j.CleanupLogs(ctx); err != nil {
+			logger.Warn("log retention cleanup failed", zap.Error(err))
+		} else if n > 0 {
+			logger.Info("retention logs cleaned", zap.Int64("count", n))
+		}
+	}
+	run()
+	ticker := time.NewTicker(24 * time.Hour)
+	defer ticker.Stop()
+	for range ticker.C {
+		run()
 	}
 }
 

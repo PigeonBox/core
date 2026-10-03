@@ -26,6 +26,7 @@ type AppConfiguration struct {
 	Notify        NotifyConfig        `mapstructure:"notify"`
 	MCP           MCPConfig           `mapstructure:"mcp"`
 	Moderation    ModerationConfig    `mapstructure:"moderation"`
+	Admin         AdminConfig         `mapstructure:"admin"`
 }
 
 // MCPConfig Model Context Protocol server（AI 客户端集成；上游没有的差异化能力）。
@@ -33,6 +34,12 @@ type AppConfiguration struct {
 type MCPConfig struct {
 	// Enabled 默认 true（认证已强制，无暴露风险）。env: FCB_MCP_ENABLED
 	Enabled bool `mapstructure:"enabled"`
+}
+
+// AdminConfig 管理端运维配置（治理 2026-10-03）
+type AdminConfig struct {
+	// LogRetentionDays 审计/传输日志保留天数（0 = 永久）。env: FCB_ADMIN_LOG_RETENTION_DAYS
+	LogRetentionDays int `mapstructure:"log_retention_days"`
 }
 
 // ModerationConfig 内容审核配置（治理 2026-10-03；默认关闭，词表为空恒放行）
@@ -192,7 +199,7 @@ type StorageConfig struct {
 // CloudStorageConfig 云厂商对象存储通用配置（S3 兼容协议）。
 // Endpoint 留空时按厂商 + Region 自动推导。
 type CloudStorageConfig struct {
-	Region    string `mapstructure:"region"`     // 厂商地域，如 ap-guangzhou / cn-hangzhou
+	Region    string `mapstructure:"region"` // 厂商地域，如 ap-guangzhou / cn-hangzhou
 	Bucket    string `mapstructure:"bucket"`
 	AccessKey string `mapstructure:"access_key"`
 	SecretKey string `mapstructure:"secret_key"`
