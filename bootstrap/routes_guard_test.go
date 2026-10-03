@@ -37,6 +37,8 @@ func TestRegisteredRoutesMatchContract(t *testing.T) {
 	expected := []string{
 		// ===== admin（IDL）=====
 		"GET /admin/config", "PUT /admin/config",
+		// 用户配置运行时读写（手写，e3f16f2 管理端用户配置接通运行时）
+		"GET /admin/config/user", "PUT /admin/config/user",
 		"GET /admin/files", "DELETE /admin/files/:id",
 		"POST /admin/login", "GET /admin/stats",
 		"GET /admin/users", "PUT /admin/users/:id/status",
