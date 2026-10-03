@@ -41,6 +41,13 @@ func AccessLog() app.HandlerFunc {
 		if tid, ok := c.Get("trace_id"); ok {
 			fields = append(fields, zap.Any("trace_id", tid))
 		}
+		// 认证观测：认证类型（jwt/api_key）与用户（Key 流量占比、按用户聚合排障）
+		if at, ok := c.Get("auth_type"); ok {
+			fields = append(fields, zap.Any("auth_type", at))
+		}
+		if uid, ok := c.Get("user_id"); ok {
+			fields = append(fields, zap.Any("user_id", uid))
+		}
 
 		// 按 HTTP 状态码分级日志
 		switch {

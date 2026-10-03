@@ -115,6 +115,7 @@ func AuthMiddleware() app.HandlerFunc {
 		c.Set("user_id", claims.UserID)
 		c.Set("username", claims.Username)
 		c.Set("role", claims.Role)
+		c.Set("auth_type", "jwt")
 		ctx = withIdentity(ctx, claims.UserID, claims.Username, claims.Role, ClientIP(c), 0)
 
 		// 同时设置 Header，方便 handler 读取

@@ -37,10 +37,11 @@ func newAPIKeyTestEnv(t *testing.T) {
 	sqlDB.SetMaxOpenConns(1)
 	db.SetDatabaseInstance(g)
 	t.Cleanup(func() { db.SetDatabaseInstance(nil) })
-	// 重置全局锁定器为纯内存实例 + 清空触碰节流表，测试间隔离（同包直取）
+	// 重置全局锁定器为纯内存实例 + 清空触碰节流/单Key限流表，测试间隔离（同包直取）
 	InitDefaultLockout(nil)
 	t.Cleanup(func() { InitDefaultLockout(nil) })
 	touchThrottle = sync.Map{}
+	perKeyLimiters = sync.Map{}
 }
 
 func newFixtureUser(t *testing.T, status string) *model.User {
@@ -210,6 +211,35 @@ func TestOptionalAPIKey_DisabledSwitch_401(t *testing.T) {
 	assert.Equal(t, 401, code, "开关关闭后携带 Key 的请求必须 401")
 	assert.Empty(t, identity)
 	assert.Contains(t, body, "disabled")
+}
+
+// --- per-Key 独立限流 ---
+
+func TestAllowPerKey_TokenBucket(t *testing.T) {
+	assert.True(t, allowPerKey(1, 0, 0), "qps=0 视为不限")
+	assert.True(t, allowPerKey(2, 1, 1), "首次消耗桶内令牌")
+	assert.False(t, allowPerKey(2, 1, 1), "桶空即拒")
+	time.Sleep(1100 * time.Millisecond)
+	assert.True(t, allowPerKey(2, 1, 1), "1s 后补充令牌")
+}
+
+func TestOptionalAPIKey_PerKeyRateLimit_429(t *testing.T) {
+	newAPIKeyTestEnv(t)
+	conf.SetGlobalConfig(&conf.AppConfiguration{Security: conf.SecurityConfig{
+		APIToken: conf.APITokenConfig{Enabled: true, PerKeyQPS: 1, PerKeyBurst: 1},
+	}})
+	t.Cleanup(func() { conf.SetGlobalConfig(nil) })
+	u := newFixtureUser(t, "active")
+	plain, _ := newFixtureKey(t, u.ID, nil)
+
+	code1, _, _, _ := performProbe(t, []app.HandlerFunc{OptionalAPIKey()}, "/probe", hdr("X-API-Key", plain))
+	assert.Equal(t, 200, code1, "首次放行")
+	code2, body2, _, _ := performProbe(t, []app.HandlerFunc{OptionalAPIKey()}, "/probe", hdr("X-API-Key", plain))
+	assert.Equal(t, 429, code2, body2)
+	assert.Contains(t, body2, "限流")
+	// 匿名请求不受该 Key 的限流影响
+	code3, _, _, _ := performProbe(t, []app.HandlerFunc{OptionalAPIKey()}, "/probe")
+	assert.Equal(t, 200, code3)
 }
 
 // --- lockout 防爆破 ---

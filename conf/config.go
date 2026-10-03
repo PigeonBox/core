@@ -275,8 +275,11 @@ type SecurityConfig struct {
 
 // APITokenConfig 用户级 API Key（个人访问令牌，fcb_sk_）。
 // Enabled 为认证总开关（env FCB_API_TOKEN_ENABLED）：false 时携带 Key 的请求一律 401。
+// PerKeyQPS 为单 Key 独立限流（令牌桶，进程内）：0 = 不限（默认 20，burst 默认 2×QPS）。
 type APITokenConfig struct {
-	Enabled bool `mapstructure:"enabled"` // 默认 true
+	Enabled     bool `mapstructure:"enabled"`       // 默认 true
+	PerKeyQPS   int  `mapstructure:"per_key_qps"`   // 默认 20；显式 0 = 不限
+	PerKeyBurst int  `mapstructure:"per_key_burst"` // 默认 0 = 2×QPS
 }
 
 // DownloadTokenConfig 取件下载令牌（时间窗 HMAC）。

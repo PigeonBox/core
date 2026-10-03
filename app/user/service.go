@@ -405,6 +405,7 @@ type APIKeyData struct {
 	Name       string
 	Prefix     string
 	LastUsedAt *time.Time
+	LastUsedIP string
 	ExpiresAt  *time.Time
 	CreatedAt  *time.Time
 	Revoked    bool
@@ -522,6 +523,7 @@ func (s *Service) ListAPIKeys(ctx context.Context, userID uint) ([]*APIKeyData, 
 			Name:       key.Name,
 			Prefix:     key.Prefix,
 			LastUsedAt: key.LastUsedAt,
+			LastUsedIP: key.LastUsedIP,
 			ExpiresAt:  key.ExpiresAt,
 			CreatedAt:  &key.CreatedAt,
 			Revoked:    key.Revoked,

@@ -48,13 +48,30 @@ func (r *UserAPIKeyRepository) GetActiveByHash(ctx context.Context, hash string)
 	return &key, nil
 }
 
-// TouchLastUsed 更新最后使用时间
-func (r *UserAPIKeyRepository) TouchLastUsed(ctx context.Context, id uint) error {
+// TouchLastUsed 更新最后使用时间与来源 IP
+func (r *UserAPIKeyRepository) TouchLastUsed(ctx context.Context, id uint, ip string) error {
 	now := time.Now()
 	return r.db().WithContext(ctx).Model(&model.UserAPIKey{}).Where("id = ?", id).Updates(map[string]interface{}{
 		"last_used_at": &now,
+		"last_used_ip": ip,
 		"updated_at":   now,
 	}).Error
+}
+
+// ListExpiringWithin 查询 cutoff 之前到期、未吊销且未发过临期通知的密钥。
+func (r *UserAPIKeyRepository) ListExpiringWithin(ctx context.Context, cutoff time.Time) ([]*model.UserAPIKey, error) {
+	var keys []*model.UserAPIKey
+	err := r.db().WithContext(ctx).
+		Where("revoked = ? AND expires_at IS NOT NULL AND expires_at <= ? AND expiry_notified_at IS NULL", false, cutoff).
+		Find(&keys).Error
+	return keys, err
+}
+
+// MarkExpiryNotified 标记密钥已发过临期通知（去重，防重复打扰）。
+func (r *UserAPIKeyRepository) MarkExpiryNotified(ctx context.Context, id uint) error {
+	now := time.Now()
+	return r.db().WithContext(ctx).Model(&model.UserAPIKey{}).Where("id = ?", id).
+		Updates(map[string]interface{}{"expiry_notified_at": &now, "updated_at": now}).Error
 }
 
 // RevokeByID 撤销密钥

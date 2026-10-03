@@ -214,6 +214,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("security.lockout.window_seconds", 300)
 	v.SetDefault("security.lockout.lock_seconds", 600)
 	v.SetDefault("security.api_token.enabled", true)
+	v.SetDefault("security.api_token.per_key_qps", 20)
+	v.SetDefault("security.api_token.per_key_burst", 40)
 	v.SetDefault("rate_limit.enabled", true)
 	v.SetDefault("rate_limit.global_qps", 100)
 	v.SetDefault("rate_limit.upload_qps", 10)
@@ -278,6 +280,8 @@ var envBindings = map[string][]string{
 	"security.download_token.enabled":      {"FCB_DOWNLOAD_TOKEN_ENABLED"},
 	"security.lockout.enabled":             {"FCB_LOCKOUT_ENABLED"},
 	"security.api_token.enabled":           {"FCB_API_TOKEN_ENABLED"},
+	"security.api_token.per_key_qps":       {"FCB_API_TOKEN_PER_KEY_QPS"},
+	"security.api_token.per_key_burst":     {"FCB_API_TOKEN_PER_KEY_BURST"},
 	"security.lockout.max_attempts":        {"FCB_LOCKOUT_MAX_ATTEMPTS"},
 	"security.ssrf.allow_private_networks": {"FCB_SSRF_ALLOW_PRIVATE"},
 	// notify
@@ -1182,6 +1186,8 @@ func initThriftIDLServices(database *gorm.DB) {
 	cleanupSvc := adminApp.NewService()
 	cleanupSvc.SetStorage(bootstrapStorage)
 	go startExpiredFileCleanup(cleanupSvc)
+	// API Key 临期站内通知（波次3）：6h 周期，提前 7 天提醒属主
+	go startAPIKeyExpiryNotify()
 	// 存储对账 + 日志保留（治理 2026-10-03）：24h 周期，启动 10 分钟后首跑
 	go startMaintenanceJanitor()
 }

@@ -26,16 +26,16 @@ const (
 
 // Entry 一次传输的归因信息。UserID/APIKeyID 为 nil 表示匿名/JWT 认证。
 type Entry struct {
-	Operation   string // upload | download
-	FileCodeID  uint
-	Code        string
-	FileName    string
-	FileSize    int64
-	UserID      *uint
-	APIKeyID    *uint // 非 nil 表示该操作经用户级 API Key 认证（泄露排查归因用）
-	Username    string
-	IP          string
-	DurationMs  int64
+	Operation  string // upload | download
+	FileCodeID uint
+	Code       string
+	FileName   string
+	FileSize   int64
+	UserID     *uint
+	APIKeyID   *uint // 非 nil 表示该操作经用户级 API Key 认证（泄露排查归因用）
+	Username   string
+	IP         string
+	DurationMs int64
 }
 
 // Record 异步记录一次传输。

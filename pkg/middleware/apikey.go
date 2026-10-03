@@ -15,6 +15,7 @@ import (
 	"github.com/filescodebox/contracts/errcode"
 	"github.com/filescodebox/core/conf"
 	"github.com/filescodebox/core/repo/db/dao"
+	"golang.org/x/time/rate"
 )
 
 // apiKeyPlainPrefix API Key 明文前缀（与 app/user 签发端一致）。
@@ -26,6 +27,9 @@ var errInvalidAPIKey = errors.New("invalid api key")
 
 // errAPITokenDisabled 认证总开关关闭（security.api_token.enabled=false，紧急停用）。
 var errAPITokenDisabled = errors.New("api token auth disabled")
+
+// errPerKeyRateLimited 单 Key 独立限流触发（security.api_token.per_key_qps）。
+var errPerKeyRateLimited = errors.New("api key rate limited")
 
 // apiTokenEnabled API Key 认证总开关；无全局配置（单测等）默认开启。
 func apiTokenEnabled() bool {
@@ -85,6 +89,55 @@ func shouldTouchLastUsed(keyID uint, now time.Time) bool {
 	return true
 }
 
+// ===== Per-Key 独立限流（波次3：防单把 Key 被盗后高速滥用）=====
+
+type keyLimiterEntry struct {
+	limiter    *rate.Limiter
+	lastAccess time.Time
+}
+
+var perKeyLimiters sync.Map // keyID(uint) → *keyLimiterEntry
+var perKeyGCOnce sync.Once
+
+// perKeyQPS 读取单 Key 限流参数；无全局配置（单测）返回 0=不限。
+func perKeyQPS() (int, int) {
+	if c := conf.GetGlobalConfig(); c != nil {
+		return c.Security.APIToken.PerKeyQPS, c.Security.APIToken.PerKeyBurst
+	}
+	return 0, 0
+}
+
+// allowPerKey 单 Key 令牌桶。进程内计数（与 Touch 节流同语义，多实例各自限），
+// 吊销 Key 不再产生访问，后台协程周期清理 1h 未触达的条目。
+func allowPerKey(keyID uint, qps, burst int) bool {
+	if qps <= 0 {
+		return true
+	}
+	if burst <= 0 {
+		burst = 2 * qps
+	}
+	perKeyGCOnce.Do(func() {
+		go func() {
+			for range time.Tick(10 * time.Minute) {
+				now := time.Now()
+				perKeyLimiters.Range(func(k, v any) bool {
+					if now.Sub(v.(*keyLimiterEntry).lastAccess) > time.Hour {
+						perKeyLimiters.Delete(k)
+					}
+					return true
+				})
+			}
+		}()
+	})
+	now := time.Now()
+	v, _ := perKeyLimiters.LoadOrStore(keyID, &keyLimiterEntry{
+		limiter: rate.NewLimiter(rate.Limit(qps), burst), lastAccess: now,
+	})
+	e := v.(*keyLimiterEntry)
+	e.lastAccess = now
+	return e.limiter.Allow()
+}
+
 // ===== 校验与身份注入 =====
 
 // validateAPIKey 校验明文 Key 并注入身份（与 JWT 中间件双写方言一致：
@@ -119,8 +172,13 @@ func validateAPIKey(ctx context.Context, c *app.RequestContext, plainKey string)
 	}
 	lock.Reset(ctx, lockKey)
 
+	// 单 Key 独立限流（先于 Touch：被限流的请求不计入使用统计）
+	if qps, burst := perKeyQPS(); !allowPerKey(key.ID, qps, burst) {
+		return ctx, errPerKeyRateLimited
+	}
+
 	if shouldTouchLastUsed(key.ID, time.Now()) {
-		_ = keyRepo.TouchLastUsed(ctx, key.ID)
+		_ = keyRepo.TouchLastUsed(ctx, key.ID, ClientIP(c))
 	}
 
 	c.Set("user_id", user.ID)
@@ -135,13 +193,21 @@ func validateAPIKey(ctx context.Context, c *app.RequestContext, plainKey string)
 	return withIdentity(ctx, user.ID, user.Username, user.Role, ClientIP(c), key.ID), nil
 }
 
-// respondAPIKeyError 统一错误响应：总开关关闭 → 401；被锁定 → 429；无效 → 401（统一文案防枚举）。
+// respondAPIKeyError 统一错误响应：总开关关闭 → 401；被锁定/单 Key 限流 → 429；无效 → 401（统一文案防枚举）。
 func respondAPIKeyError(c *app.RequestContext, err error) {
 	if errors.Is(err, errAPITokenDisabled) {
 		c.Abort()
 		c.JSON(http.StatusUnauthorized, map[string]interface{}{
 			"code":    http.StatusUnauthorized,
 			"message": "API token authentication is disabled",
+		})
+		return
+	}
+	if errors.Is(err, errPerKeyRateLimited) {
+		c.Abort()
+		c.JSON(http.StatusTooManyRequests, map[string]interface{}{
+			"code":    errcode.CodeTooManyAttempts,
+			"message": "请求过于频繁（API Key 限流），请稍后重试",
 		})
 		return
 	}

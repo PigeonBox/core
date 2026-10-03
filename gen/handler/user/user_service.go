@@ -434,6 +434,7 @@ func ListAPIKeys(ctx context.Context, c *app.RequestContext) {
 			"name":         key.Name,
 			"prefix":       key.Prefix,
 			"last_used_at": formatTime(key.LastUsedAt),
+			"last_used_ip": key.LastUsedIP,
 			"expires_at":   formatTime(key.ExpiresAt),
 			"created_at":   formatTime(key.CreatedAt),
 			"revoked":      key.Revoked,
