@@ -18,6 +18,11 @@ type UploadChunk struct {
 	ChunkSize   int    `json:"chunk_size"`
 	FileName    string `gorm:"size:255" json:"file_name"`
 
+	// 归属追踪（治理 2026-10-03）：分片通道此前不记录上传者，
+	// Complete 处置（滥用定位/归属校验）无从下手。控制记录（chunk_index=-1）填充。
+	OwnerIP string `gorm:"size:45" json:"owner_ip"`
+	UserID  *uint  `gorm:"index" json:"user_id"`
+
 	Completed  bool   `gorm:"default:false" json:"completed"`
 	RetryCount int    `gorm:"default:0" json:"retry_count"`            // 重试次数
 	LastError  string `gorm:"type:text" json:"last_error"`             // 最后错误信息

@@ -16,6 +16,8 @@ type InitiateUploadReq struct {
 	TotalChunks int
 	FileSize    int64
 	ChunkSize   int
+	OwnerIP     string // 上传者 IP（治理归属追踪）
+	UserID      *uint  // 上传者（chunk 路由当前无可选认证，恒 nil；字段就位以便接线）
 }
 
 type UploadChunkReq struct {
@@ -86,6 +88,8 @@ func (s *Service) InitiateUpload(ctx context.Context, req *InitiateUploadReq) (*
 		FileSize:    req.FileSize,
 		ChunkSize:   req.ChunkSize,
 		FileName:    utils.SanitizeFileName(req.FileName),
+		OwnerIP:     req.OwnerIP,
+		UserID:      req.UserID,
 		Status:      "pending",
 	}
 

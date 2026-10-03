@@ -157,6 +157,12 @@ func ChunkUploadInit(ctx context.Context, c *app.RequestContext) {
 		TotalChunks: int(req.TotalChunks),
 		FileSize:    req.FileSize,
 		ChunkSize:   int(req.ChunkSize),
+		OwnerIP:     middleware.ClientIP(c),
+	}
+	if uid, exists := c.Get("user_id"); exists {
+		if uidUint, ok := uid.(uint); ok {
+			initReq.UserID = &uidUint
+		}
 	}
 
 	result, err := getChunkService().InitiateUpload(ctx, initReq)
@@ -388,6 +394,26 @@ func ChunkUploadComplete(ctx context.Context, c *app.RequestContext) {
 			"message": "上传记录不存在",
 		})
 		return
+	}
+
+	// 归属校验（治理）：控制记录已记 OwnerIP/UserID 时，仅归属方可 Complete，
+	// 防猜中 uploadID 劫持他人上传会话（老数据 OwnerIP 为空跳过，保持兼容）
+	if info.OwnerIP != "" && info.OwnerIP != middleware.ClientIP(c) {
+		sameUser := false
+		if info.UserID != nil {
+			if uid, exists := c.Get("user_id"); exists {
+				if uidUint, ok := uid.(uint); ok && uidUint == *info.UserID {
+					sameUser = true
+				}
+			}
+		}
+		if !sameUser {
+			c.JSON(consts.StatusForbidden, map[string]interface{}{
+				"code":    errcode.CodeForbidden,
+				"message": "无权操作该上传会话",
+			})
+			return
+		}
 	}
 
 	// 检查所有分片是否已上传
