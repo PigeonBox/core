@@ -13,6 +13,7 @@ import (
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/filescodebox/contracts/errcode"
+	"github.com/filescodebox/core/conf"
 	"github.com/filescodebox/core/repo/db/dao"
 )
 
@@ -22,6 +23,17 @@ const apiKeyPlainPrefix = "fcb_sk_"
 
 // errInvalidAPIKey 统一拒绝原因（对外一律 401 "Invalid API Key"，不区分过期/吊销/封禁，防枚举）。
 var errInvalidAPIKey = errors.New("invalid api key")
+
+// errAPITokenDisabled 认证总开关关闭（security.api_token.enabled=false，紧急停用）。
+var errAPITokenDisabled = errors.New("api token auth disabled")
+
+// apiTokenEnabled API Key 认证总开关；无全局配置（单测等）默认开启。
+func apiTokenEnabled() bool {
+	if c := conf.GetGlobalConfig(); c != nil {
+		return c.Security.APIToken.Enabled
+	}
+	return true
+}
 
 // extractAPIKey 从请求头提取 API Key。拒绝 query 传参（防访问日志/Referer/代理日志泄露）。
 // 支持三种形式：
@@ -81,6 +93,11 @@ func shouldTouchLastUsed(keyID uint, now time.Time) bool {
 // 失败一律返回 errInvalidAPIKey 或 *LockedError，不泄露具体原因。
 // 认证查询不走缓存：吊销/封禁必须即时生效（每请求 2 个索引查询，亚毫秒级）。
 func validateAPIKey(ctx context.Context, c *app.RequestContext, plainKey string) (context.Context, error) {
+	// 总开关：紧急停用时不做任何校验/计数，携带 Key 一律 401（fail-closed）
+	if !apiTokenEnabled() {
+		return ctx, errAPITokenDisabled
+	}
+
 	lock := GetDefaultLockout()
 	lockKey := FormatLockKey("apikey", ClientIP(c))
 	if remain, locked := lock.CheckLocked(ctx, lockKey); locked {
@@ -118,8 +135,16 @@ func validateAPIKey(ctx context.Context, c *app.RequestContext, plainKey string)
 	return withIdentity(ctx, user.ID, user.Username, user.Role, ClientIP(c)), nil
 }
 
-// respondAPIKeyError 统一错误响应：被锁定 → 429；无效 → 401（统一文案防枚举）。
+// respondAPIKeyError 统一错误响应：总开关关闭 → 401；被锁定 → 429；无效 → 401（统一文案防枚举）。
 func respondAPIKeyError(c *app.RequestContext, err error) {
+	if errors.Is(err, errAPITokenDisabled) {
+		c.Abort()
+		c.JSON(http.StatusUnauthorized, map[string]interface{}{
+			"code":    http.StatusUnauthorized,
+			"message": "API token authentication is disabled",
+		})
+		return
+	}
 	var le *LockedError
 	if errors.As(err, &le) {
 		c.Abort()

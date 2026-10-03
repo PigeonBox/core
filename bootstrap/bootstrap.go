@@ -212,6 +212,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("security.lockout.max_attempts", 10)
 	v.SetDefault("security.lockout.window_seconds", 300)
 	v.SetDefault("security.lockout.lock_seconds", 600)
+	v.SetDefault("security.api_token.enabled", true)
 	v.SetDefault("rate_limit.enabled", true)
 	v.SetDefault("rate_limit.global_qps", 100)
 	v.SetDefault("rate_limit.upload_qps", 10)
@@ -275,6 +276,7 @@ var envBindings = map[string][]string{
 	"security.trusted_proxies":             {"FCB_TRUSTED_PROXIES"},
 	"security.download_token.enabled":      {"FCB_DOWNLOAD_TOKEN_ENABLED"},
 	"security.lockout.enabled":             {"FCB_LOCKOUT_ENABLED"},
+	"security.api_token.enabled":           {"FCB_API_TOKEN_ENABLED"},
 	"security.lockout.max_attempts":        {"FCB_LOCKOUT_MAX_ATTEMPTS"},
 	"security.ssrf.allow_private_networks": {"FCB_SSRF_ALLOW_PRIVATE"},
 	// notify

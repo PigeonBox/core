@@ -11,6 +11,7 @@ import (
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/app/server"
 	"github.com/cloudwego/hertz/pkg/common/ut"
+	"github.com/filescodebox/core/conf"
 	"github.com/filescodebox/core/pkg/auth"
 	"github.com/filescodebox/core/repo/db"
 	"github.com/filescodebox/core/repo/db/dao"
@@ -189,6 +190,22 @@ func TestOptionalAPIKey_BannedUser_401(t *testing.T) {
 	plain, _ := newFixtureKey(t, u.ID, nil)
 	code, _, _, _ := performProbe(t, []app.HandlerFunc{OptionalAPIKey()}, "/probe", hdr("X-API-Key", plain))
 	assert.Equal(t, 401, code, "封禁用户的 Key 必须失效")
+}
+
+// --- 总开关 ---
+
+func TestOptionalAPIKey_DisabledSwitch_401(t *testing.T) {
+	newAPIKeyTestEnv(t)
+	conf.SetGlobalConfig(&conf.AppConfiguration{Security: conf.SecurityConfig{
+		APIToken: conf.APITokenConfig{Enabled: false},
+	}})
+	t.Cleanup(func() { conf.SetGlobalConfig(nil) })
+	u := newFixtureUser(t, "active")
+	plain, _ := newFixtureKey(t, u.ID, nil)
+	code, body, identity, _ := performProbe(t, []app.HandlerFunc{OptionalAPIKey()}, "/probe", hdr("X-API-Key", plain))
+	assert.Equal(t, 401, code, "开关关闭后携带 Key 的请求必须 401")
+	assert.Empty(t, identity)
+	assert.Contains(t, body, "disabled")
 }
 
 // --- lockout 防爆破 ---

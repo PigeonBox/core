@@ -263,13 +263,20 @@ func (c *AppConfiguration) IsProduction() bool {
 	return c.App.Production || c.Server.Mode == "release"
 }
 
-// SecurityConfig 安全相关配置（CORS / 可信代理 / 下载令牌 / 防爆破锁定 / SSRF）
+// SecurityConfig 安全相关配置（CORS / 可信代理 / 下载令牌 / 防爆破锁定 / SSRF / API Key）
 type SecurityConfig struct {
 	CORS           CORSConfig          `mapstructure:"cors"`
 	TrustedProxies []string            `mapstructure:"trusted_proxies"` // 可信代理 CIDR 列表，如 ["10.0.0.0/8","173.245.48.0/20"]
 	DownloadToken  DownloadTokenConfig `mapstructure:"download_token"`
 	Lockout        LockoutConfig       `mapstructure:"lockout"`
 	SSRF           SSRFConfig          `mapstructure:"ssrf"`
+	APIToken       APITokenConfig      `mapstructure:"api_token"`
+}
+
+// APITokenConfig 用户级 API Key（个人访问令牌，fcb_sk_）。
+// Enabled 为认证总开关（env FCB_API_TOKEN_ENABLED）：false 时携带 Key 的请求一律 401。
+type APITokenConfig struct {
+	Enabled bool `mapstructure:"enabled"` // 默认 true
 }
 
 // DownloadTokenConfig 取件下载令牌（时间窗 HMAC）。
