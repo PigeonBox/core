@@ -761,6 +761,7 @@ type UserShareListItem struct {
 	IsExpired    bool       `json:"is_expired"`
 	IsTextShare  bool       `json:"is_text_share"`
 	Status       string     `json:"status"` // 管控状态：owner 有权知道自己被禁用/待审
+	FileCount    int        `json:"file_count"` // P0 多文件：子文件数（0=旧单文件无子表行）
 }
 
 // deletedAtToPtr gorm.DeletedAt → *time.Time（nil 表示未删除）
@@ -779,8 +780,21 @@ func (s *Service) ListUserShares(ctx context.Context, userID uint, filter dao.Us
 		return nil, 0, err
 	}
 	items := make([]*UserShareListItem, 0, len(files))
+	// 批量取子文件数（P0 多文件；一次 GROUP BY，避免列表页 N+1）
+	ids := make([]uint, 0, len(files))
 	for _, f := range files {
-		items = append(items, toUserShareListItem(f))
+		ids = append(ids, f.ID)
+	}
+	counts, cerr := s.fileRepo().CountByFileCodeIDs(ctx, ids)
+	if cerr != nil {
+		counts = nil // 计数失败降级为 0，不阻断列表
+	}
+	for _, f := range files {
+		item := toUserShareListItem(f)
+		if counts != nil {
+			item.FileCount = int(counts[f.ID])
+		}
+		items = append(items, item)
 	}
 	return items, total, nil
 }

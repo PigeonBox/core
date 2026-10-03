@@ -156,6 +156,7 @@ func (s *Service) toolDefs() []toolDef {
 			"expire_value": intProp("过期数值，默认 1"),
 			"expire_style": strProp("过期样式：minute/hour/day/week/month/year/forever，默认 day"),
 			"password":     strProp("可选取件密码（提供即开启密码保护）"),
+			"custom_code":  strProp("可选自定义取件码（3-32 位字母/数字/-/_，冲突报错）"),
 		}, []string{"text"})},
 		{Name: "get_share", Description: "按取件码查询分享信息（不消耗取件次数）", InputSchema: objSchema(map[string]any{
 			"code": strProp("8 位分享码"),
@@ -243,14 +244,15 @@ func (s *Service) execTool(ctx context.Context, name string, args json.RawMessag
 			passwordHash = hash
 		}
 		resp, err := s.shareSvc.ShareTextWithAuth(ctx, text,
-			argInt("expire_value", 1), style, passwordHash != "", passwordHash, nil, "mcp", false, "")
+			argInt("expire_value", 1), style, passwordHash != "", passwordHash, nil, "mcp", false, argStr("custom_code"))
 		if err != nil {
 			return "创建分享失败: " + err.Error(), true
 		}
 		return fmt.Sprintf("分享创建成功\n取件码: %s\n分享链接: %s", resp.Code, resp.FullShareURL), false
 
 	case "get_share":
-		fc, err := s.fileRepo().GetByCode(ctx, argStr("code"))
+		code := argStr("code")
+		fc, err := s.fileRepo().GetByCode(ctx, code)
 		if err != nil {
 			return "分享不存在或已过期", true
 		}
@@ -262,8 +264,18 @@ func (s *Service) execTool(ctx context.Context, name string, args json.RawMessag
 		if fc.Text != "" {
 			kind = "文本"
 		}
-		return fmt.Sprintf("分享信息\n取件码: %s\n类型: %s\n内容/文件名: %s\n大小: %d 字节\n剩余次数: %d（-1 不限）\n已用次数: %d\n过期时间: %s\n创建时间: %s",
-			fc.Code, kind, displayFileName(fc), fc.Size, fc.ExpiredCount, fc.UsedCount, expire, fc.CreatedAt.Format("2006-01-02 15:04:05")), false
+		out := fmt.Sprintf("分享信息\n取件码: %s\n类型: %s\n内容/文件名: %s\n大小: %d 字节\n剩余次数: %d（-1 不限）\n已用次数: %d\n过期时间: %s\n创建时间: %s",
+			fc.Code, kind, displayFileName(fc), fc.Size, fc.ExpiredCount, fc.UsedCount, expire, fc.CreatedAt.Format("2006-01-02 15:04:05"))
+		// P0 多文件：附子文件清单（仅文件分享且存在子表行时）
+		if s.shareSvc != nil && !shareApp.IsTextShare(fc) {
+			if items, lerr := s.shareSvc.ListShareFiles(ctx, code); lerr == nil && len(items) > 1 {
+				out += fmt.Sprintf("\n文件清单（%d 个）:", len(items))
+				for _, it := range items {
+					out += fmt.Sprintf("\n  - %s（%d 字节）", it.Name, it.Size)
+				}
+			}
+		}
+		return out, false
 
 	case "list_shares":
 		page := argInt("page", 1)

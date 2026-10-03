@@ -245,7 +245,27 @@ func AdminFileDetail(ctx context.Context, c *app.RequestContext) {
 		resp.NewErrorByCode(c, 20008)
 		return
 	}
-	resp.Success(c, fc)
+	// P0 多文件：附子文件列表（旧单文件无子表行时回退主表合成）
+	children, _ := dao.NewFileCodeFileRepository().ListByFileCodeID(ctx, fc.ID)
+	files := make([]map[string]interface{}, 0, len(children))
+	for _, ch := range children {
+		files = append(files, map[string]interface{}{
+			"id":    ch.ID,
+			"name":  ch.DisplayName(),
+			"size":  ch.Size,
+			"hash":  ch.FileHash,
+		})
+	}
+	if len(files) == 0 && fc.GetFilePath() != "" {
+		files = append(files, map[string]interface{}{
+			"id": 0, "name": fc.UUIDFileName, "size": fc.Size, "hash": fc.FileHash,
+		})
+	}
+	resp.Success(c, map[string]interface{}{
+		"share":      fc,
+		"files":      files,
+		"file_count": len(files),
+	})
 }
 
 // AdminGetUserSettings 获取"用户配置"段（生效值：持久化优先，回退 yaml）。
@@ -555,9 +575,23 @@ func AdminListFilesFiltered(ctx context.Context, c *app.RequestContext) {
 		resp.NewErrorWithMessage(c, 50001, "查询文件列表失败: "+err.Error())
 		return
 	}
+	// P0 多文件：批量取子文件数（一次 GROUP BY）
+	ids := make([]uint, 0, len(files))
+	for _, f := range files {
+		ids = append(ids, f.ID)
+	}
+	counts, cerr := dao.NewFileCodeFileRepository().CountByFileCodeIDs(ctx, ids)
+	if cerr != nil {
+		counts = nil
+	}
 	items := make([]map[string]interface{}, 0, len(files))
 	for _, f := range files {
 		item := fileGovernanceItem(f)
+		if counts != nil {
+			item["file_count"] = counts[f.ID]
+		} else {
+			item["file_count"] = int64(0)
+		}
 		items = append(items, item)
 	}
 	c.JSON(consts.StatusOK, map[string]interface{}{

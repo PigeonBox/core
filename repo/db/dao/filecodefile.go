@@ -60,3 +60,28 @@ func (r *FileCodeFileRepository) SoftDeleteByFileCodeIDs(ctx context.Context, fi
 		Where("file_code_id IN ?", fileCodeIDs).
 		Delete(&model.FileCodeFile{}).Error
 }
+
+// CountByFileCodeIDs 批量统计多个分享的子文件数（列表页一次 GROUP BY，避免 N+1）。
+// 返回 file_code_id → count；无子行的分享不出现在结果中（调用方按 0 处理）。
+func (r *FileCodeFileRepository) CountByFileCodeIDs(ctx context.Context, fileCodeIDs []uint) (map[uint]int64, error) {
+	out := make(map[uint]int64, len(fileCodeIDs))
+	if len(fileCodeIDs) == 0 {
+		return out, nil
+	}
+	var rows []struct {
+		FileCodeID uint  `gorm:"column:file_code_id"`
+		Cnt        int64 `gorm:"column:cnt"`
+	}
+	err := db.GetDB().WithContext(ctx).Model(&model.FileCodeFile{}).
+		Select("file_code_id, COUNT(*) AS cnt").
+		Where("file_code_id IN ?", fileCodeIDs).
+		Group("file_code_id").
+		Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		out[row.FileCodeID] = row.Cnt
+	}
+	return out, nil
+}

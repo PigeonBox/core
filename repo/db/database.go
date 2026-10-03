@@ -1,6 +1,7 @@
 package db
 
 import (
+	"sync"
 	"fmt"
 	"time"
 
@@ -85,12 +86,20 @@ func Close() error {
 	return nil
 }
 
+// dbMu 保护全局 DB 指针的读写（生产启动写一次；测试逐用例替换 + 异步
+// goroutine（取件通知等 fire-and-forget）并发读，-race 下曾报数据竞争）
+var dbMu sync.RWMutex
+
 func GetDB() *gorm.DB {
+	dbMu.RLock()
+	defer dbMu.RUnlock()
 	return DB
 }
 
 func SetDatabaseInstance(db *gorm.DB) {
+	dbMu.Lock()
 	DB = db
+	dbMu.Unlock()
 }
 
 // autoMigrate 自动迁移数据库表

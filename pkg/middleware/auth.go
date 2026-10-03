@@ -186,10 +186,14 @@ func OptionalAuthMiddleware() app.HandlerFunc {
 			return
 		}
 
-		// 将用户信息存储到上下文中
+		// 将用户信息存储到上下文中（与 AuthMiddleware 同款双写：
+		// c.Set 供 handler c.Get，ctx value 供 UserIDFromContext 审计/闸门读取。
+		// 回归：此前可选路径只写 c.Set，JWT 用户被 UserIDFromContext 静默
+		// 当匿名——直传闸门误判、传输日志归因恒空、自定义取件码失效）
 		c.Set("user_id", claims.UserID)
 		c.Set("username", claims.Username)
 		c.Set("role", claims.Role)
+		ctx = withIdentity(ctx, claims.UserID, claims.Username, claims.Role, ClientIP(c), 0)
 
 		// 同时设置 Header
 		c.Header("X-User-ID", fmt.Sprintf("%d", claims.UserID))
