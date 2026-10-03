@@ -94,13 +94,15 @@ func (m *SMTPMailer) send(to, subject, body string) error {
 		if err != nil {
 			return fmt.Errorf("tls dial: %w", err)
 		}
-		defer conn.Close()
-		conn.SetDeadline(time.Now().Add(timeout))
+		defer func() { _ = conn.Close() }()
+		if err := conn.SetDeadline(time.Now().Add(timeout)); err != nil {
+			return fmt.Errorf("set deadline: %w", err)
+		}
 		client, err := smtp.NewClient(conn, host)
 		if err != nil {
 			return fmt.Errorf("smtp client: %w", err)
 		}
-		defer client.Close()
+		defer func() { _ = client.Close() }()
 		if ok, _ := client.Extension("AUTH"); ok && username != "" {
 			if err := client.Auth(auth); err != nil {
 				return fmt.Errorf("auth: %w", err)
@@ -114,13 +116,15 @@ func (m *SMTPMailer) send(to, subject, body string) error {
 	if err != nil {
 		return fmt.Errorf("dial: %w", err)
 	}
-	defer conn.Close()
-	conn.SetDeadline(time.Now().Add(timeout))
+	defer func() { _ = conn.Close() }()
+	if err := conn.SetDeadline(time.Now().Add(timeout)); err != nil {
+		return fmt.Errorf("set deadline: %w", err)
+	}
 	client, err := smtp.NewClient(conn, host)
 	if err != nil {
 		return fmt.Errorf("smtp client: %w", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 	if ok, _ := client.Extension("STARTTLS"); ok {
 		if err := client.StartTLS(&tls.Config{ServerName: host}); err != nil {
 			return fmt.Errorf("starttls: %w", err)

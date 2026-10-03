@@ -72,7 +72,7 @@ func (m *ClamAVModerator) Ping() error {
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
 	if _, err := conn.Write([]byte("zPING\x00")); err != nil {
 		return err
@@ -94,7 +94,7 @@ func (m *ClamAVModerator) ScanReader(ctx context.Context, r io.Reader) (string, 
 	if err != nil {
 		return "", fmt.Errorf("clamd 连接失败: %w", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	_ = conn.SetDeadline(time.Now().Add(time.Duration(m.cfg.TimeoutSeconds) * time.Second))
 
 	if _, err := conn.Write([]byte("zINSTREAM\x00")); err != nil {
@@ -162,7 +162,7 @@ func (m *ClamAVModerator) InspectFile(ctx context.Context, meta UploadMeta) Verd
 		log.Printf("[moderation] clamd open failed (fail-open): %v", err)
 		return VerdictAllow
 	}
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 
 	sig, err := m.ScanReader(ctx, rc)
 	if err != nil {

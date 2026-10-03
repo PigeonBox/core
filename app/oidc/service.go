@@ -111,7 +111,7 @@ func (s *Service) discover(ctx context.Context) (*discovery, error) {
 	if err != nil {
 		return nil, fmt.Errorf("OIDC discovery 请求失败: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("OIDC discovery 返回 %d", resp.StatusCode)
 	}
@@ -132,7 +132,7 @@ func (s *Service) discover(ctx context.Context) (*discovery, error) {
 // signState HMAC 签名时间戳（1 小时有效；无需服务端会话）
 func (s *Service) signState(ts int64) string {
 	mac := hmac.New(sha256.New, []byte(s.cfg.ClientSecret))
-	fmt.Fprintf(mac, "oidc-state:%d", ts)
+	_, _ = fmt.Fprintf(mac, "oidc-state:%d", ts) // hash.Write 恒返回 nil
 	return fmt.Sprintf("%d.%s", ts, hex.EncodeToString(mac.Sum(nil)))
 }
 
@@ -200,7 +200,7 @@ func (s *Service) ExchangeCallback(ctx context.Context, baseURL, code, state str
 	if err != nil {
 		return "", fmt.Errorf("token 交换失败: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var tok struct {
 		AccessToken string `json:"access_token"`
 		Error       string `json:"error"`
@@ -219,7 +219,7 @@ func (s *Service) ExchangeCallback(ctx context.Context, baseURL, code, state str
 	if err != nil {
 		return "", fmt.Errorf("userinfo 请求失败: %w", err)
 	}
-	defer uresp.Body.Close()
+	defer func() { _ = uresp.Body.Close() }()
 	if uresp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("userinfo 返回 %d", uresp.StatusCode)
 	}

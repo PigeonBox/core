@@ -183,7 +183,7 @@ func TestZipStream_MultiFile(t *testing.T) {
 
 	rc, err := svc.ZipStream(ctx, fc)
 	require.NoError(t, err)
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 
 	buf, err := io.ReadAll(rc)
 	require.NoError(t, err)
@@ -201,7 +201,7 @@ func readZipEntry(f *zip.File) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 	var b strings.Builder
 	if _, err := io.Copy(&b, rc); err != nil {
 		return "", err

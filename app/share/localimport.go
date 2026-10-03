@@ -69,7 +69,7 @@ func (s *Service) ImportLocalFile(ctx context.Context, opts ImportLocalOpts) (*S
 	if err != nil {
 		return nil, fmt.Errorf("打开文件失败: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	now := time.Now()
 	rel := filepath.Join("uploads", now.Format("2006"), now.Format("01"), now.Format("02"), uuid.New().String()+filepath.Ext(name))

@@ -59,8 +59,10 @@ func TestBuildOpenAPISpec(t *testing.T) {
 		t.Fatalf("多文件端点应 userAuth/apiKeyAuth 任一: %v", sec)
 	}
 
-	// 输出稳定（diff/缓存友好）
-	if string(BuildOpenAPISpec(routes, SpecInfo{Version: "test"})) != string(BuildOpenAPISpec(routes, SpecInfo{Version: "test"})) {
+	// 输出稳定（diff/缓存友好；两次独立调用结果必须逐字节一致）
+	first := string(BuildOpenAPISpec(routes, SpecInfo{Version: "test"}))
+	second := string(BuildOpenAPISpec(routes, SpecInfo{Version: "test"}))
+	if first != second {
 		t.Fatal("生成结果不稳定")
 	}
 }

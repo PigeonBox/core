@@ -26,7 +26,7 @@ func fakeClamd(t *testing.T) string {
 				return
 			}
 			go func(c net.Conn) {
-				defer c.Close()
+				defer func() { _ = c.Close() }()
 				r := bufio.NewReader(c)
 				// 命令以 \x00 结尾（zINSTREAM\0 / zPING\0）
 				cmd, err := r.ReadString('\x00')
