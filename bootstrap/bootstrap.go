@@ -779,6 +779,12 @@ func customizedRegister(r *server.Hertz) {
 		adminAPI.POST("/files/batch-delete", customHandler.AdminBatchDeleteFiles)
 		adminAPI.POST("/files/batch-extend", customHandler.AdminBatchExtendFiles)
 
+		// 分享治理（2026-10-03）：组合过滤列表（含 owner_ip/status/upload_type）
+		// + 管控状态机（单个/批量禁用、恢复）
+		adminAPI.GET("/files/filter", customHandler.AdminListFilesFiltered)
+		adminAPI.PUT("/files/:id/status", customHandler.AdminSetFileStatus)
+		adminAPI.POST("/files/batch-status", customHandler.AdminBatchSetFilesStatus)
+
 		// Dashboard 富指标
 		adminAPI.GET("/stats/enhanced", customHandler.AdminEnhancedStats)
 		adminAPI.GET("/stats/trend", customHandler.AdminStatsTrend)

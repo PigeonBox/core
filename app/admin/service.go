@@ -172,6 +172,33 @@ func (s *Service) GetFiles(ctx context.Context, page, pageSize int, search strin
 	return s.fileCodeRepo.List(ctx, page, pageSize, search)
 }
 
+// GetFilesFiltered 管理端文件列表组合过滤（治理 2026-10-03：
+// keyword/user/upload_type/owner_ip/status/大小/时间/过期，供 /admin/files/filter）。
+func (s *Service) GetFilesFiltered(ctx context.Context, q model.FileCodeQuery) ([]*model.FileCode, int64, error) {
+	return s.fileCodeRepo.ListWithFilter(ctx, q)
+}
+
+// SetFilesStatus 管理员设置分享管控状态（单个/批量禁用、恢复共用）。
+// 返回受影响行数；审计按动作分别落账（file.block / file.unblock / file.status）。
+func (s *Service) SetFilesStatus(ctx context.Context, ids []uint, status string) (int64, error) {
+	n, err := s.fileCodeRepo.UpdateStatusByIDs(ctx, ids, status)
+	if err != nil {
+		s.logAdminOperation(ctx, "file.status",
+			fmt.Sprintf("set %v status=%s failed: %v", ids, status, err), false)
+		return 0, err
+	}
+	action := "file.status"
+	switch status {
+	case model.StatusBlocked:
+		action = "file.block"
+	case model.StatusNormal:
+		action = "file.unblock"
+	}
+	s.logAdminOperation(ctx, action,
+		fmt.Sprintf("ids=%v status=%s affected=%d", ids, status, n), true)
+	return n, nil
+}
+
 // DeleteFile 删除文件（DB 记录 + 物理文件；此前物理删除被注释，造成存储泄漏）
 func (s *Service) DeleteFile(ctx context.Context, fileID uint) error {
 	file, err := s.fileCodeRepo.GetByID(ctx, fileID)

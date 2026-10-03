@@ -27,7 +27,7 @@ import (
 )
 
 var (
-	manageSvc    *adminapp.Service
+	manageSvc     *adminapp.Service
 	manageUserSvc *userapp.Service
 	manageStorage storage.StorageInterface
 )
@@ -477,4 +477,164 @@ func AdminTransferLogs(ctx context.Context, c *app.RequestContext) {
 			"page_size": pageSize,
 		},
 	})
+}
+
+// ==================== 分享治理（2026-10-03）：强过滤列表 + 状态机 ====================
+
+// AdminListFilesFiltered 管理端文件列表组合过滤。
+// GET /admin/files/filter?keyword=&user_id=&upload_type=&owner_ip=&status=&
+//
+//	min_size=&max_size=&created_after=&created_before=&expired=&page=&page_size=
+//
+// 相比 IDL /admin/files（仅 keyword）补充滥用定位维度，返回项含 owner_ip/status/
+// upload_type/user_id（owner_ip 仅管理端可见）。
+func AdminListFilesFiltered(ctx context.Context, c *app.RequestContext) {
+	q := model.FileCodeQuery{}
+	q.Keyword = c.Query("keyword")
+	q.UploadType = c.Query("upload_type")
+	q.OwnerIP = c.Query("owner_ip")
+	q.Status = c.Query("status")
+	if s := c.Query("user_id"); s != "" {
+		if id, err := strconv.ParseUint(s, 10, 64); err == nil && id > 0 {
+			uid := uint(id)
+			q.UserID = &uid
+		}
+	}
+	if s := c.Query("min_size"); s != "" {
+		if v, err := strconv.ParseInt(s, 10, 64); err == nil {
+			q.MinSize = &v
+		}
+	}
+	if s := c.Query("max_size"); s != "" {
+		if v, err := strconv.ParseInt(s, 10, 64); err == nil {
+			q.MaxSize = &v
+		}
+	}
+	if s := c.Query("created_after"); s != "" {
+		if t, err := time.Parse(time.RFC3339, s); err == nil {
+			q.CreatedAfter = &t
+		}
+	}
+	if s := c.Query("created_before"); s != "" {
+		if t, err := time.Parse(time.RFC3339, s); err == nil {
+			q.CreatedBefore = &t
+		}
+	}
+	if s := c.Query("expired"); s == "true" || s == "false" {
+		b := s == "true"
+		q.Expired = &b
+	}
+	q.Page, _ = strconv.Atoi(c.Query("page"))
+	q.PageSize, _ = strconv.Atoi(c.Query("page_size"))
+
+	files, total, err := getManageSvc().GetFilesFiltered(ctx, q)
+	if err != nil {
+		resp.NewErrorWithMessage(c, 50001, "查询文件列表失败: "+err.Error())
+		return
+	}
+	items := make([]map[string]interface{}, 0, len(files))
+	for _, f := range files {
+		item := fileGovernanceItem(f)
+		items = append(items, item)
+	}
+	c.JSON(consts.StatusOK, map[string]interface{}{
+		"code":    200,
+		"message": "success",
+		"data": map[string]interface{}{
+			"items":     items,
+			"total":     total,
+			"page":      q.Page,
+			"page_size": q.PageSize,
+		},
+	})
+}
+
+// fileGovernanceItem 管理端文件治理视图（含管控字段；owner_ip 仅管理端可见）
+func fileGovernanceItem(f *model.FileCode) map[string]interface{} {
+	fileName := f.UUIDFileName
+	if fileName == "" {
+		fileName = f.Prefix + f.Suffix
+	}
+	isText := f.Text != "" && f.FilePath == ""
+	item := map[string]interface{}{
+		"id":            f.ID,
+		"code":          f.Code,
+		"file_name":     fileName,
+		"is_text":       isText,
+		"text_preview":  "",
+		"size":          f.Size,
+		"expired_at":    nil,
+		"expired_count": f.ExpiredCount,
+		"used_count":    f.UsedCount,
+		"viewer_count":  f.ViewerCount,
+		"status":        f.Status,
+		"upload_type":   f.UploadType,
+		"user_id":       f.UserID,
+		"owner_ip":      f.OwnerIP,
+		"require_auth":  f.RequireAuth,
+		"created_at":    f.CreatedAt.Format("2006-01-02 15:04:05"),
+	}
+	if isText {
+		preview := f.Text
+		if len(preview) > 120 {
+			preview = preview[:120] + "..."
+		}
+		item["text_preview"] = preview
+	}
+	if f.ExpiredAt != nil {
+		item["expired_at"] = f.ExpiredAt.Format("2006-01-02 15:04:05")
+	}
+	return item
+}
+
+// AdminSetFileStatus 设置单个分享管控状态（禁用/恢复/待审）
+// PUT /admin/files/:id/status  {status: normal|blocked|pending_review}
+func AdminSetFileStatus(ctx context.Context, c *app.RequestContext) {
+	var req struct {
+		Status string `json:"status"`
+	}
+	if err := c.BindAndValidate(&req); err != nil || !model.ValidShareStatus(req.Status) {
+		resp.NewErrorWithMessage(c, 10001, "status 必须为 normal/blocked/pending_review")
+		return
+	}
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil || id == 0 {
+		resp.NewErrorWithMessage(c, 10001, "非法的文件 ID")
+		return
+	}
+	n, err := getManageSvc().SetFilesStatus(ctx, []uint{uint(id)}, req.Status)
+	if err != nil {
+		resp.NewErrorWithMessage(c, 50001, "设置状态失败: "+err.Error())
+		return
+	}
+	audit(ctx, "file."+req.Status, fmt.Sprintf("file %d status -> %s (affected=%d)", id, req.Status, n), true)
+	resp.Success(c, map[string]interface{}{"affected": n})
+}
+
+// AdminBatchSetFilesStatus 批量设置分享管控状态（滥用处置主路径：定位 IP 后批量禁用）
+// POST /admin/files/batch-status  {ids: [..], status: normal|blocked|pending_review}
+func AdminBatchSetFilesStatus(ctx context.Context, c *app.RequestContext) {
+	var req struct {
+		IDs    []uint `json:"ids"`
+		Status string `json:"status"`
+	}
+	if err := c.BindAndValidate(&req); err != nil || !model.ValidShareStatus(req.Status) {
+		resp.NewErrorWithMessage(c, 10001, "status 必须为 normal/blocked/pending_review 且 ids 非空")
+		return
+	}
+	if len(req.IDs) == 0 {
+		resp.NewErrorWithMessage(c, 10001, "ids 不能为空")
+		return
+	}
+	if len(req.IDs) > 500 {
+		resp.NewErrorWithMessage(c, 10001, "单批最多 500 条")
+		return
+	}
+	n, err := getManageSvc().SetFilesStatus(ctx, req.IDs, req.Status)
+	if err != nil {
+		resp.NewErrorWithMessage(c, 50001, "批量设置状态失败: "+err.Error())
+		return
+	}
+	audit(ctx, "file.batch-"+req.Status, fmt.Sprintf("batch status -> %s ids=%d (affected=%d)", req.Status, len(req.IDs), n), true)
+	resp.Success(c, map[string]interface{}{"affected": n})
 }
