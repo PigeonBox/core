@@ -990,7 +990,11 @@ func customizedRegister(r *server.Hertz) {
 		if tryServeStatic(c, path) {
 			return
 		}
-		// 其余路径回退到 SPA index.html
+		// 其余路径回退到 SPA index.html。
+		// 必须显式 no-cache：无缓存头时浏览器会对 index.html 启发式缓存，
+		// 升级后用户停留在旧 bundle 上（hashed assets 引用错位，表现为新功能
+		// 不出现/页面错乱），须强刷才能恢复
+		c.Header("Cache-Control", "no-cache")
 		c.File(filepath.Join(staticOpts.StaticDir, "index.html"))
 	})
 }
