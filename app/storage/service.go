@@ -66,7 +66,34 @@ func (s *Service) candidateFor(t string) *conf.StorageConfig {
 		cp := *s.config.Storage.WebDAV
 		c.WebDAV = &cp
 	}
+	// 云厂商段（oss/cos/bos/ks3/obs）随 type 归属复制
+	for _, seg := range []**conf.CloudStorageConfig{
+		&c.OSS, &c.COS, &c.BOS, &c.KS3, &c.OBS,
+	} {
+		*seg = nil
+	}
+	switch t {
+	case "oss":
+		c.OSS = cloneCloud(s.config.Storage.OSS)
+	case "cos":
+		c.COS = cloneCloud(s.config.Storage.COS)
+	case "bos":
+		c.BOS = cloneCloud(s.config.Storage.BOS)
+	case "ks3":
+		c.KS3 = cloneCloud(s.config.Storage.KS3)
+	case "obs":
+		c.OBS = cloneCloud(s.config.Storage.OBS)
+	}
 	return c
+}
+
+// cloneCloud 浅拷贝厂商段
+func cloneCloud(src *conf.CloudStorageConfig) *conf.CloudStorageConfig {
+	if src == nil {
+		return nil
+	}
+	cp := *src
+	return &cp
 }
 
 // validateEndpoints 远端端点 SSRF 校验（scheme 白名单 + 私网策略）
@@ -114,7 +141,7 @@ func (s *Service) activate(ctx context.Context, candidate *conf.StorageConfig) e
 // GetStorageInfo 获取存储信息
 func (s *Service) GetStorageInfo(ctx context.Context) (*StorageInfo, error) {
 	// 获取可用存储类型
-	availableStorages := []string{"local"}
+	availableStorages := []string{"local", "s3", "oss", "cos", "bos", "ks3", "obs", "webdav"}
 	if s.config.Storage.Type != "" {
 		availableStorages = append(availableStorages, "local")
 	}
@@ -158,7 +185,8 @@ func (s *Service) GetStorageInfo(ctx context.Context) (*StorageInfo, error) {
 // → 更新全局配置 → 持久化到 system_configs（重启不丢）。
 func (s *Service) SwitchStorage(ctx context.Context, storageType string) error {
 	switch storageType {
-	case "local", "s3", "webdav":
+	case "local", "s3", "webdav",
+		"oss", "cos", "bos", "ks3", "obs":
 	default:
 		return fmt.Errorf("不支持的存储类型: %s", storageType)
 	}

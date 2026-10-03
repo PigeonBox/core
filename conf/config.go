@@ -154,11 +154,32 @@ type DownloadConfig struct {
 }
 
 // StorageConfig 存储配置
+// StorageConfig 存储配置。
+// Type 支持：local / s3(含 MinIO) / oss(阿里云) / cos(腾讯云) / bos(百度云) /
+// ks3(金山云) / obs(华为云) / webdav。云厂商均走 S3 兼容协议（endpoint 可由
+// region 自动推导），各自配置段字段同 CloudStorageConfig。
 type StorageConfig struct {
-	Type        string        `mapstructure:"type"` // local, s3, webdav, onedrive, nfs
-	StoragePath string        `mapstructure:"storage_path"`
-	S3          *S3Config     `mapstructure:"s3"`
-	WebDAV      *WebDAVConfig `mapstructure:"webdav"`
+	Type        string              `mapstructure:"type"` // local, s3, oss, cos, bos, ks3, obs, webdav
+	StoragePath string              `mapstructure:"storage_path"`
+	S3          *S3Config           `mapstructure:"s3"`
+	WebDAV      *WebDAVConfig       `mapstructure:"webdav"`
+	OSS         *CloudStorageConfig `mapstructure:"oss"`
+	COS         *CloudStorageConfig `mapstructure:"cos"`
+	BOS         *CloudStorageConfig `mapstructure:"bos"`
+	KS3         *CloudStorageConfig `mapstructure:"ks3"`
+	OBS         *CloudStorageConfig `mapstructure:"obs"`
+}
+
+// CloudStorageConfig 云厂商对象存储通用配置（S3 兼容协议）。
+// Endpoint 留空时按厂商 + Region 自动推导。
+type CloudStorageConfig struct {
+	Region    string `mapstructure:"region"`     // 厂商地域，如 ap-guangzhou / cn-hangzhou
+	Bucket    string `mapstructure:"bucket"`
+	AccessKey string `mapstructure:"access_key"`
+	SecretKey string `mapstructure:"secret_key"`
+	Endpoint  string `mapstructure:"endpoint"`   // 空 = 按厂商+Region 推导
+	UseSSL    *bool  `mapstructure:"use_ssl"`    // 缺省 true
+	PathStyle *bool  `mapstructure:"path_style"` // 缺省 false（各厂商均为 virtual-host 风格）
 }
 
 // S3Config S3 兼容对象存储配置（AWS S3 / 阿里云 OSS / 腾讯云 COS 等）

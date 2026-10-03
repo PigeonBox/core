@@ -102,14 +102,28 @@ func ConfigFromConf(c *conf.StorageConfig, baseURL string) *StorageConfig {
 	if cfg.DataPath == "" {
 		cfg.DataPath = "./data"
 	}
-	if c.S3 != nil {
-		cfg.Endpoint = c.S3.Endpoint
-		cfg.Region = c.S3.Region
-		cfg.Bucket = c.S3.Bucket
-		cfg.AccessKey = c.S3.AccessKey
-		cfg.SecretKey = c.S3.SecretKey
-		cfg.UseSSL = c.S3.UseSSL
-		cfg.PathStyle = c.S3.PathStyle
+	// 云厂商段归一：type 对应的专属段优先，回落到 s3 通用段（同 S3 兼容字段）
+	cloud := c.S3
+	switch StorageType(strings.ToLower(c.Type)) {
+	case StorageTypeOSS:
+		cloud = cloudFromCloudConfig(c.OSS, cloud)
+	case StorageTypeCOS:
+		cloud = cloudFromCloudConfig(c.COS, cloud)
+	case StorageTypeBOS:
+		cloud = cloudFromCloudConfig(c.BOS, cloud)
+	case StorageTypeKS3:
+		cloud = cloudFromCloudConfig(c.KS3, cloud)
+	case StorageTypeOBS:
+		cloud = cloudFromCloudConfig(c.OBS, cloud)
+	}
+	if cloud != nil {
+		cfg.Endpoint = cloud.Endpoint
+		cfg.Region = cloud.Region
+		cfg.Bucket = cloud.Bucket
+		cfg.AccessKey = cloud.AccessKey
+		cfg.SecretKey = cloud.SecretKey
+		cfg.UseSSL = cloud.UseSSL
+		cfg.PathStyle = cloud.PathStyle
 	}
 	if c.WebDAV != nil {
 		cfg.WebDAVURL = c.WebDAV.Endpoint
@@ -117,6 +131,26 @@ func ConfigFromConf(c *conf.StorageConfig, baseURL string) *StorageConfig {
 		cfg.WebDAVPassword = c.WebDAV.Password
 	}
 	return cfg
+}
+
+// cloudFromCloudConfig 把厂商专属段转 S3 兼容形态（nil 时回落 fallback）。
+// UseSSL 缺省 true（各云厂商公网端点均为 TLS）。
+func cloudFromCloudConfig(cc *conf.CloudStorageConfig, fallback *conf.S3Config) *conf.S3Config {
+	if cc == nil {
+		return fallback
+	}
+	useSSL := true
+	if cc.UseSSL != nil {
+		useSSL = *cc.UseSSL
+	}
+	return &conf.S3Config{
+		Endpoint:  cc.Endpoint,
+		Region:    cc.Region,
+		Bucket:    cc.Bucket,
+		AccessKey: cc.AccessKey,
+		SecretKey: cc.SecretKey,
+		UseSSL:    useSSL,
+	}
 }
 
 // ToConf 反向映射（运行时切换后持久化回 conf.StorageConfig 形态）。
@@ -164,6 +198,28 @@ func buildOperator(cfg *StorageConfig) (*opendal.Operator, error) {
 				"region":     cfg.Region,
 				"use_ssl":    strconv.FormatBool(cfg.UseSSL),
 				"path_style": strconv.FormatBool(cfg.PathStyle),
+			},
+		})
+	case StorageTypeOSS, StorageTypeCOS, StorageTypeBOS, StorageTypeKS3, StorageTypeOBS:
+		// 云厂商：全部走 S3 兼容驱动（minio-go SigV4），endpoint 按厂商+region
+		// 推导（显式配置优先）；映射为 SchemeS3 后 presign 直传/直下随之生效
+		opts, err := ResolveCloudProvider(cfg.Type, cfg.Region, cfg.Bucket,
+			cfg.AccessKey, cfg.SecretKey, cfg.Endpoint,
+			boolPtr(cfg.UseSSL), boolPtr(cfg.PathStyle))
+		if err != nil {
+			return nil, err
+		}
+		return opendal.New(opendal.Config{
+			Scheme: opendal.SchemeS3,
+			Root:   opts["bucket"],
+			Options: map[string]string{
+				"endpoint":   opts["endpoint"],
+				"access_key": opts["access_key"],
+				"secret_key": opts["secret_key"],
+				"bucket":     opts["bucket"],
+				"region":     opts["region"],
+				"use_ssl":    opts["use_ssl"],
+				"path_style": opts["path_style"],
 			},
 		})
 	case StorageTypeWebDAV:
@@ -461,6 +517,9 @@ func (s *StorageService) CleanChunks(ctx context.Context, uploadID string) error
 	}
 	return os.RemoveAll(filepath.Join(s.dataPath(), prefix))
 }
+
+// boolPtr bool 取指针
+func boolPtr(b bool) *bool { return &b }
 
 // resolveLocal 定位本地文件：优先 DataPath+rel，失败回退 DataPath+/uploads/+rel。
 // 兼容统一存储实例前的历史双层布局（chunk/share 懒加载单例的 DataPath 分别为
