@@ -77,7 +77,20 @@ func isTrustedProxy(addr string) bool {
 //  3. 无 XFF 时回退 X-Real-IP（仅当直连可信），再回退直连地址
 func ClientIP(c *app.RequestContext) string {
 	// RemoteAddr 返回的 net.Addr 接口值恒非 nil，直接取字符串
-	remote := c.RemoteAddr().String()
+	return ResolveClientIP(remoteAddrString(c.RemoteAddr()),
+		string(c.GetHeader("X-Forwarded-For")),
+		string(c.GetHeader("X-Real-IP")))
+}
+
+// ResolveClientIP 可信代理解析核心（纯函数，便于单测覆盖伪造场景）。
+// remote 为直连对端地址（host:port 或裸 IP）；xff/xri 为原始代理头。
+//
+// 规则：
+//  1. 直连地址不在可信代理网段 → 采信直连，忽略一切代理头
+//     （直连部署下伪造 XFF 无法绕过 IP 维度限流/锁定）
+//  2. 直连可信 → XFF 从右向左扫描，跳过可信代理，取第一个不可信地址（真实客户端）
+//  3. 无 XFF 回退 X-Real-IP（仅当直连可信）
+func ResolveClientIP(remote, xff, xri string) string {
 	if remote == "" {
 		return "unknown"
 	}
@@ -85,8 +98,7 @@ func ClientIP(c *app.RequestContext) string {
 		return stripPort(remote)
 	}
 
-	// X-Forwarded-For: client, proxy1, proxy2（从右向左，跳过可信代理）
-	if xff := string(c.GetHeader("X-Forwarded-For")); xff != "" {
+	if xff != "" {
 		parts := strings.Split(xff, ",")
 		for i := len(parts) - 1; i >= 0; i-- {
 			cand := strings.TrimSpace(parts[i])
@@ -104,10 +116,18 @@ func ClientIP(c *app.RequestContext) string {
 		}
 	}
 
-	if xri := string(c.GetHeader("X-Real-IP")); xri != "" {
-		return strings.TrimSpace(xri)
+	if xri = strings.TrimSpace(xri); xri != "" {
+		return xri
 	}
 	return stripPort(remote)
+}
+
+// remoteAddrString net.Addr 安全取字符串（nil 防御）
+func remoteAddrString(addr interface{ String() string }) string {
+	if addr == nil {
+		return ""
+	}
+	return addr.String()
 }
 
 // stripPort 去掉 IP:port 的端口部分（IPv6 [::1]:8080 同样处理）
