@@ -47,6 +47,9 @@ func TestRegisteredRoutesMatchContract(t *testing.T) {
 		"GET /admin/files/:id", "PUT /admin/files/:id",
 		"GET /admin/files/:id/download",
 		"POST /admin/files/batch-delete", "POST /admin/files/batch-extend",
+		// 分享治理（组合过滤 + 状态机）
+		"GET /admin/files/filter",
+		"PUT /admin/files/:id/status", "POST /admin/files/batch-status",
 		"GET /admin/stats/enhanced", "GET /admin/stats/trend",
 		"GET /admin/logs/transfer",
 		// ===== maintenance（IDL）=====
