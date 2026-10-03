@@ -47,6 +47,8 @@ func TestRegisteredRoutesMatchContract(t *testing.T) {
 		"GET /admin/users", "PUT /admin/users/:id/status",
 		// ===== admin 增强（手写，均受 AdminMiddleware 保护）=====
 		"GET /admin/activities",
+		// 本地文件管理（对标上游 2.7.0 data/local 管理）
+		"GET /admin/local-files", "DELETE /admin/local-files", "POST /admin/local-files/import",
 		"POST /admin/users", "PUT /admin/users/:id", "DELETE /admin/users/:id",
 		"POST /admin/users/:id/reset-password", "GET /admin/users/filter",
 		"GET /admin/files/:id", "PUT /admin/files/:id",

@@ -1,0 +1,66 @@
+package share
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/stretchr/testify/require"
+
+	"github.com/filescodebox/core/conf"
+)
+
+// 回归：本地文件管理三层防穿越——root 索引只来自服务端配置、relPath 拒绝 ..、
+// EvalSymlinks 复核落点（符号链接逃逸必须被拒）。
+func TestLocalFilesConfinement(t *testing.T) {
+	root := t.TempDir()
+	sub := filepath.Join(root, "sub")
+	require.NoError(t, os.MkdirAll(sub, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "a.txt"), []byte("hello"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(sub, "b.txt"), []byte("world"), 0o644))
+	outside := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(outside, "secret.txt"), []byte("x"), 0o644))
+	// 符号链接：root/link → outside（逃逸尝试面）
+	require.NoError(t, os.Symlink(outside, filepath.Join(root, "link")))
+
+	old := conf.GetGlobalConfig()
+	conf.SetGlobalConfig(&conf.AppConfiguration{
+		Upload: conf.UploadConfig{LocalImport: conf.LocalImportConfig{
+			Enabled: true, Roots: []string{root},
+		}},
+	})
+	t.Cleanup(func() { conf.SetGlobalConfig(old) })
+
+	svc := NewService("", nil)
+
+	// 列表：根目录与子目录
+	entries, err := svc.ListLocalFiles(0, "")
+	require.NoError(t, err)
+	require.Len(t, entries, 3) // a.txt + sub/ + link/
+	entries, err = svc.ListLocalFiles(0, "sub")
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	require.Equal(t, "b.txt", entries[0].Name)
+
+	// 越界与非法路径
+	_, err = svc.ListLocalFiles(0, "../")
+	require.Error(t, err)
+	_, err = svc.ListLocalFiles(0, "sub/../../x")
+	require.Error(t, err)
+	_, err = svc.ListLocalFiles(9, "")
+	require.Error(t, err, "root 索引越界")
+	require.Error(t, svc.DeleteLocalFile(0, "/etc/passwd"), "绝对路径拒绝")
+
+	// 符号链接逃逸：link/secret.txt 落点在 root 外，必须拒绝
+	require.Error(t, svc.DeleteLocalFile(0, "link/secret.txt"))
+
+	// 正常删除：仅普通文件
+	require.NoError(t, svc.DeleteLocalFile(0, "a.txt"))
+	_, err = os.Stat(filepath.Join(root, "a.txt"))
+	require.True(t, os.IsNotExist(err))
+	require.Error(t, svc.DeleteLocalFile(0, "sub"), "目录不允许删除")
+
+	// 未启用时拒绝
+	conf.SetGlobalConfig(&conf.AppConfiguration{})
+	require.Error(t, func() error { _, err := svc.ListLocalFiles(0, ""); return err }())
+}

@@ -849,6 +849,10 @@ func customizedRegister(r *server.Hertz) {
 	// + 管理端增强：用户 CRUD / 文件管理 / 富统计（AdminMiddleware 保护）
 	adminAPI := r.Group("/admin", middleware.AdminMiddleware())
 	{
+		// 本地文件管理（对标上游 2.7.0 data/local；路径=root索引+白名单内相对路径）
+		adminAPI.GET("/local-files", customHandler.AdminListLocalFiles)
+		adminAPI.DELETE("/local-files", customHandler.AdminDeleteLocalFile)
+		adminAPI.POST("/local-files/import", customHandler.AdminImportLocalFile)
 		adminAPI.GET("/activities", func(ctx context.Context, c *app.RequestContext) {
 			page, pageSize := 1, 20
 			if v, err := strconv.Atoi(c.Query("page")); err == nil && v > 0 {
