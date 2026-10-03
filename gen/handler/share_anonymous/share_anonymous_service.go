@@ -55,6 +55,11 @@ func GenerateCode(ctx context.Context, c *app.RequestContext) {
 		resp.NewErrorWithMessage(c, errcode.CodeInvalidParam, err.Error())
 		return
 	}
+	// 匿名 per-IP 日配额
+	if err := gate.CheckAnonymousQuota(ctx, middleware.ClientIP(c), req.FileSize); err != nil {
+		resp.NewTypedError(c, err)
+		return
+	}
 	// 上传大小 + 类型校验（登记元信息，整文件上限走 max_file_size）
 	if err := utils.CheckUploadSize(req.FileSize, utils.GetMaxFileSize()); err != nil {
 		resp.NewErrorWithMessage(c, errcode.CodeInvalidParam, "文件过大")

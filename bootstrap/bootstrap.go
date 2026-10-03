@@ -18,6 +18,7 @@ import (
 	"github.com/filescodebox/core/conf"
 	"github.com/filescodebox/core/gen/router"
 	"github.com/filescodebox/core/pkg/auth"
+	"github.com/filescodebox/core/pkg/gate"
 	"github.com/filescodebox/core/pkg/logger"
 	"github.com/filescodebox/core/pkg/middleware"
 	"github.com/filescodebox/core/pkg/resp"
@@ -275,11 +276,13 @@ var envBindings = map[string][]string{
 	// mcp
 	"mcp.enabled": {"FCB_MCP_ENABLED"},
 	// upload 安全项
-	"upload.text_max_bytes":       {"FCB_TEXT_MAX_BYTES"},
-	"upload.allowed_extensions":   {"FCB_UPLOAD_ALLOWED_EXTENSIONS"},
-	"upload.blocked_extensions":   {"FCB_UPLOAD_BLOCKED_EXTENSIONS"},
-	"upload.enable_magic_check":   {"FCB_ENABLE_MAGIC_CHECK"},
-	"upload.max_save_seconds_cap": {"FCB_UPLOAD_MAX_SAVE_SECONDS_CAP"},
+	"upload.text_max_bytes":        {"FCB_TEXT_MAX_BYTES"},
+	"upload.allowed_extensions":    {"FCB_UPLOAD_ALLOWED_EXTENSIONS"},
+	"upload.blocked_extensions":    {"FCB_UPLOAD_BLOCKED_EXTENSIONS"},
+	"upload.enable_magic_check":    {"FCB_ENABLE_MAGIC_CHECK"},
+	"upload.max_save_seconds_cap":  {"FCB_UPLOAD_MAX_SAVE_SECONDS_CAP"},
+	"upload.anonymous_daily_count": {"FCB_UPLOAD_ANON_DAILY_COUNT"},
+	"upload.anonymous_daily_bytes": {"FCB_UPLOAD_ANON_DAILY_BYTES"},
 	// rate_limit
 	"rate_limit.enabled":       {"FCB_RATE_LIMIT_ENABLED"},
 	"rate_limit.global_qps":    {"FCB_RATE_LIMIT_GLOBAL_QPS"},
@@ -592,6 +595,8 @@ func BootstrapWithOptions(configPath string, opts ...Option) (*server.Hertz, err
 	// use_redis=true 且 Redis 可用时多实例共享计数。
 	rl := middleware.InitDefaultRateLimiter(middleware.RateLimitConfigFromConf())
 	rl.SetRedis(redis.GetClient())
+	// 匿名上传日配额计数器复用同一 Redis（无 Redis 退化进程内计数）
+	gate.SetQuotaRedis(redis.GetClient())
 	h.Use(func(ctx context.Context, c *app.RequestContext) {
 		path := string(c.Request.URI().Path())
 		switch {

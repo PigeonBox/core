@@ -143,6 +143,11 @@ type UploadConfig struct {
 	// "整文件"语义的通道；0 = 不限。upload_size 是"单请求体"上限，两者语义不同
 	// （回归：分片 init 曾误用 upload_size，48MB 文件被 10MB 单请求限制拦截）。
 	MaxFileSize int64 `mapstructure:"max_file_size"`
+	// AnonymousDailyCount 匿名上传 per-IP 日配额（次数），0 = 不限。
+	// 仅约束匿名请求（登录用户走存储配额）；Redis 可用时多实例共享计数。
+	AnonymousDailyCount int64 `mapstructure:"anonymous_daily_count"`
+	// AnonymousDailyBytes 匿名上传 per-IP 日配额（字节），0 = 不限。
+	AnonymousDailyBytes int64 `mapstructure:"anonymous_daily_bytes"`
 }
 
 // DownloadConfig 下载配置

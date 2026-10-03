@@ -298,6 +298,12 @@ func ShareFile(ctx context.Context, c *app.RequestContext) {
 	// 9. 获取客户端 IP（可信代理解析）
 	ownerIP := middleware.ClientIP(c)
 
+	// 9.25 匿名 per-IP 日配额（治理：此前配额只约束登录用户，匿名直传完全绕过）
+	if err := gate.CheckAnonymousQuota(ctx, ownerIP, file.Size); err != nil {
+		resp.NewTypedError(c, err)
+		return
+	}
+
 	// 10. 确定上传类型
 	uploadType := "anonymous"
 	if userID != nil {

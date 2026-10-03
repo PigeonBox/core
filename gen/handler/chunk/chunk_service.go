@@ -95,6 +95,11 @@ func ChunkUploadInit(ctx context.Context, c *app.RequestContext) {
 		})
 		return
 	}
+	// 匿名 per-IP 日配额（分片通道按整文件申报大小计数）
+	if err := gate.CheckAnonymousQuota(ctx, middleware.ClientIP(c), req.FileSize); err != nil {
+		resp.NewTypedError(c, err)
+		return
+	}
 
 	// 参数验证
 	if req.FileName == "" {

@@ -80,6 +80,11 @@ func Init(ctx context.Context, c *app.RequestContext) {
 		resp.NewErrorWithMessage(c, errcode.CodeInvalidParam, err.Error())
 		return
 	}
+	// 匿名 per-IP 日配额
+	if err := gate.CheckAnonymousQuota(ctx, middleware.ClientIP(c), int64(req.FileSize)); err != nil {
+		resp.NewTypedError(c, err)
+		return
+	}
 	// 兼容读取 body 中的 file_hash（InitReq thrift 模型无此字段，直读 JSON）。
 	// 客户端预计算 SHA-256 用于秒传判断。
 	fileHash := ""
