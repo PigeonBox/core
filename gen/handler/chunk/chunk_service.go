@@ -3,20 +3,19 @@
 package chunk
 
 import (
+	"bytes"
 	"context"
 	"crypto/md5"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"strconv"
 	"time"
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
-	"github.com/google/uuid"
 	"github.com/filescodebox/contracts/errcode"
 	chunkmodel "github.com/filescodebox/contracts/gen/chunk"
 	chunkService "github.com/filescodebox/core/app/chunk"
@@ -25,6 +24,7 @@ import (
 	"github.com/filescodebox/core/pkg/security"
 	"github.com/filescodebox/core/pkg/utils"
 	"github.com/filescodebox/core/storage"
+	"github.com/google/uuid"
 )
 
 var chunkSvc *chunkService.Service
@@ -42,6 +42,14 @@ func getChunkService() *chunkService.Service {
 		chunkSvc = chunkService.NewService()
 	}
 	return chunkSvc
+}
+
+// SetStorage 注入统一存储实例（bootstrap 调用）。
+// 回归要点：此前 chunk（DataPath=./data）与 share（./data/uploads）两个懒加载
+// 单例路径基不一致，分片合并写入 `data/uploads/<rel>`、下载却找
+// `data/uploads/uploads/<rel>` → 跨 handler 写读必然 500。
+func SetStorage(st storage.StorageInterface) {
+	storageSvc = st
 }
 
 func getStorageService() storage.StorageInterface {
@@ -405,17 +413,26 @@ func ChunkUploadComplete(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
-	// 计算合并后整文件 SHA-256（秒传依据；此前恒以 uploadID 冒充 file_hash）
-	fullPath := filepath.Join("./data", relativePath)
-	fileHash, hashErr := utils.HashFile(fullPath)
-	if hashErr != nil {
+	// 计算合并后整文件 SHA-256（秒传依据；此前恒以 uploadID 冒充 file_hash）。
+	// 回归要点：必须经注入的 storage 实例读取（与合并写入同基 + resolveLocal
+	// 历史布局兼容），不能硬编码 "./data"——统一存储实例后基已变，硬编码读不到
+	// → file_hash 恒空 → 分片通道秒传永不命中。
+	var head []byte
+	fileHash := ""
+	if rc, _, rerr := getStorageService().GetFileReader(ctx, relativePath); rerr == nil {
+		// 先读 512 字节做魔数复检，再以 MultiReader 把头部拼回流算整文件哈希
+		//（ReadCloser 不保证可 Seek，不能回卷）
+		head = readHeadFrom(rc, 512)
+		fileHash, _ = utils.HashReader(io.MultiReader(bytes.NewReader(head), rc))
+		_ = rc.Close()
+	}
+	if fileHash == "" {
 		// 哈希失败不阻断分享创建（仅失去秒传能力），记空
-		fmt.Printf("计算文件哈希失败: %v\n", hashErr)
-		fileHash = ""
+		fmt.Println("计算文件哈希失败（分享创建继续，仅失去秒传能力）")
 	}
 
 	// 魔数+扩展名复检（首分片可能绕过 init 校验）
-	if head := readHead(fullPath, 512); head != nil {
+	if head != nil {
 		if err := utils.CheckUploadContent(info.FileName, head); err != nil {
 			_ = getStorageService().DeleteFile(ctx, relativePath)
 			_ = getChunkService().DeleteUpload(ctx, uploadID)
@@ -541,15 +558,10 @@ func ChunkUploadComplete(ctx context.Context, c *app.RequestContext) {
 	c.JSON(consts.StatusOK, resp)
 }
 
-// readHead 读取文件前 n 字节（魔数校验用）；读取失败返回 nil
-func readHead(path string, n int) []byte {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil
-	}
-	defer func() { _ = f.Close() }()
+// readHeadFrom 从 reader 读取前 n 字节（魔数校验用）；读取失败返回 nil
+func readHeadFrom(r io.Reader, n int) []byte {
 	buf := make([]byte, n)
-	read, err := io.ReadFull(f, buf)
+	read, err := io.ReadFull(r, buf)
 	if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
 		return nil
 	}

@@ -14,7 +14,6 @@ import (
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
-	"github.com/google/uuid"
 	"github.com/filescodebox/contracts/errcode"
 	sharemodel "github.com/filescodebox/contracts/gen/share"
 	shareService "github.com/filescodebox/core/app/share"
@@ -25,6 +24,7 @@ import (
 	"github.com/filescodebox/core/pkg/transfer"
 	"github.com/filescodebox/core/pkg/utils"
 	"github.com/filescodebox/core/storage"
+	"github.com/google/uuid"
 )
 
 var shareSvc *shareService.Service
@@ -36,6 +36,11 @@ const (
 	defaultStoragePath   = "./data/uploads"
 	defaultBaseURL       = "http://localhost:12345"
 )
+
+// SetStorage 注入统一存储实例（bootstrap 调用；消除与 chunk 单例的路径基分歧）
+func SetStorage(st storage.StorageInterface) {
+	storageSvc = st
+}
 
 func getStorageService() storage.StorageInterface {
 	if storageSvc == nil {
@@ -612,7 +617,8 @@ func DownloadFile(ctx context.Context, c *app.RequestContext) {
 
 	// 下载令牌校验（security.download_token.enabled，默认开）：
 	// 取件查询/匿名取件接口下发时间窗 HMAC 令牌，恒时比较校验。
-	// 密码保护分享可凭正确密码替代令牌（密码本身已是凭证）。
+	// 密码保护分享：正确密码或有效令牌任一即可（令牌由密码校验通过后的
+	// 取件查询签发，等价于已认证——回归：此前持有效令牌下载仍被要求密码）。
 	tokenEnabled := downloadTokenEnabled()
 	if tokenEnabled && token == "" && password == "" {
 		c.JSON(consts.StatusUnauthorized, map[string]interface{}{
@@ -621,7 +627,8 @@ func DownloadFile(ctx context.Context, c *app.RequestContext) {
 		})
 		return
 	}
-	if tokenEnabled && token != "" && !security.VerifyDownloadToken(code, token) {
+	tokenValid := tokenEnabled && token != "" && security.VerifyDownloadToken(code, token)
+	if tokenEnabled && token != "" && !tokenValid {
 		c.JSON(consts.StatusUnauthorized, map[string]interface{}{
 			"code":    errcode.CodeDownloadToken,
 			"message": "下载令牌无效或已过期，请重新获取取件信息",
@@ -631,7 +638,7 @@ func DownloadFile(ctx context.Context, c *app.RequestContext) {
 
 	// 获取分享内容并校验密码（viewer IP 由 handler 注入，可信代理解析）
 	viewerIP := middleware.ClientIP(c)
-	fileCode, err := getShareService().GetFileWithUsage(ctx, code, password, viewerIP)
+	fileCode, err := getShareService().GetFileWithUsage(ctx, code, password, viewerIP, tokenValid)
 	if err != nil {
 		if err.Error() == "密码错误" {
 			_, _ = lock.RecordFailure(ctx, lockKey)

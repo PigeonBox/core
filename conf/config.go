@@ -136,6 +136,10 @@ type UploadConfig struct {
 	AllowedExpireStyles []string `mapstructure:"allowed_expire_styles"`
 	// MaxSaveSecondsCap 全局过期时间上限（秒），0 = 不限（对标上游 max_save_seconds）。
 	MaxSaveSecondsCap int64 `mapstructure:"max_save_seconds_cap"`
+	// MaxFileSize 单个文件大小上限（字节），适用于分片/预签名/匿名登记等
+	// "整文件"语义的通道；0 = 不限。upload_size 是"单请求体"上限，两者语义不同
+	// （回归：分片 init 曾误用 upload_size，48MB 文件被 10MB 单请求限制拦截）。
+	MaxFileSize int64 `mapstructure:"max_file_size"`
 }
 
 // DownloadConfig 下载配置

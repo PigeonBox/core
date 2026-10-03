@@ -249,14 +249,18 @@ func TestGetFileWithUsage_PasswordCheck(t *testing.T) {
 	require.NoError(t, err)
 
 	// 错误密码 → 报错
-	_, err = svc.GetFileWithUsage(ctx, resp.Code, "wrongpwd", "1.2.3.4")
+	_, err = svc.GetFileWithUsage(ctx, resp.Code, "wrongpwd", "1.2.3.4", false)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "密码错误")
 
 	// 正确密码 → 成功
-	fc, err := svc.GetFileWithUsage(ctx, resp.Code, "rightpwd", "1.2.3.4")
+	fc, err := svc.GetFileWithUsage(ctx, resp.Code, "rightpwd", "1.2.3.4", false)
 	require.NoError(t, err)
 	assert.Equal(t, resp.Code, fc.Code)
+
+	// authedByToken=true（有效下载令牌）等价已认证：空密码也应放行
+	_, err = svc.GetFileWithUsage(ctx, resp.Code, "", "1.2.3.4", true)
+	require.NoError(t, err, "持有效下载令牌（取件校验通过后签发）应视为已认证")
 }
 
 // 测试：按时间过期——ExpiredAt 在过去

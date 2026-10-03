@@ -146,10 +146,10 @@ type InitResult struct {
 
 // Init 申请预签名
 func (s *Service) Init(ctx context.Context, meta InitMeta) (*InitResult, error) {
-	// 上传大小 + 类型校验（应用层）
-	maxSize := utils.GetMaxUploadSize()
-	if err := utils.CheckUploadSize(meta.FileSize, maxSize); err != nil {
-		return nil, fmt.Errorf("文件过大: 最大允许 %d 字节", maxSize)
+	// 类型 + 整文件大小校验（presign 为大文件直传通道，上限走
+	// upload.max_file_size 而非单请求体上限；单请求体上限由 HTTP 层约束）
+	if err := utils.CheckUploadSize(meta.FileSize, utils.GetMaxFileSize()); err != nil {
+		return nil, fmt.Errorf("文件过大: 最大允许 %d 字节", utils.GetMaxFileSize())
 	}
 	if utils.IsBlockedExtension(meta.FileName, utils.DefaultBlockedExtensions()) {
 		return nil, fmt.Errorf("该文件类型禁止上传")

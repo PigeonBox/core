@@ -43,9 +43,8 @@ func GenerateCode(ctx context.Context, c *app.RequestContext) {
 		resp.NewErrorWithMessage(c, errcode.CodeInvalidParam, err.Error())
 		return
 	}
-	// 上传大小 + 类型校验（应用层）
-	maxSize := utils.GetMaxUploadSize()
-	if err := utils.CheckUploadSize(req.FileSize, maxSize); err != nil {
+	// 上传大小 + 类型校验（登记元信息，整文件上限走 max_file_size）
+	if err := utils.CheckUploadSize(req.FileSize, utils.GetMaxFileSize()); err != nil {
 		resp.NewErrorWithMessage(c, errcode.CodeInvalidParam, "文件过大")
 		return
 	}

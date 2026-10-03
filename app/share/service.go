@@ -410,7 +410,9 @@ func (s *Service) UpdateFileUsage(ctx context.Context, code string) (bool, error
 
 // GetFileWithUsage 获取文件并校验密码（不扣次数，扣次数由下载链路调 UpdateFileUsage）。
 // viewerIP 由 handler 从 c.ClientIP() 注入。
-func (s *Service) GetFileWithUsage(ctx context.Context, code, password, viewerIP string) (*model.FileCode, error) {
+// authedByToken：调用方已校验有效下载令牌（令牌由取件查询在密码/取件校验通过后
+// 签发，等价于已认证——否则密码保护分享"凭令牌下载"还要再输一次密码，令牌失效）。
+func (s *Service) GetFileWithUsage(ctx context.Context, code, password, viewerIP string, authedByToken bool) (*model.FileCode, error) {
 	s.ensureRepository()
 
 	fileCode, err := s.GetFileByCode(ctx, code)
@@ -418,8 +420,8 @@ func (s *Service) GetFileWithUsage(ctx context.Context, code, password, viewerIP
 		return nil, err
 	}
 
-	// 真实密码校验（替代原 TODO：仅检查非空）
-	if fileCode.RequireAuth {
+	// 真实密码校验（替代原 TODO：仅检查非空）；持有效下载令牌视为已认证
+	if fileCode.RequireAuth && !authedByToken {
 		// 防御历史脏数据:require_auth=true 但哈希缺失 → 一律拒绝,
 		// 而非以"密码错误"之外的方式放行(CheckPassword 对空哈希已收紧为全拒)
 		if fileCode.PasswordHash == "" {

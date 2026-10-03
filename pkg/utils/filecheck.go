@@ -30,6 +30,16 @@ func GetMaxUploadSize() int64 {
 	return cfg.Upload.UploadSize
 }
 
+// GetMaxFileSize 整文件大小上限（分片/预签名/匿名登记通道）。
+// upload.max_file_size，0 = 不限（分片通道的存在意义即突破单请求限制）。
+func GetMaxFileSize() int64 {
+	cfg := conf.GetGlobalConfig()
+	if cfg == nil {
+		return 0
+	}
+	return cfg.Upload.MaxFileSize
+}
+
 // GetTextShareMaxBytes 文本分享大小上限（字节）。未配置时用默认 222KB。
 func GetTextShareMaxBytes() int64 {
 	cfg := conf.GetGlobalConfig()

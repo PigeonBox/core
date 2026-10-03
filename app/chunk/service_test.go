@@ -51,16 +51,18 @@ func TestInitiateUpload_Success(t *testing.T) {
 	assert.Equal(t, "pending", resp.Status)
 }
 
-// 测试：重复初始化同一 UploadID 拒绝
-func TestInitiateUpload_Duplicate(t *testing.T) {
+// 测试：重复初始化同一 UploadID → 幂等返回既有进度（供断点续传）。
+// 回归：此前直接报错，秒传未命中时同哈希重传（uploadID=fileHash 复用）必 500。
+func TestInitiateUpload_DuplicateIdempotent(t *testing.T) {
 	svc := newTestService(t)
 	req := &InitiateUploadReq{UploadID: "dup", TotalChunks: 2}
-	_, err := svc.InitiateUpload(context.Background(), req)
+	first, err := svc.InitiateUpload(context.Background(), req)
 	require.NoError(t, err)
 
-	_, err = svc.InitiateUpload(context.Background(), req)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "already exists")
+	second, err := svc.InitiateUpload(context.Background(), req)
+	require.NoError(t, err, "重复 init 应幂等返回既有控制记录")
+	assert.Equal(t, first.UploadID, second.UploadID)
+	assert.Equal(t, first.ID, second.ID, "应返回同一条控制记录，而非新建")
 }
 
 // 测试：上传单个分片 → 标记完成

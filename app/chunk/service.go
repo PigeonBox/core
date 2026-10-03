@@ -60,19 +60,21 @@ func NewService() *Service {
 
 // InitiateUpload 初始化分片上传
 func (s *Service) InitiateUpload(ctx context.Context, req *InitiateUploadReq) (*ChunkResp, error) {
-	// 上传大小 + 类型校验（应用层）
-	maxSize := utils.GetMaxUploadSize()
-	if err := utils.CheckUploadSize(req.FileSize, maxSize); err != nil {
-		return nil, fmt.Errorf("文件过大: 最大允许 %d 字节", maxSize)
+	// 类型 + 整文件大小校验（应用层）。
+	// 回归：此前误用 GetMaxUploadSize（单请求体上限 10MB）拦截整个文件，
+	// 分片通道被单请求限制误伤。整文件上限走 upload.max_file_size（0=不限）。
+	if err := utils.CheckUploadSize(req.FileSize, utils.GetMaxFileSize()); err != nil {
+		return nil, fmt.Errorf("文件过大: 最大允许 %d 字节", utils.GetMaxFileSize())
 	}
 	if utils.IsBlockedExtension(req.FileName, utils.DefaultBlockedExtensions()) {
 		return nil, fmt.Errorf("该文件类型禁止上传")
 	}
 
-	// 检查是否已存在相同的上传ID
+	// 幂等语义：同 uploadID 重复 init（同哈希重传 / 断点重连）返回既有进度，
+	// 由客户端经 status 续传——此前直接报错，秒传未命中时同哈希重传必 500。
 	existing, err := s.chunkRepo.GetByUploadID(ctx, req.UploadID)
 	if err == nil && existing != nil {
-		return nil, errors.New("upload ID already exists")
+		return controlToResp(existing), nil
 	}
 
 	// 创建控制记录（chunk_index = -1）
@@ -92,18 +94,23 @@ func (s *Service) InitiateUpload(ctx context.Context, req *InitiateUploadReq) (*
 		return nil, err
 	}
 
+	return controlToResp(chunk), nil
+}
+
+// controlToResp 控制记录（chunk_index=-1）转响应
+func controlToResp(c *model.UploadChunk) *ChunkResp {
 	return &ChunkResp{
-		ID:          chunk.ID,
-		UploadID:    chunk.UploadID,
-		ChunkIndex:  chunk.ChunkIndex,
-		ChunkHash:   chunk.ChunkHash,
-		TotalChunks: chunk.TotalChunks,
-		FileSize:    chunk.FileSize,
-		ChunkSize:   chunk.ChunkSize,
-		FileName:    chunk.FileName,
-		Completed:   chunk.Completed,
-		Status:      chunk.Status,
-	}, nil
+		ID:          c.ID,
+		UploadID:    c.UploadID,
+		ChunkIndex:  c.ChunkIndex,
+		ChunkHash:   c.ChunkHash,
+		TotalChunks: c.TotalChunks,
+		FileSize:    c.FileSize,
+		ChunkSize:   c.ChunkSize,
+		FileName:    c.FileName,
+		Completed:   c.Completed,
+		Status:      c.Status,
+	}
 }
 
 // UploadChunk 上传单个分片

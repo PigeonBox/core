@@ -85,6 +85,8 @@ type StorageConfig struct {
 	WebDAVURL      string
 	WebDAVUsername string
 	WebDAVPassword string
+	// Root 远端根目录（webdav：所有对象挂其下，避免绝对路径写入；空 = "filecodebox"）
+	Root string
 }
 
 // ConfigFromConf 把 conf 的存储配置映射为 StorageConfig（bootstrap 与管理端切换共用）。
@@ -168,10 +170,17 @@ func buildOperator(cfg *StorageConfig) (*opendal.Operator, error) {
 		if cfg.WebDAVURL == "" {
 			return nil, fmt.Errorf("webdav 配置不完整：url 必填")
 		}
+		// root 必传：所有对象挂远端子目录下（此前缺省导致 abs() 生成
+		// "/uploads/..." 绝对路径，多数 WebDAV 服务端拒绝 MkdirAll）
+		root := cfg.Root
+		if root == "" {
+			root = "filecodebox"
+		}
 		return opendal.New(opendal.Config{
 			Scheme: opendal.SchemeWebDAV,
 			Options: map[string]string{
 				"url":      cfg.WebDAVURL,
+				"root":     root,
 				"username": cfg.WebDAVUsername,
 				"password": cfg.WebDAVPassword,
 			},
@@ -453,6 +462,21 @@ func (s *StorageService) CleanChunks(ctx context.Context, uploadID string) error
 	return os.RemoveAll(filepath.Join(s.dataPath(), prefix))
 }
 
+// resolveLocal 定位本地文件：优先 DataPath+rel，失败回退 DataPath+/uploads/+rel。
+// 兼容统一存储实例前的历史双层布局（chunk/share 懒加载单例的 DataPath 分别为
+// ./data 与 ./data/uploads，直传历史文件落在 data/uploads/uploads/<rel>）。
+func (s *StorageService) resolveLocal(rel string) (string, bool) {
+	p := filepath.Join(s.dataPath(), rel)
+	if _, err := os.Stat(p); err == nil {
+		return p, true
+	}
+	alt := filepath.Join(s.dataPath(), "uploads", rel)
+	if _, err := os.Stat(alt); err == nil {
+		return alt, true
+	}
+	return p, false
+}
+
 // GetFileSize 获取文件大小
 func (s *StorageService) GetFileSize(ctx context.Context, filePath string) (int64, error) {
 	_, op := s.current()
@@ -493,7 +517,10 @@ func (s *StorageService) GetFileReader(ctx context.Context, filePath string) (io
 		}
 		return rc, md.Size, nil
 	}
-	fullPath := filepath.Join(s.dataPath(), filePath)
+	fullPath, ok := s.resolveLocal(filePath)
+	if !ok {
+		return nil, 0, fmt.Errorf("文件不存在: %s", filePath)
+	}
 	fileInfo, err := os.Stat(fullPath)
 	if err != nil {
 		return nil, 0, fmt.Errorf("文件不存在: %w", err)
