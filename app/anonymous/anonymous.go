@@ -19,6 +19,7 @@ import (
 	"math/big"
 	"time"
 
+	"github.com/filescodebox/contracts/errcode"
 	"github.com/redis/go-redis/v9"
 	"github.com/filescodebox/core/pkg/logger"
 	"github.com/filescodebox/core/pkg/utils"
@@ -44,6 +45,24 @@ var (
 	ErrCodeExhausted = errors.New("pickup code exhausted")
 	ErrPasswordWrong = errors.New("password wrong")
 )
+
+// BlockedError 分享处于管控拒绝态（治理状态机）。
+// handler 侧 errors.As 后按 ErrCode 透传（20012 blocked / 20013 pending_review）。
+type BlockedError struct{ Status string }
+
+func (e *BlockedError) Error() string {
+	if e.Status == "pending_review" {
+		return "分享内容待审核，暂不可取件"
+	}
+	return "分享已被管理员禁用"
+}
+
+func (e *BlockedError) ErrCode() int {
+	if e.Status == "pending_review" {
+		return errcode.CodeSharePendingReview
+	}
+	return errcode.CodeShareBlocked
+}
 
 // Service 匿名取件 service。
 // Redis 仅存映射 + 展示信息；过期/次数/密码等真实状态全部以 file_codes 表为准。
@@ -131,6 +150,11 @@ func (s *Service) Retrieve(ctx context.Context, code, password string) (*CodeMet
 		return nil, ErrCodeExpired
 	}
 
+	// 4.5 管控状态：blocked / pending_review 拒绝取件
+	if fc.IsBlockedShare() {
+		return nil, &BlockedError{Status: fc.Status}
+	}
+
 	// 5. 校验密码（bcrypt，DB 为准）
 	if fc.RequireAuth {
 		if !utils.CheckPassword(fc.PasswordHash, password) {
@@ -173,6 +197,9 @@ func (s *Service) Peek(ctx context.Context, code string) (*CodeMeta, *model.File
 	fc, err := s.fileCodeRepo.GetByCode(ctx, shareCode)
 	if err != nil {
 		return nil, nil, ErrCodeNotFound
+	}
+	if fc.IsBlockedShare() {
+		return nil, nil, &BlockedError{Status: fc.Status}
 	}
 	return meta, fc, nil
 }

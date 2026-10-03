@@ -2,6 +2,7 @@ package dao
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/filescodebox/core/repo/db"
@@ -469,4 +470,86 @@ func (r *FileCodeRepository) CountExpired(ctx context.Context) (int64, error) {
 		Where("(expired_at IS NOT NULL AND expired_at < ?) OR expired_count = 0", time.Now()).
 		Count(&count).Error
 	return count, err
+}
+
+// ==================== 管理端治理（2026-10-03）：组合过滤 + 状态机 ====================
+
+// ListWithFilter 管理端文件列表：组合过滤 + 分页（此前仅 keyword 模糊匹配，
+// 无法按上传者/IP/类型/大小/时间/状态定位滥用资源）。
+func (r *FileCodeRepository) ListWithFilter(ctx context.Context, q model.FileCodeQuery) ([]*model.FileCode, int64, error) {
+	page := q.Page
+	if page < 1 {
+		page = 1
+	}
+	pageSize := q.PageSize
+	if pageSize < 1 || pageSize > 200 {
+		pageSize = 20
+	}
+
+	query := r.db().WithContext(ctx).Model(&model.FileCode{})
+
+	if q.Keyword != "" {
+		like := "%" + q.Keyword + "%"
+		query = query.Where("code LIKE ? OR prefix LIKE ? OR suffix LIKE ? OR uuid_file_name LIKE ? OR text LIKE ?",
+			like, like, like, like, like)
+	}
+	if q.UserID != nil {
+		query = query.Where("user_id = ?", *q.UserID)
+	}
+	if q.UploadType != "" {
+		query = query.Where("upload_type = ?", q.UploadType)
+	}
+	if q.OwnerIP != "" {
+		query = query.Where("owner_ip = ?", q.OwnerIP)
+	}
+	if q.Status != "" {
+		query = query.Where("status = ?", q.Status)
+	}
+	if q.MinSize != nil {
+		query = query.Where("size >= ?", *q.MinSize)
+	}
+	if q.MaxSize != nil {
+		query = query.Where("size <= ?", *q.MaxSize)
+	}
+	if q.CreatedAfter != nil {
+		query = query.Where("created_at >= ?", *q.CreatedAfter)
+	}
+	if q.CreatedBefore != nil {
+		query = query.Where("created_at <= ?", *q.CreatedBefore)
+	}
+	if q.Expired != nil {
+		now := time.Now()
+		if *q.Expired {
+			query = query.Where("(expired_at IS NOT NULL AND expired_at < ?) OR expired_count = 0", now)
+		} else {
+			query = query.Where("(expired_at IS NULL OR expired_at >= ?) AND expired_count <> 0", now)
+		}
+	}
+
+	var total int64
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+
+	offset := (page - 1) * pageSize
+	var files []*model.FileCode
+	if err := query.Order("created_at DESC").Offset(offset).Limit(pageSize).Find(&files).Error; err != nil {
+		return nil, 0, err
+	}
+	return files, total, nil
+}
+
+// UpdateStatusByIDs 批量更新管控状态（单个/批量禁用、恢复共用）。
+// status 取值经 model.ValidShareStatus 白名单校验；返回受影响行数。
+func (r *FileCodeRepository) UpdateStatusByIDs(ctx context.Context, ids []uint, status string) (int64, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	if !model.ValidShareStatus(status) {
+		return 0, fmt.Errorf("非法的分享状态: %s", status)
+	}
+	res := r.db().WithContext(ctx).Model(&model.FileCode{}).
+		Where("id IN ?", ids).
+		Update("status", status)
+	return res.RowsAffected, res.Error
 }

@@ -2,6 +2,7 @@ package share
 
 import (
 	"context"
+	"errors"
 	"io"
 	"mime/multipart"
 	"testing"
@@ -416,5 +417,49 @@ func TestCreateShare_UserUploadSizeCap(t *testing.T) {
 		})
 		assert.NoError(t, err)
 		assert.NotEmpty(t, resp.Code)
+	})
+}
+
+// ---- 治理重构（2026-10-03）：状态机 + 取件拒绝 ----
+
+func TestShareStatusMachine(t *testing.T) {
+	t.Run("blocked取件拒绝且业务码20012", func(t *testing.T) {
+		svc, _, _, _ := newTestService(t)
+		ctx := context.Background()
+		resp, err := svc.CreateShare(ctx, &ShareFileReq{FilePath: "a/b", Size: 1, ExpiredCount: -1})
+		require.NoError(t, err)
+
+		n, err := svc.SetShareStatus(ctx, []uint{resp.ID}, model.StatusBlocked)
+		require.NoError(t, err)
+		assert.Equal(t, int64(1), n)
+
+		_, err = svc.GetFileByCode(ctx, resp.Code)
+		require.Error(t, err)
+		var blocked *ShareBlockedError
+		require.True(t, errors.As(err, &blocked))
+		assert.Equal(t, 20012, blocked.ErrCode())
+
+		// 恢复后可取件
+		_, err = svc.SetShareStatus(ctx, []uint{resp.ID}, model.StatusNormal)
+		require.NoError(t, err)
+		_, err = svc.GetFileByCode(ctx, resp.Code)
+		assert.NoError(t, err)
+	})
+	t.Run("pending_review业务码20013", func(t *testing.T) {
+		svc, _, _, _ := newTestService(t)
+		ctx := context.Background()
+		resp, err := svc.CreateShare(ctx, &ShareFileReq{FilePath: "a/b", Size: 1, ExpiredCount: -1})
+		require.NoError(t, err)
+		_, err = svc.SetShareStatus(ctx, []uint{resp.ID}, model.StatusPendingReview)
+		require.NoError(t, err)
+		_, err = svc.GetFileByCode(ctx, resp.Code)
+		var blocked *ShareBlockedError
+		require.True(t, errors.As(err, &blocked))
+		assert.Equal(t, 20013, blocked.ErrCode())
+	})
+	t.Run("非法状态被DAO白名单拒绝", func(t *testing.T) {
+		svc, _, _, _ := newTestService(t)
+		_, err := svc.SetShareStatus(context.Background(), []uint{1}, "hacked")
+		assert.Error(t, err)
 	})
 }

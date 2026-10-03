@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/filescodebox/contracts/errcode"
 	"github.com/filescodebox/core/pkg/logger"
 	"github.com/filescodebox/core/pkg/utils"
 	"github.com/filescodebox/core/repo/db"
@@ -93,6 +94,32 @@ type UserServiceInterface interface {
 // QuotaChecker 存储配额检查接口（bootstrap 注入 user service 实现）
 type QuotaChecker interface {
 	CheckQuota(ctx context.Context, userID uint, addBytes int64) error
+}
+
+// ShareBlockedError 分享处于管控拒绝态（管理员禁用 / 待审核）。
+// handler 侧按 ErrCode 透传（20012 blocked / 20013 pending_review）。
+type ShareBlockedError struct {
+	Status string
+}
+
+func (e *ShareBlockedError) Error() string {
+	if e.Status == model.StatusPendingReview {
+		return "分享内容待审核，暂不可取件"
+	}
+	return "分享已被管理员禁用"
+}
+
+func (e *ShareBlockedError) ErrCode() int {
+	if e.Status == model.StatusPendingReview {
+		return errcode.CodeSharePendingReview
+	}
+	return errcode.CodeShareBlocked
+}
+
+// SetShareStatus 管理员设置分享管控状态（禁用/恢复/待审），返回受影响行数。
+func (s *Service) SetShareStatus(ctx context.Context, ids []uint, status string) (int64, error) {
+	s.ensureRepository()
+	return s.fileCodeRepo.UpdateStatusByIDs(ctx, ids, status)
 }
 
 // IsTextShare 判定是否纯文本分享：Text 非空且无文件路径。
@@ -322,6 +349,11 @@ func (s *Service) GetFileByCode(ctx context.Context, code string) (*model.FileCo
 	// 检查文件是否过期
 	if fileCode.IsExpired() {
 		return nil, errors.New("file has expired")
+	}
+
+	// 管控状态：blocked / pending_review 拒绝取件（typed error，handler 按业务码透传）
+	if fileCode.IsBlockedShare() {
+		return nil, &ShareBlockedError{Status: fileCode.Status}
 	}
 
 	return fileCode, nil

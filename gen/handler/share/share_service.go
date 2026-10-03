@@ -4,6 +4,7 @@ package share
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"html"
 	"io"
@@ -541,6 +542,11 @@ func GetShare(ctx context.Context, c *app.RequestContext) {
 	// 获取分享内容
 	fileCode, err := getShareService().GetFileByCode(ctx, code)
 	if err != nil {
+		var blocked *shareService.ShareBlockedError
+		if errors.As(err, &blocked) {
+			resp.NewTypedError(c, blocked)
+			return
+		}
 		c.JSON(consts.StatusNotFound, map[string]interface{}{
 			"code":    404,
 			"message": "分享不存在或已过期",
@@ -681,6 +687,11 @@ func DownloadFile(ctx context.Context, c *app.RequestContext) {
 	viewerIP := middleware.ClientIP(c)
 	fileCode, err := getShareService().GetFileWithUsage(ctx, code, password, viewerIP, tokenValid)
 	if err != nil {
+		var blocked *shareService.ShareBlockedError
+		if errors.As(err, &blocked) {
+			resp.NewTypedError(c, blocked)
+			return
+		}
 		if err.Error() == "密码错误" {
 			_, _ = lock.RecordFailure(ctx, lockKey)
 			c.JSON(consts.StatusUnauthorized, map[string]interface{}{

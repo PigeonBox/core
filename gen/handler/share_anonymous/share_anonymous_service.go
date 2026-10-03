@@ -5,6 +5,7 @@ package share_anonymous
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"time"
 
@@ -140,6 +141,11 @@ func Retrieve(ctx context.Context, c *app.RequestContext) {
 
 	meta, err := getService().Retrieve(ctx, req.Code, password)
 	if err != nil {
+		var blocked *anonapp.BlockedError
+		if errors.As(err, &blocked) {
+			resp.NewTypedError(c, blocked)
+			return
+		}
 		switch err {
 		case anonapp.ErrCodeNotFound:
 			_, _ = lock.RecordFailure(ctx, lockKey)
@@ -205,6 +211,11 @@ func SearchByCode(ctx context.Context, c *app.RequestContext) {
 	}
 	meta, fc, err := getService().Peek(ctx, code)
 	if err != nil {
+		var blocked *anonapp.BlockedError
+		if errors.As(err, &blocked) {
+			resp.NewTypedError(c, blocked)
+			return
+		}
 		resp.NewErrorByCode(c, errcode.CodePickupCodeNotFound)
 		return
 	}

@@ -54,13 +54,19 @@ const (
 	SchemeMemory Scheme = "memory"
 )
 
-// supportedSchemes 当前 backend 实际支持的 scheme
+// supportedSchemes 当前 backend 实际支持的 scheme。
+//
+// 云厂商（oss/cos/bos/ks3/obs）不在此表、也不走本包的原生驱动扩展点：
+// 上层 storage.buildOperator 已将其统一映射为 SchemeS3 驱动
+//（各厂商官方提供 S3 兼容端点，endpoint 由 storage/providers.go 按厂商+region
+// 推导）。因此本包只见 fs/s3/webdav 三种 scheme。
+// 原生驱动（oss.go/cos.go 用各厂商 native API）仍为可选扩展点：仅当需要
+// S3 兼容协议不覆盖的厂商私有功能时才值得实现。
 var supportedSchemes = map[Scheme]bool{
 	SchemeFS:     true,
 	SchemeS3:     true,
 	SchemeWebDAV: true,
-	// 其他 scheme（oss/cos/obs/azblob/gcs/sftp/hdfs/memory）作为扩展点
-	// 当前内部用 fs driver 兜底，需要时实现 Driver 接口扩展
+	// azblob/gcs/sftp/hdfs/memory：未实现，需时实现 Driver 接口扩展
 }
 
 // Driver 远端 scheme（s3/webdav 等）的底层驱动接口。
