@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/filescodebox/contracts/errcode"
+	"github.com/filescodebox/core/app/moderation"
 	"github.com/filescodebox/core/pkg/logger"
 	"github.com/filescodebox/core/pkg/utils"
 	"github.com/filescodebox/core/repo/db"
@@ -66,6 +67,7 @@ type ShareResp struct {
 	UploadType   string     `json:"upload_type"`
 	RequireAuth  bool       `json:"require_auth"`
 	OwnerIP      string     `json:"owner_ip"`
+	Status       string     `json:"status"` // 管控状态（normal/blocked/pending_review）
 	ShareURL     string     `json:"share_url"`      // 相对分享链接
 	FullShareURL string     `json:"full_share_url"` // 完整分享链接
 }
@@ -77,6 +79,8 @@ type Service struct {
 	baseURL      string // 基础 URL，用于生成分享链接
 	notifySvc    NotifyServiceInterface
 	quotaChecker QuotaChecker
+	moderator    moderation.Moderator // 内容审核钩子（nil = 不审核）
+	flagEmitter  FlagEventEmitter     // share.flagged webhook（nil = 不推送）
 }
 
 // NotifyServiceInterface 取件通知接口（避免 share → notify 直接依赖）
@@ -95,6 +99,24 @@ type UserServiceInterface interface {
 type QuotaChecker interface {
 	CheckQuota(ctx context.Context, userID uint, addBytes int64) error
 }
+
+// FlagEventEmitter share.flagged 事件推送接口（bootstrap 注入 notify service 实现）
+type FlagEventEmitter interface {
+	EmitShareFlagged(code, reason, ownerIP string)
+}
+
+// SetModerator 注入内容审核钩子（bootstrap 调用；nil = 不审核）
+func (s *Service) SetModerator(m moderation.Moderator) { s.moderator = m }
+
+// SetFlagEventEmitter 注入 share.flagged webhook 推送（bootstrap 调用）
+func (s *Service) SetFlagEventEmitter(e FlagEventEmitter) { s.flagEmitter = e }
+
+// ContentRejectedError 内容未通过审核（moderation 命中且策略为 reject）
+type ContentRejectedError struct{}
+
+func (e *ContentRejectedError) Error() string { return "内容未通过安全审核，禁止分享" }
+
+func (e *ContentRejectedError) ErrCode() int { return errcode.CodeContentRejected }
 
 // ShareBlockedError 分享处于管控拒绝态（管理员禁用 / 待审核）。
 // handler 侧按 ErrCode 透传（20012 blocked / 20013 pending_review）。
@@ -246,6 +268,18 @@ func (s *Service) ShareTextWithAuth(ctx context.Context, text string, expireValu
 	if maxBytes := utils.GetTextShareMaxBytes(); maxBytes > 0 && int64(len(text)) > maxBytes {
 		return nil, fmt.Errorf("%w（上限 %d 字节）", utils.ErrTextTooLarge, maxBytes)
 	}
+
+	// 内容审核钩子（治理 2026-10-03）：reject 建分享前拦截；pending 建分享后置待审
+	pendingReview := false
+	if s.moderator != nil {
+		switch s.moderator.InspectText(ctx, text) {
+		case moderation.VerdictReject:
+			return nil, &ContentRejectedError{}
+		case moderation.VerdictPending:
+			pendingReview = true
+		}
+	}
+
 	// 计算过期时间
 	expireTime := utils.CalculateExpireTime(expireValue, expireStyle)
 	expireCount := utils.CalculateExpireCount(expireStyle, expireValue)
@@ -269,6 +303,18 @@ func (s *Service) ShareTextWithAuth(ctx context.Context, text string, expireValu
 	resp, err := s.ShareText(ctx, req)
 	if err != nil {
 		return nil, err
+	}
+
+	// pending 策略：建分享成功后置 pending_review（取件路径拒绝），并推 share.flagged
+	if pendingReview {
+		if _, err := s.SetShareStatus(ctx, []uint{resp.ID}, model.StatusPendingReview); err != nil {
+			logger.Warn("set pending_review failed", zap.String("code", resp.Code), zap.Error(err))
+		} else {
+			resp.Status = model.StatusPendingReview // resp 是写库前快照，回填给调用方
+		}
+		if s.flagEmitter != nil {
+			s.flagEmitter.EmitShareFlagged(resp.Code, "text sensitive word", ownerIP)
+		}
 	}
 
 	// 生成分享 URL
@@ -528,9 +574,14 @@ func (s *Service) RecordViewerAndNotify(ctx context.Context, code, viewerIP, vie
 
 // modelToResp 将模型转换为响应
 func (s *Service) modelToResp(fileCode *model.FileCode) *ShareResp {
+	status := fileCode.Status
+	if status == "" {
+		status = model.StatusNormal
+	}
 	return &ShareResp{
 		ID:           fileCode.ID,
 		Code:         fileCode.Code,
+		Status:       status,
 		Prefix:       fileCode.Prefix,
 		Suffix:       fileCode.Suffix,
 		UUIDFileName: fileCode.UUIDFileName,

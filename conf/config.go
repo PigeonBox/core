@@ -25,6 +25,7 @@ type AppConfiguration struct {
 	RateLimit     RateLimitSettings   `mapstructure:"rate_limit"`
 	Notify        NotifyConfig        `mapstructure:"notify"`
 	MCP           MCPConfig           `mapstructure:"mcp"`
+	Moderation    ModerationConfig    `mapstructure:"moderation"`
 }
 
 // MCPConfig Model Context Protocol server（AI 客户端集成；上游没有的差异化能力）。
@@ -32,6 +33,16 @@ type AppConfiguration struct {
 type MCPConfig struct {
 	// Enabled 默认 true（认证已强制，无暴露风险）。env: FCB_MCP_ENABLED
 	Enabled bool `mapstructure:"enabled"`
+}
+
+// ModerationConfig 内容审核配置（治理 2026-10-03；默认关闭，词表为空恒放行）
+type ModerationConfig struct {
+	// Enabled 审核钩子总开关（默认 false；env: FCB_MODERATION_ENABLED）
+	Enabled bool `mapstructure:"enabled"`
+	// BlockedWords 敏感词表（子串匹配、大小写不敏感；env: FCB_MODERATION_BLOCKED_WORDS，逗号分隔）
+	BlockedWords []string `mapstructure:"blocked_words"`
+	// BlockAction 命中处置策略：reject（默认，直接拒绝）| pending（建分享后置待审，进管理端队列）
+	BlockAction string `mapstructure:"block_action"`
 }
 
 // NotifyConfig 通知配置（站内信 + 外部 Webhook 渠道）

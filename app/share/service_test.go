@@ -11,6 +11,7 @@ import (
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/filescodebox/core/app/moderation"
 	"github.com/filescodebox/core/pkg/utils"
 	"github.com/filescodebox/core/repo/db"
 	"github.com/filescodebox/core/repo/db/model"
@@ -461,5 +462,56 @@ func TestShareStatusMachine(t *testing.T) {
 		svc, _, _, _ := newTestService(t)
 		_, err := svc.SetShareStatus(context.Background(), []uint{1}, "hacked")
 		assert.Error(t, err)
+	})
+}
+
+// ---- 治理重构（2026-10-03）：内容审核钩子 ----
+
+type mockModerator struct{ verdict moderation.Verdict }
+
+func (m *mockModerator) InspectText(context.Context, string) moderation.Verdict { return m.verdict }
+func (m *mockModerator) InspectFile(context.Context, moderation.UploadMeta) moderation.Verdict {
+	return moderation.VerdictAllow
+}
+
+type mockFlagEmitter struct{ codes []string }
+
+func (m *mockFlagEmitter) EmitShareFlagged(code, reason, ownerIP string) { m.codes = append(m.codes, code) }
+
+func TestShareText_Moderation(t *testing.T) {
+	t.Run("reject 拦截返回30013", func(t *testing.T) {
+		svc, _, _, _ := newTestService(t)
+		svc.SetModerator(&mockModerator{verdict: moderation.VerdictReject})
+		_, err := svc.ShareTextWithAuth(context.Background(), "some text", 1, "day", false, "", nil, "1.1.1.1")
+		require.Error(t, err)
+		var cre *ContentRejectedError
+		require.True(t, errors.As(err, &cre))
+		assert.Equal(t, 30013, cre.ErrCode())
+	})
+	t.Run("pending 建分享后置待审+事件", func(t *testing.T) {
+		svc, _, _, _ := newTestService(t)
+		emitter := &mockFlagEmitter{}
+		svc.SetModerator(&mockModerator{verdict: moderation.VerdictPending})
+		svc.SetFlagEventEmitter(emitter)
+		resp, err := svc.ShareTextWithAuth(context.Background(), "some text", 1, "day", false, "", nil, "1.1.1.1")
+		require.NoError(t, err)
+		assert.Equal(t, model.StatusPendingReview, resp.Status)
+		assert.Len(t, emitter.codes, 1)
+
+		// 待审分享取件被拒
+		_, err = svc.GetFileByCode(context.Background(), resp.Code)
+		var blocked *ShareBlockedError
+		require.True(t, errors.As(err, &blocked))
+		assert.Equal(t, 20013, blocked.ErrCode())
+	})
+	t.Run("allow 正常且无事件", func(t *testing.T) {
+		svc, _, _, _ := newTestService(t)
+		emitter := &mockFlagEmitter{}
+		svc.SetModerator(&mockModerator{verdict: moderation.VerdictAllow})
+		svc.SetFlagEventEmitter(emitter)
+		resp, err := svc.ShareTextWithAuth(context.Background(), "some text", 1, "day", false, "", nil, "1.1.1.1")
+		require.NoError(t, err)
+		assert.Equal(t, model.StatusNormal, resp.Status)
+		assert.Empty(t, emitter.codes)
 	})
 }

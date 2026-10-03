@@ -411,6 +411,46 @@ type webhookPayload struct {
 	Timestamp  int64  `json:"timestamp"`
 }
 
+// EmitShareFlagged 分享命中审核钩子事件（share.flagged）——结构化 webhook 推送，
+// 供外挂自动处置（如拉取后调管理端禁用接口）。异步推送，失败静默记日志。
+func (s *Service) EmitShareFlagged(code, reason, ownerIP string) {
+	if s.webhookURL == "" {
+		return
+	}
+	payload := map[string]interface{}{
+		"event":    "share.flagged",
+		"code":     code,
+		"reason":   reason,
+		"owner_ip": ownerIP,
+		"hint":     "share is set pending_review; approve via PUT /admin/files/:id/status",
+		"timestamp": time.Now().Unix(),
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+	event := "share.flagged"
+	go func() {
+		defer func() { _ = recover() }()
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, s.webhookURL, bytes.NewReader(body))
+		if err != nil {
+			return
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-FCB-Event", event)
+		client := &http.Client{Timeout: 5 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			logger.Warn("webhook push failed", zap.String("url", s.webhookURL), zap.Error(err))
+			return
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode >= 300 {
+			logger.Warn("webhook push non-2xx", zap.String("url", s.webhookURL), zap.Int("status", resp.StatusCode))
+		}
+	}()
+}
+
 // dispatchWebhook 异步推送（5s 超时，失败静默记日志）
 func (s *Service) dispatchWebhook(ctx context.Context, userID uint, title, content, notifyType, level string) {
 	if s.webhookURL == "" {

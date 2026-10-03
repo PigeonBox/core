@@ -37,6 +37,7 @@ import (
 
 	adminApp "github.com/filescodebox/core/app/admin"
 	mcpApp "github.com/filescodebox/core/app/mcp"
+	moderationApp "github.com/filescodebox/core/app/moderation"
 	notifyAppService "github.com/filescodebox/core/app/notify"
 	setupApp "github.com/filescodebox/core/app/setup"
 	shareService "github.com/filescodebox/core/app/share"
@@ -219,6 +220,9 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("rate_limit.block_seconds", 60)
 	// MCP server 默认开启（路由挂管理员认证，无暴露风险）
 	v.SetDefault("mcp.enabled", true)
+	// 内容审核默认关闭、命中默认直接拒绝（治理 2026-10-03）
+	v.SetDefault("moderation.enabled", false)
+	v.SetDefault("moderation.block_action", "reject")
 }
 
 // envBindings 环境变量 → 配置 key 的映射。
@@ -275,6 +279,10 @@ var envBindings = map[string][]string{
 	"notify.webhook_url": {"FCB_WEBHOOK_URL", "WEBHOOK_URL"},
 	// mcp
 	"mcp.enabled": {"FCB_MCP_ENABLED"},
+	// moderation（内容审核，治理 2026-10-03）
+	"moderation.enabled":       {"FCB_MODERATION_ENABLED"},
+	"moderation.blocked_words": {"FCB_MODERATION_BLOCKED_WORDS"},
+	"moderation.block_action":  {"FCB_MODERATION_BLOCK_ACTION"},
 	// upload 安全项
 	"upload.text_max_bytes":        {"FCB_TEXT_MAX_BYTES"},
 	"upload.allowed_extensions":    {"FCB_UPLOAD_ALLOWED_EXTENSIONS"},
@@ -302,6 +310,7 @@ var listValuedKeys = map[string]bool{
 	"upload.allowed_expire_styles": true,
 	"security.trusted_proxies":     true,
 	"security.cors.allow_origins":  true,
+	"moderation.blocked_words":     true,
 }
 
 // splitCSV 逗号分隔字符串 → 去空白去空的切片。
@@ -1066,6 +1075,12 @@ func initThriftIDLServices(database *gorm.DB) {
 	customHandler.SetShareService(shareSvc)
 	// 2.3 注入 notify service（取件时给 owner 发通知）
 	shareSvc.SetNotifyService(notifyApp) // *Service 已实现 CreateForUserSimple
+	// 内容审核钩子（治理 2026-10-03）：moderation.enabled=false 或词表为空时全部放行
+	if config.Moderation.Enabled {
+		shareSvc.SetModerator(moderationApp.NewWordListModerator(
+			config.Moderation.BlockedWords, config.Moderation.BlockAction))
+	}
+	shareSvc.SetFlagEventEmitter(notifyApp) // *Service 已实现 EmitShareFlagged（webhook 未配置时内部短路）
 	// 2.3.1 外部 Webhook 推送渠道（notify.created 事件；空 = 禁用）
 	notifyApp.SetWebhookURL(config.Notify.WebhookURL)
 	// 2.4 注入 user service：上传统计（此前从未接线，用户统计恒为 0）
