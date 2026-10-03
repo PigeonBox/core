@@ -160,9 +160,8 @@ type UploadConfig struct {
 	OpenUpload     bool  `mapstructure:"open_upload"`
 	UploadSize     int64 `mapstructure:"upload_size"`
 	EnableChunk    bool  `mapstructure:"enable_chunk"`
-	ChunkSize      int64 `mapstructure:"chunk_size"`
-	MaxSaveSeconds int   `mapstructure:"max_save_seconds"`
-	RequireLogin   bool  `mapstructure:"require_login"`
+	ChunkSize    int64 `mapstructure:"chunk_size"`
+	RequireLogin bool  `mapstructure:"require_login"`
 	// TextMaxBytes 文本分享大小上限（字节）。<=0 时用默认 222KB（对齐上游）。
 	TextMaxBytes int64 `mapstructure:"text_max_bytes"`
 	// AllowedExtensions 扩展名白名单（如 [".jpg",".png",".pdf"]）。
@@ -200,9 +199,7 @@ type LocalImportConfig struct {
 
 // DownloadConfig 下载配置
 type DownloadConfig struct {
-	EnableConcurrentDownload bool `mapstructure:"enable_concurrent_download"`
-	MaxConcurrentDownloads   int  `mapstructure:"max_concurrent_downloads"`
-	DownloadTimeout          int  `mapstructure:"download_timeout"`
+	DownloadTimeout int  `mapstructure:"download_timeout"`
 	RequireLogin             bool `mapstructure:"require_login"`
 	// S3DirectDownload s3 直下：存储后端为 s3 且开启时，文件下载 302 到短时效
 	// 预签名 GET URL（下载流量不经过服务器）。env: FCB_DOWNLOAD_S3_DIRECT
@@ -268,24 +265,15 @@ type UIConfig struct {
 	NotifyContent string  `mapstructure:"notify_content"`
 }
 
-// ObservabilityConfig 可观测性配置（metrics / tracing）
+// ObservabilityConfig 可观测性配置（metrics；分布式追踪见路线图，未实现前不暴露配置）
 type ObservabilityConfig struct {
 	Metrics MetricsConfig `mapstructure:"metrics"`
-	Tracing TracingConfig `mapstructure:"tracing"`
 }
 
 // MetricsConfig Prometheus 指标配置
 type MetricsConfig struct {
 	Enabled bool   `mapstructure:"enabled"`
 	Path    string `mapstructure:"path"` // 指标暴露路径，默认 /metrics
-}
-
-// TracingConfig 分布式追踪配置（OpenTelemetry）
-type TracingConfig struct {
-	Enabled     bool   `mapstructure:"enabled"`
-	Exporter    string `mapstructure:"exporter"` // otlp / stdout / 空表示禁用
-	Endpoint    string `mapstructure:"endpoint"` // OTLP collector 地址
-	ServiceName string `mapstructure:"service_name"`
 }
 
 // IsProduction 是否生产模式（综合 server.mode 与 app.production 判断）

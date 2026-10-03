@@ -27,10 +27,9 @@ var ErrPresignUnsupported = errors.New("presign direct transfer not supported by
 type StorageType string
 
 const (
-	StorageTypeLocal    StorageType = "local"
-	StorageTypeS3       StorageType = "s3"
-	StorageTypeWebDAV   StorageType = "webdav"
-	StorageTypeOneDrive StorageType = "onedrive"
+	StorageTypeLocal  StorageType = "local"
+	StorageTypeS3     StorageType = "s3"
+	StorageTypeWebDAV StorageType = "webdav"
 )
 
 // FileOperationResult 文件操作结果

@@ -206,7 +206,6 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("user.require_email_verify", false)
 	v.SetDefault("observability.metrics.enabled", false)
 	v.SetDefault("observability.metrics.path", "/metrics")
-	v.SetDefault("observability.tracing.enabled", false)
 	// 安全默认（安全加固项，未配置时全开）：
 	v.SetDefault("upload.enable_magic_check", true)
 	v.SetDefault("security.download_token.enabled", true)
@@ -274,7 +273,6 @@ var envBindings = map[string][]string{
 	// observability
 	"observability.metrics.enabled": {"FCB_METRICS_ENABLED"},
 	"observability.metrics.path":    {"FCB_METRICS_PATH"},
-	"observability.tracing.enabled": {"FCB_TRACING_ENABLED"},
 	// security
 	"security.cors.allow_origins":          {"FCB_CORS_ALLOW_ORIGINS"},
 	"security.cors.enable_hsts":            {"FCB_ENABLE_HSTS"},
