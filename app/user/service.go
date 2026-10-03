@@ -608,3 +608,13 @@ func (s *Service) GetUserFiles(ctx context.Context, userID uint, page, pageSize 
 		},
 	}, nil
 }
+
+// RevokeAllAPIKeys 一键吊销用户全部有效 API Key（应急止损），返回吊销数量。
+func (s *Service) RevokeAllAPIKeys(ctx context.Context, userID uint) (int64, error) {
+	s.ensureRepository()
+	n, err := s.apiKeyRepo.RevokeAllByUser(ctx, userID)
+	if err != nil {
+		return 0, fmt.Errorf("吊销全部 API Key 失败: %w", err)
+	}
+	return n, nil
+}

@@ -24,26 +24,41 @@ const (
 	OpDownload = "download"
 )
 
-// Record 异步记录一次传输。userID/username 为空表示匿名。
-func Record(operation string, fileCodeID uint, code, fileName string, fileSize int64, userID *uint, username, ip string, durationMs int64) {
+// Entry 一次传输的归因信息。UserID/APIKeyID 为 nil 表示匿名/JWT 认证。
+type Entry struct {
+	Operation   string // upload | download
+	FileCodeID  uint
+	Code        string
+	FileName    string
+	FileSize    int64
+	UserID      *uint
+	APIKeyID    *uint // 非 nil 表示该操作经用户级 API Key 认证（泄露排查归因用）
+	Username    string
+	IP          string
+	DurationMs  int64
+}
+
+// Record 异步记录一次传输。
+func Record(e Entry) {
 	go func() {
 		defer func() { _ = recover() }()
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 		err := repo.Create(ctx, &model.TransferLog{
-			Operation:  operation,
-			FileCodeID: fileCodeID,
-			FileCode:   code,
-			FileName:   fileName,
-			FileSize:   fileSize,
-			UserID:     userID,
-			Username:   username,
-			IP:         ip,
-			DurationMs: durationMs,
+			Operation:  e.Operation,
+			FileCodeID: e.FileCodeID,
+			FileCode:   e.Code,
+			FileName:   e.FileName,
+			FileSize:   e.FileSize,
+			UserID:     e.UserID,
+			APIKeyID:   e.APIKeyID,
+			Username:   e.Username,
+			IP:         e.IP,
+			DurationMs: e.DurationMs,
 		})
 		if err != nil {
 			logger.Warn("transfer log write failed",
-				zap.String("operation", operation), zap.String("code", code), zap.Error(err))
+				zap.String("operation", e.Operation), zap.String("code", e.Code), zap.Error(err))
 		}
 	}()
 }

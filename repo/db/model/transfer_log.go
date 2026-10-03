@@ -15,6 +15,8 @@ type TransferLog struct {
 	FileName   string `gorm:"size:255" json:"file_name"`
 	FileSize   int64  `json:"file_size"`
 	UserID     *uint  `gorm:"index" json:"user_id"`
+	// APIKeyID 认证所用用户级 API Key（Key 粒度归因；JWT/匿名上传为 nil）
+	APIKeyID   *uint  `gorm:"index" json:"api_key_id"`
 	Username   string `gorm:"size:100" json:"username"`
 	IP         string `gorm:"size:45" json:"ip"`
 	DurationMs int64  `json:"duration_ms"`

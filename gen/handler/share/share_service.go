@@ -175,8 +175,12 @@ func ShareText(ctx context.Context, c *app.RequestContext) {
 	if userID != nil {
 		textUser = userID
 	}
-	transfer.Record(transfer.OpUpload, result.ID, result.Code, "text.txt", int64(len(safeText)),
-		textUser, middleware.UsernameFromContext(ctx), ownerIP, 0)
+	transfer.Record(transfer.Entry{
+		Operation: transfer.OpUpload, FileCodeID: result.ID, Code: result.Code,
+		FileName: "text.txt", FileSize: int64(len(safeText)),
+		UserID: textUser, APIKeyID: apiKeyIDPtr(ctx),
+		Username: middleware.UsernameFromContext(ctx), IP: ownerIP,
+	})
 
 	resp := &sharemodel.ShareTextResp{
 		Code:    200,
@@ -376,8 +380,12 @@ func ShareFile(ctx context.Context, c *app.RequestContext) {
 	fullShareURL := fmt.Sprintf("%s/share/%s", baseURL, shareResult.Code)
 
 	// 传输日志（上传，异步）
-	transfer.Record(transfer.OpUpload, shareResult.ID, shareResult.Code, originalFilename,
-		shareResult.Size, userID, middleware.UsernameFromContext(ctx), ownerIP, 0)
+	transfer.Record(transfer.Entry{
+		Operation: transfer.OpUpload, FileCodeID: shareResult.ID, Code: shareResult.Code,
+		FileName: originalFilename, FileSize: shareResult.Size,
+		UserID: userID, APIKeyID: apiKeyIDPtr(ctx),
+		Username: middleware.UsernameFromContext(ctx), IP: ownerIP,
+	})
 
 	resp := &sharemodel.ShareFileResp{
 		Code:    200,
@@ -782,8 +790,12 @@ func DownloadFile(ctx context.Context, c *app.RequestContext) {
 		if n := middleware.UsernameFromContext(ctx); n != "" {
 			logUsername = n
 		}
-		transfer.Record(transfer.OpDownload, fileCode.ID, code, logName, fileCode.Size,
-			logUser, logUsername, viewerIP, 0)
+		transfer.Record(transfer.Entry{
+			Operation: transfer.OpDownload, FileCodeID: fileCode.ID, Code: code,
+			FileName: logName, FileSize: fileCode.Size,
+			UserID: logUser, APIKeyID: apiKeyIDPtr(ctx),
+			Username: logUsername, IP: viewerIP,
+		})
 	}
 
 	// s3 直下（可选开关 download.s3_direct_download，默认关）：当前后端支持
@@ -844,4 +856,12 @@ func (w *closeOnEOFReader) Read(p []byte) (int, error) {
 
 func newCloseOnEOFReader(rc io.ReadCloser) io.Reader {
 	return &closeOnEOFReader{rc: rc}
+}
+
+// apiKeyIDPtr 提取 ctx 中的 API Key 归因（JWT/匿名请求返回 nil）。
+func apiKeyIDPtr(ctx context.Context) *uint {
+	if id, ok := middleware.APIKeyIDFromContext(ctx); ok {
+		return &id
+	}
+	return nil
 }

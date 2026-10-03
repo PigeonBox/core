@@ -599,3 +599,39 @@ func formatTime(t *time.Time) string {
 	}
 	return t.Format("2006-01-02 15:04:05")
 }
+
+// RevokeAllAPIKeys 一键吊销当前用户全部有效 API Key（JWT-only，应急止损）
+// @router /user/api-keys/revoke-all [POST]
+func RevokeAllAPIKeys(ctx context.Context, c *app.RequestContext) {
+	userIDVal, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(consts.StatusUnauthorized, map[string]interface{}{
+			"code":    401,
+			"message": "用户未登录",
+		})
+		return
+	}
+	userID, ok := userIDVal.(uint)
+	if !ok {
+		c.JSON(consts.StatusInternalServerError, map[string]interface{}{
+			"code":    500,
+			"message": "用户ID类型错误",
+		})
+		return
+	}
+
+	revoked, err := userService.RevokeAllAPIKeys(ctx, userID)
+	if err != nil {
+		c.JSON(consts.StatusInternalServerError, map[string]interface{}{
+			"code":    500,
+			"message": err.Error(),
+		})
+		return
+	}
+
+	c.JSON(consts.StatusOK, map[string]interface{}{
+		"code":    200,
+		"message": "吊销成功",
+		"data":    map[string]interface{}{"revoked": revoked},
+	})
+}

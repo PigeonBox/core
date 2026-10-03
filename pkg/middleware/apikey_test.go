@@ -130,6 +130,10 @@ func TestOptionalAPIKey_ValidKey_InjectsIdentity(t *testing.T) {
 	gotID, ok := UserIDFromContext(ctx)
 	assert.True(t, ok, "API Key 认证必须注入 ctx 身份供 service 层审计")
 	assert.Equal(t, u.ID, gotID)
+	// Key 粒度归因（transfer_logs 写入用）
+	gotKeyID, ok := APIKeyIDFromContext(ctx)
+	assert.True(t, ok, "API Key 认证必须注入 ctx Key 归因")
+	assert.Equal(t, rec.ID, gotKeyID)
 }
 
 func TestOptionalAPIKey_BearerFcbSkPrefix(t *testing.T) {
@@ -265,10 +269,13 @@ func TestUserOrAPIKey_ValidJWT(t *testing.T) {
 	u := newFixtureUser(t, "active")
 	token, err := auth.GenerateToken(u.ID, u.Username, u.Role)
 	require.NoError(t, err)
-	code, body, identity, _ := performProbe(t, []app.HandlerFunc{UserOrAPIKey()}, "/probe",
+	code, body, identity, captured := performProbe(t, []app.HandlerFunc{UserOrAPIKey()}, "/probe",
 		hdr("Authorization", "Bearer "+token))
 	assert.Equal(t, 200, code, body)
 	assert.Equal(t, u.ID, identity["user_id"])
+	// JWT 路径不得带 Key 归因
+	_, hasKeyID := APIKeyIDFromContext(captured)
+	assert.False(t, hasKeyID, "JWT 认证不应有 API Key 归因")
 }
 
 func TestUserOrAPIKey_ValidKey(t *testing.T) {

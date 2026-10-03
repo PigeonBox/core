@@ -1,0 +1,53 @@
+package transfer
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"github.com/filescodebox/core/repo/db"
+	"github.com/filescodebox/core/repo/db/dao"
+	"github.com/filescodebox/core/repo/db/model"
+	"github.com/glebarez/sqlite"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
+)
+
+// TestRecord_PersistsAttribution Record 落库（含 API Key 归因列）。
+// sqlite :memory: 多连接各见独立库，钉死单连接；Record 为异步，轮询等待。
+func TestRecord_PersistsAttribution(t *testing.T) {
+	g, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, g.AutoMigrate(&model.TransferLog{}))
+	sqlDB, err := g.DB()
+	require.NoError(t, err)
+	sqlDB.SetMaxOpenConns(1)
+	db.SetDatabaseInstance(g)
+	t.Cleanup(func() { db.SetDatabaseInstance(nil) })
+
+	uid, keyID := uint(9), uint(4)
+	Record(Entry{
+		Operation: OpUpload, FileCodeID: 1, Code: "AbCd1234", FileName: "a.txt",
+		FileSize: 42, UserID: &uid, APIKeyID: &keyID,
+		Username: "alice", IP: "10.0.0.1",
+	})
+
+	var got model.TransferLog
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		items, _, err := dao.NewTransferLogRepository().List(
+			context.Background(), model.TransferLogQuery{Operation: OpUpload})
+		if err == nil && len(items) > 0 {
+			got = *items[0]
+			assert.Equal(t, "AbCd1234", got.FileCode)
+			require.NotNil(t, got.UserID)
+			assert.Equal(t, uid, *got.UserID)
+			require.NotNil(t, got.APIKeyID, "Key 认证的操作必须落 api_key_id 归因")
+			assert.Equal(t, keyID, *got.APIKeyID)
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("3s 内未落库")
+}

@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"errors"
 	"sync"
 	"time"
@@ -11,6 +12,7 @@ import (
 var (
 	ErrInvalidToken = errors.New("invalid token")
 	ErrExpiredToken = errors.New("token has expired")
+	ErrTokenRevoked = errors.New("token has been revoked")
 
 	jwtSecretMu sync.RWMutex
 	jwtSecret   = []byte("FileCodeBox2025SecretKey")
@@ -82,11 +84,15 @@ func ParseToken(tokenString string) (*Claims, error) {
 	return nil, ErrInvalidToken
 }
 
-// RefreshToken 刷新 token
-func RefreshToken(tokenString string) (string, error) {
+// RefreshToken 刷新 token。已注销（黑名单）的 token 拒绝刷新，
+// 堵住"登出后旧 token 仍可换新"的撤销绕过（设计文档 §9.6）。
+func RefreshToken(ctx context.Context, tokenString string) (string, error) {
 	claims, err := ParseToken(tokenString)
 	if err != nil {
 		return "", err
+	}
+	if IsTokenRevoked(ctx, tokenString) {
+		return "", ErrTokenRevoked
 	}
 	return GenerateToken(claims.UserID, claims.Username, claims.Role)
 }

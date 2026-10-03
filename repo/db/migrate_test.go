@@ -29,13 +29,14 @@ func TestMigrator_Up_FreshDB(t *testing.T) {
 
 	applied, err := m.Up()
 	require.NoError(t, err)
-	assert.Equal(t, []string{"000001"}, applied)
+	assert.Equal(t, []string{"000001", "000002"}, applied)
 
 	// 版本记录存在
 	var versions []schemaMigrations
 	require.NoError(t, gormDB.Find(&versions).Error)
-	assert.Len(t, versions, 1)
+	assert.Len(t, versions, 2)
 	assert.Equal(t, "000001", versions[0].Version)
+	assert.Equal(t, "000002", versions[1].Version)
 }
 
 // 测试：幂等性——二次 Up 不重复执行
@@ -51,10 +52,10 @@ func TestMigrator_Up_Idempotent(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, applied)
 
-	// 版本记录仍只 1 条
+	// 版本记录仍只 2 条（000001 + 000002）
 	var count int64
 	gormDB.Model(&schemaMigrations{}).Count(&count)
-	assert.Equal(t, int64(1), count)
+	assert.Equal(t, int64(2), count)
 }
 
 // 测试：迁移后核心业务表存在

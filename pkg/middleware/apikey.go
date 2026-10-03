@@ -132,7 +132,7 @@ func validateAPIKey(ctx context.Context, c *app.RequestContext, plainKey string)
 	c.Header("X-Username", user.Username)
 	c.Header("X-Role", user.Role)
 
-	return withIdentity(ctx, user.ID, user.Username, user.Role, ClientIP(c)), nil
+	return withIdentity(ctx, user.ID, user.Username, user.Role, ClientIP(c), key.ID), nil
 }
 
 // respondAPIKeyError 统一错误响应：总开关关闭 → 401；被锁定 → 429；无效 → 401（统一文案防枚举）。

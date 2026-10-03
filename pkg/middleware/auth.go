@@ -18,15 +18,26 @@ const (
 	ctxKeyUsername
 	ctxKeyRole
 	ctxKeyClientIP
+	ctxKeyAPIKeyID
 )
 
 // 注入/读取工具：中间件将认证信息写入 ctx，service 层经此提取操作者（审计用）。
-func withIdentity(ctx context.Context, userID uint, username, role, ip string) context.Context {
+// apiKeyID 非 0 表示本次请求经用户级 API Key 认证（写入传输日志做 Key 粒度归因）。
+func withIdentity(ctx context.Context, userID uint, username, role, ip string, apiKeyID uint) context.Context {
 	ctx = context.WithValue(ctx, ctxKeyUserID, userID)
 	ctx = context.WithValue(ctx, ctxKeyUsername, username)
 	ctx = context.WithValue(ctx, ctxKeyRole, role)
 	ctx = context.WithValue(ctx, ctxKeyClientIP, ip)
+	if apiKeyID > 0 {
+		ctx = context.WithValue(ctx, ctxKeyAPIKeyID, apiKeyID)
+	}
 	return ctx
+}
+
+// APIKeyIDFromContext 从 ctx 读取认证所用的 API Key ID（JWT/匿名请求返回 false）。
+func APIKeyIDFromContext(ctx context.Context) (uint, bool) {
+	v, ok := ctx.Value(ctxKeyAPIKeyID).(uint)
+	return v, ok
 }
 
 // UserIDFromContext 从 ctx 读取用户 ID（未认证返回 false）
@@ -104,7 +115,7 @@ func AuthMiddleware() app.HandlerFunc {
 		c.Set("user_id", claims.UserID)
 		c.Set("username", claims.Username)
 		c.Set("role", claims.Role)
-		ctx = withIdentity(ctx, claims.UserID, claims.Username, claims.Role, ClientIP(c))
+		ctx = withIdentity(ctx, claims.UserID, claims.Username, claims.Role, ClientIP(c), 0)
 
 		// 同时设置 Header，方便 handler 读取
 		c.Header("X-User-ID", fmt.Sprintf("%d", claims.UserID))

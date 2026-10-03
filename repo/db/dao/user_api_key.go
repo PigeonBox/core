@@ -94,3 +94,19 @@ func (r *UserAPIKeyRepository) GetByID(ctx context.Context, id uint) (*model.Use
 	}
 	return &key, nil
 }
+
+// RevokeAllByUser 撤销用户全部有效密钥（应急止损），返回吊销数量。
+func (r *UserAPIKeyRepository) RevokeAllByUser(ctx context.Context, userID uint) (int64, error) {
+	now := time.Now()
+	res := r.db().WithContext(ctx).Model(&model.UserAPIKey{}).
+		Where("user_id = ? AND revoked = ?", userID, false).
+		Updates(map[string]interface{}{
+			"revoked":    true,
+			"revoked_at": &now,
+			"updated_at": now,
+		})
+	if res.Error != nil {
+		return 0, res.Error
+	}
+	return res.RowsAffected, nil
+}

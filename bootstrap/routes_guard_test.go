@@ -70,6 +70,8 @@ func TestRegisteredRoutesMatchContract(t *testing.T) {
 		"GET /notifies/active",
 		// ===== user（IDL）=====
 		"GET /user/api-keys", "DELETE /user/api-keys/:id", "POST /user/api-keys",
+		// 一键吊销全部 API Key（手写，JWT-only）
+		"POST /user/api-keys/revoke-all",
 		"POST /user/change-password", "GET /user/files", "GET /user/info",
 		"POST /user/login", "PUT /user/profile", "POST /user/register", "GET /user/stats",
 		// ===== share（IDL）=====

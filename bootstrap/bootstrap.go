@@ -52,6 +52,7 @@ import (
 	shareHandler "github.com/filescodebox/core/gen/handler/share"
 	anonHandler "github.com/filescodebox/core/gen/handler/share_anonymous"
 	storageHandler "github.com/filescodebox/core/gen/handler/storage"
+	userHandler "github.com/filescodebox/core/gen/handler/user"
 	"github.com/filescodebox/core/repo/db/dao"
 	customHandler "github.com/filescodebox/core/transport/http/handler"
 	customMw "github.com/filescodebox/core/transport/http/middleware"
@@ -685,7 +686,7 @@ func customizedRegister(r *server.Hertz) {
 			return
 		}
 		oldToken := strings.TrimPrefix(authHeader, "Bearer ")
-		newToken, err := auth.RefreshToken(oldToken)
+		newToken, err := auth.RefreshToken(ctx, oldToken)
 		if err != nil {
 			c.JSON(consts.StatusUnauthorized, map[string]interface{}{"code": 401, "message": "token invalid or expired"})
 			return
@@ -748,6 +749,10 @@ func customizedRegister(r *server.Hertz) {
 		}
 		c.JSON(consts.StatusOK, map[string]interface{}{"code": 200, "message": "已退出登录"})
 	})
+
+	// ===== 一键吊销全部 API Key（JWT-only：Key 不能管 Key；应急止损，见设计文档 §9.3）=====
+	// 治理规则（§9.1-10）：向 /user/api-keys 或 /api/v1 组新增路由前，必须评估该路由的 API Key 暴露面
+	r.POST("/user/api-keys/revoke-all", middleware.AuthMiddleware(), userHandler.RevokeAllAPIKeys)
 
 	// ===== check-auth 端点（前端启动时校验 token 有效性并取回用户信息）=====
 	r.GET("/api/v1/user/check-auth", customMw.UserAuth(), func(ctx context.Context, c *app.RequestContext) {
