@@ -125,6 +125,22 @@ func (c *RedisConfig) Addr() string {
 	return fmt.Sprintf("%s:%d", c.Host, c.Port)
 }
 
+// PublicBaseURL 对外基础地址：base_url 优先，否则 host:port。
+// fallback 供配置未加载（测试）兜底。修复：直传/分片通道此前在
+// base_url 未配置时回落到写死的 localhost:12345 常量，反代/容器部署
+// 下 API 返回的分享链接不可用。
+func (c *ServerConfig) PublicBaseURL(fallback string) string {
+	if c != nil {
+		if c.BaseURL != "" {
+			return c.BaseURL
+		}
+		if c.Port > 0 {
+			return fmt.Sprintf("http://%s:%d", c.Host, c.Port)
+		}
+	}
+	return fallback
+}
+
 // LogConfig 日志配置
 type LogConfig struct {
 	Level      string `mapstructure:"level"`

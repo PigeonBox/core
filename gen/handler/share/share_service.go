@@ -401,11 +401,11 @@ func ShareFile(ctx context.Context, c *app.RequestContext) {
 
 	// 13. 构建响应（base_url 取配置值；此前硬编码 localhost:12345，
 	// 反代/容器部署下 API 返回的分享链接不可直接用，前端仅靠自行改写兜底）
-	baseURL := defaultBaseURL
-	if cfg := conf.GetGlobalConfig(); cfg != nil && cfg.Server.BaseURL != "" {
-		baseURL = cfg.Server.BaseURL
+	var cfgRef *conf.ServerConfig
+	if cfg := conf.GetGlobalConfig(); cfg != nil {
+		cfgRef = &cfg.Server
 	}
-	fullShareURL := fmt.Sprintf("%s/share/%s", baseURL, shareResult.Code)
+	fullShareURL := fmt.Sprintf("%s/share/%s", cfgRef.PublicBaseURL(defaultBaseURL), shareResult.Code)
 
 	// 传输日志（上传，异步）
 	transfer.Record(transfer.Entry{

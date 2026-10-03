@@ -717,8 +717,14 @@ func ChunkUploadComplete(ctx context.Context, c *app.RequestContext) {
 		fmt.Printf("更新上传状态失败: %v\n", err)
 	}
 
-	// 生成分享URL（附下载令牌，security.download_token.enabled 时必需）
-	fullShareURL := fmt.Sprintf("%s/share/%s", defaultBaseURL, shareResult.Code)
+	// 生成分享URL（附下载令牌，security.download_token.enabled 时必需）。
+	// 回归：此前恒用 defaultBaseURL 常量（localhost:12345），base_url 未配置的
+	// 部署里 API 返回的链接不可用
+	var chunkCfgRef *conf.ServerConfig
+	if cfg := conf.GetGlobalConfig(); cfg != nil {
+		chunkCfgRef = &cfg.Server
+	}
+	fullShareURL := fmt.Sprintf("%s/share/%s", chunkCfgRef.PublicBaseURL(defaultBaseURL), shareResult.Code)
 	if tk := security.GenerateDownloadToken(shareResult.Code); tk != "" {
 		fullShareURL += "?token=" + tk
 	}

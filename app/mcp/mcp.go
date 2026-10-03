@@ -260,8 +260,9 @@ func (s *Service) execTool(ctx context.Context, name string, args json.RawMessag
 		if fc.ExpiredAt != nil {
 			expire = fc.ExpiredAt.Format("2006-01-02 15:04:05")
 		}
+		// 文件分享的 Text 存原始文件名（非空），须用 IsTextShare 判定（Text 非空且无文件路径）
 		kind := "文件"
-		if fc.Text != "" {
+		if shareApp.IsTextShare(fc) {
 			kind = "文本"
 		}
 		out := fmt.Sprintf("分享信息\n取件码: %s\n类型: %s\n内容/文件名: %s\n大小: %d 字节\n剩余次数: %d（-1 不限）\n已用次数: %d\n过期时间: %s\n创建时间: %s",
