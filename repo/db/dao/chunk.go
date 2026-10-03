@@ -61,7 +61,10 @@ func (r *ChunkRepository) UpdateUploadProgress(ctx context.Context, uploadID str
 }
 
 func (r *ChunkRepository) UpdateChunkCompleted(ctx context.Context, uploadID string, chunkIndex int, chunkHash string) error {
-	return r.db().WithContext(ctx).Where("upload_id = ? AND chunk_index = ?", uploadID, chunkIndex).
+	// Model 必须显式指定：仅 Where+Updates(map) 时 GORM 无从解析表名，
+	// 恒报 "Table not set"（回归：分片完成端点 CompleteUpload 因此恒 500）
+	return r.db().WithContext(ctx).Model(&model.UploadChunk{}).
+		Where("upload_id = ? AND chunk_index = ?", uploadID, chunkIndex).
 		Updates(map[string]interface{}{
 			"completed":  true,
 			"chunk_hash": chunkHash,
