@@ -366,3 +366,107 @@ func (r *FileCodeRepository) UpdateViewer(ctx context.Context, code, viewerIP st
 			"viewer_count": gorm.Expr("viewer_count + 1"),
 		}).Error
 }
+
+// ==================== 管理端增强（批量操作 / 富统计） ====================
+
+// BatchDeleteByIDs 批量删除（软删），返回受影响行数
+func (r *FileCodeRepository) BatchDeleteByIDs(ctx context.Context, ids []uint) (int, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	res := r.db().WithContext(ctx).Where("id IN ?", ids).Delete(&model.FileCode{})
+	return int(res.RowsAffected), res.Error
+}
+
+// UpdateExpireByID 管理员改单条过期时间/剩余次数
+func (r *FileCodeRepository) UpdateExpireByID(ctx context.Context, id uint, expireAt *time.Time, expiredCount *int) error {
+	updates := map[string]interface{}{}
+	if expireAt != nil {
+		updates["expired_at"] = *expireAt
+	}
+	if expiredCount != nil {
+		updates["expired_count"] = *expiredCount
+	}
+	if len(updates) == 0 {
+		return nil
+	}
+	return r.db().WithContext(ctx).Model(&model.FileCode{}).Where("id = ?", id).Updates(updates).Error
+}
+
+// BatchExtendByIDsAdmin 管理员批量延期（不限 owner）
+func (r *FileCodeRepository) BatchExtendByIDsAdmin(ctx context.Context, ids []uint, newExpireAt time.Time) (int, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	res := r.db().WithContext(ctx).Model(&model.FileCode{}).
+		Where("id IN ?", ids).
+		Updates(map[string]interface{}{"expired_at": newExpireAt, "expired_count": -1})
+	return int(res.RowsAffected), res.Error
+}
+
+// SuffixStat 文件后缀统计项
+type SuffixStat struct {
+	Suffix string `json:"suffix"`
+	Count  int64  `json:"count"`
+}
+
+// TopSuffixes 上传文件后缀 TOP N（Dashboard 文件类型分布）
+func (r *FileCodeRepository) TopSuffixes(ctx context.Context, limit int) ([]*SuffixStat, error) {
+	if limit <= 0 || limit > 50 {
+		limit = 10
+	}
+	var rows []*SuffixStat
+	err := r.db().WithContext(ctx).Model(&model.FileCode{}).
+		Select("suffix, COUNT(*) AS count").
+		Where("suffix <> ''").
+		Group("suffix").
+		Order("count DESC").
+		Limit(limit).
+		Scan(&rows).Error
+	return rows, err
+}
+
+// CountCreatedBetween 统计 [from, to) 创建数（昨日对比等）
+func (r *FileCodeRepository) CountCreatedBetween(ctx context.Context, from, to time.Time) (int64, error) {
+	var count int64
+	err := r.db().WithContext(ctx).Model(&model.FileCode{}).
+		Where("created_at >= ? AND created_at < ?", from, to).
+		Count(&count).Error
+	return count, err
+}
+
+// TrendByDay 按天统计上传数（Dashboard 趋势序列，from 起含当天）
+func (r *FileCodeRepository) TrendByDay(ctx context.Context, from time.Time) ([]DayCount, error) {
+	var rows []DayCount
+	err := r.db().WithContext(ctx).Model(&model.FileCode{}).
+		Select("DATE(created_at) AS date, COUNT(*) AS count").
+		Where("created_at >= ?", from).
+		Group("DATE(created_at)").Order("DATE(created_at)").
+		Scan(&rows).Error
+	return rows, err
+}
+
+// SumUsedCount 累计取件/下载次数
+func (r *FileCodeRepository) SumUsedCount(ctx context.Context) (int64, error) {
+	var total int64
+	err := r.db().WithContext(ctx).Model(&model.FileCode{}).
+		Select("COALESCE(SUM(used_count), 0)").Scan(&total).Error
+	return total, err
+}
+
+// CountByUploadType 按上传类型统计（anonymous/authenticated/presign_*）
+func (r *FileCodeRepository) CountByUploadType(ctx context.Context, uploadType string) (int64, error) {
+	var count int64
+	err := r.db().WithContext(ctx).Model(&model.FileCode{}).
+		Where("upload_type = ?", uploadType).Count(&count).Error
+	return count, err
+}
+
+// CountExpired 统计已过期文件数
+func (r *FileCodeRepository) CountExpired(ctx context.Context) (int64, error) {
+	var count int64
+	err := r.db().WithContext(ctx).Model(&model.FileCode{}).
+		Where("(expired_at IS NOT NULL AND expired_at < ?) OR expired_count = 0", time.Now()).
+		Count(&count).Error
+	return count, err
+}

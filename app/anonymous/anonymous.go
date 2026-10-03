@@ -73,7 +73,7 @@ type CodeMeta struct {
 // expireAt 决定 Redis key 的 TTL（应与 DB 记录过期时间对齐）。
 func (s *Service) GenerateCode(ctx context.Context, meta CodeMeta, expireAt time.Time) (string, error) {
 	if s.rdb == nil {
-		return "", errors.New("Redis 未配置，匿名取件功能不可用")
+		return "", errors.New("redis 未配置，匿名取件功能不可用")
 	}
 	ttl := time.Until(expireAt)
 	if ttl <= 0 {
@@ -81,12 +81,14 @@ func (s *Service) GenerateCode(ctx context.Context, meta CodeMeta, expireAt time
 	}
 	for i := 0; i < 10; i++ {
 		code := randomCode()
-		ok, err := s.rdb.SetNX(ctx, fmt.Sprintf(keyPickupCodeMapping, code), meta.ShareCode, ttl).Result()
+		// SetNX 已废弃（SA1019），改用 Set + NX 选项；NX 且键已存在时返回 redis.Nil
+		key := fmt.Sprintf(keyPickupCodeMapping, code)
+		_, err := s.rdb.SetArgs(ctx, key, meta.ShareCode, redis.SetArgs{TTL: ttl, Mode: "NX"}).Result()
+		if errors.Is(err, redis.Nil) {
+			continue // 已存在，重试
+		}
 		if err != nil {
 			return "", err
-		}
-		if !ok {
-			continue // 已存在，重试
 		}
 		metaStr := fmt.Sprintf("%s|%s|%d|%s|%t",
 			meta.ShareCode, meta.FileName, meta.FileSize, meta.ContentType, meta.RequireAuth)
@@ -103,7 +105,7 @@ func (s *Service) GenerateCode(ctx context.Context, meta CodeMeta, expireAt time
 // 返回展示信息 CodeMeta。每次成功调用扣减一次剩余次数。
 func (s *Service) Retrieve(ctx context.Context, code, password string) (*CodeMeta, error) {
 	if s.rdb == nil {
-		return nil, errors.New("Redis 未配置，匿名取件功能不可用")
+		return nil, errors.New("redis 未配置，匿名取件功能不可用")
 	}
 	// 1. 取 share_code（仅映射）
 	shareCode, err := s.rdb.Get(ctx, fmt.Sprintf(keyPickupCodeMapping, code)).Result()
@@ -157,7 +159,7 @@ func (s *Service) Cancel(ctx context.Context, code string) error {
 // 返回展示信息 CodeMeta + DB 记录（含剩余次数、过期时间等）。
 func (s *Service) Peek(ctx context.Context, code string) (*CodeMeta, *model.FileCode, error) {
 	if s.rdb == nil {
-		return nil, nil, errors.New("Redis 未配置，匿名取件功能不可用")
+		return nil, nil, errors.New("redis 未配置，匿名取件功能不可用")
 	}
 	shareCode, err := s.rdb.Get(ctx, fmt.Sprintf(keyPickupCodeMapping, code)).Result()
 	if errors.Is(err, redis.Nil) {
@@ -204,7 +206,7 @@ func parseMeta(metaStr, shareCode string) *CodeMeta {
 		meta.FileName = parts[1]
 	}
 	if len(parts) >= 3 {
-		fmt.Sscanf(parts[2], "%d", &meta.FileSize)
+		_, _ = fmt.Sscanf(parts[2], "%d", &meta.FileSize)
 	}
 	if len(parts) >= 4 {
 		meta.ContentType = parts[3]

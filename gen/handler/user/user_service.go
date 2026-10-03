@@ -10,9 +10,11 @@ import (
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
+	"github.com/filescodebox/contracts/errcode"
 	usermodel "github.com/filescodebox/contracts/gen/user"
 	userservice "github.com/filescodebox/core/app/user"
 	"github.com/filescodebox/core/conf"
+	"github.com/filescodebox/core/pkg/middleware"
 )
 
 var userService = userservice.NewService()
@@ -87,15 +89,28 @@ func Login(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
+	// 失败锁定检查（维度 = IP + 账户名，防爆破）
+	lock := middleware.GetDefaultLockout()
+	lockKey := middleware.FormatLockKey("login", middleware.ClientIP(c), req.Username)
+	if remain, locked := lock.CheckLocked(ctx, lockKey); locked {
+		c.JSON(consts.StatusTooManyRequests, map[string]interface{}{
+			"code":    errcode.CodeTooManyAttempts,
+			"message": "尝试过于频繁，账户已临时锁定，请 " + strconv.Itoa(remain) + " 秒后重试",
+		})
+		return
+	}
+
 	// 调用 service 进行登录验证
 	userInfo, token, err := userService.Login(ctx, req.Username, req.Password)
 	if err != nil {
+		_, _ = lock.RecordFailure(ctx, lockKey)
 		c.JSON(consts.StatusUnauthorized, map[string]interface{}{
 			"code":    401,
 			"message": err.Error(),
 		})
 		return
 	}
+	lock.Reset(ctx, lockKey)
 
 	resp := &usermodel.LoginResp{
 		Code:    200,
@@ -180,7 +195,34 @@ func UpdateProfile(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
-	// TODO: 实现资料更新
+	// 从上下文获取用户ID（此前为 TODO 假实现，直接返回成功）
+	userIDVal, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(consts.StatusUnauthorized, map[string]interface{}{
+			"code":    401,
+			"message": "用户未登录",
+		})
+		return
+	}
+	userID, ok := userIDVal.(uint)
+	if !ok {
+		c.JSON(consts.StatusInternalServerError, map[string]interface{}{
+			"code":    500,
+			"message": "用户ID类型错误",
+		})
+		return
+	}
+
+	if _, err := userService.Update(ctx, userID, &userservice.UpdateUserReq{
+		Nickname: req.Nickname,
+		Avatar:   req.Avatar,
+	}); err != nil {
+		c.JSON(consts.StatusInternalServerError, map[string]interface{}{
+			"code":    500,
+			"message": "更新失败: " + err.Error(),
+		})
+		return
+	}
 
 	resp := &usermodel.UpdateProfileResp{
 		Code:    200,
@@ -204,7 +246,31 @@ func ChangePassword(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
-	// TODO: 实现密码修改
+	// 从上下文获取用户ID（此前为 TODO 假实现——不校验旧密码直接返回成功）
+	userIDVal, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(consts.StatusUnauthorized, map[string]interface{}{
+			"code":    401,
+			"message": "用户未登录",
+		})
+		return
+	}
+	userID, ok := userIDVal.(uint)
+	if !ok {
+		c.JSON(consts.StatusInternalServerError, map[string]interface{}{
+			"code":    500,
+			"message": "用户ID类型错误",
+		})
+		return
+	}
+
+	if err := userService.ChangePassword(ctx, userID, req.OldPassword, req.NewPassword); err != nil {
+		c.JSON(consts.StatusBadRequest, map[string]interface{}{
+			"code":    400,
+			"message": err.Error(),
+		})
+		return
+	}
 
 	resp := &usermodel.ChangePasswordResp{
 		Code:    200,
@@ -217,17 +283,51 @@ func ChangePassword(ctx context.Context, c *app.RequestContext) {
 // UserStats .
 // @router /user/stats [GET]
 func UserStats(ctx context.Context, c *app.RequestContext) {
-	// TODO: 从上下文获取用户ID（需要认证中间件）
-	// userID := middleware.GetUserID(c)
+	// 从上下文获取用户ID（此前返回硬编码 0）
+	userIDVal, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(consts.StatusUnauthorized, map[string]interface{}{
+			"code":    401,
+			"message": "用户未登录",
+		})
+		return
+	}
+	userID, ok := userIDVal.(uint)
+	if !ok {
+		c.JSON(consts.StatusInternalServerError, map[string]interface{}{
+			"code":    500,
+			"message": "用户ID类型错误",
+		})
+		return
+	}
+
+	stats, err := userService.GetStats(ctx, userID)
+	if err != nil {
+		c.JSON(consts.StatusInternalServerError, map[string]interface{}{
+			"code":    500,
+			"message": "获取统计失败: " + err.Error(),
+		})
+		return
+	}
+
+	// 配额：用户级覆盖 > 系统默认（0 = 不限）
+	quotaUsed := stats.TotalStorage
+	quotaLimit := int64(0)
+	if cfg := conf.GetGlobalConfig(); cfg != nil {
+		quotaLimit = cfg.User.UserStorageQuota
+	}
+	if u, err := userService.GetByID(ctx, userID); err == nil && u != nil && u.MaxStorageQuota > 0 {
+		quotaLimit = u.MaxStorageQuota
+	}
 
 	resp := &usermodel.UserStatsResp{
 		Code:    200,
 		Message: "获取成功",
 		Data: &usermodel.UserStats{
-			TotalUploads: 0,
-			TotalSize:    0,
-			QuotaUsed:    0,
-			QuotaLimit:   0,
+			TotalUploads: int64(stats.TotalUploads),
+			TotalSize:    stats.TotalStorage,
+			QuotaUsed:    quotaUsed,
+			QuotaLimit:   quotaLimit,
 		},
 	}
 

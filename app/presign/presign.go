@@ -21,12 +21,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
 
 	"github.com/filescodebox/core/app/share"
 	"github.com/filescodebox/core/pkg/utils"
+	"github.com/filescodebox/core/repo/db/dao"
 )
 
 // Redis key 模板
@@ -50,6 +52,32 @@ type Service struct {
 	baseURL       string
 	// shareService 注入的 share service（Complete 时调用写分享表）
 	shareService ShareServiceInterface
+	// storage 注入的存储服务（直传按当前激活后端落盘；nil 时保留本地盘直写）
+	storage StorageWriter
+	// objects 真预签名直传能力（s3 后端可用；nil 或不支持时回退自家中转）
+	objects ObjectStore
+}
+
+// 直传模式标记（meta.Scheme / InitResult.Scheme，服务端判定为准）
+const (
+	// SchemeSelf 自家中转：客户端 PUT /api/v1/presign/upload-direct/:uploadID
+	SchemeSelf = "self"
+	// SchemeS3 真·预签名直传：客户端 PUT 对象存储，服务器只签名不过流量
+	SchemeS3 = "s3"
+)
+
+// StorageWriter 存储写入抽象（由 *storage.StorageService 实现）。
+// 单方法接口避免反向依赖存储包，也保持既有 StorageInterface/mock 不动。
+type StorageWriter interface {
+	SaveBytes(ctx context.Context, savePath string, data []byte) error
+}
+
+// ObjectStore 真预签名直传能力（由 *storage.StorageService 实现）。
+// PresignPutURL 对 local/webdav 返回 storage.ErrPresignUnsupported，调用方回退自家中转。
+type ObjectStore interface {
+	PresignPutURL(ctx context.Context, objectKey string, expire time.Duration) (string, error)
+	// HeadObject 直传完成核实用：对象必须真实存在并取实际大小（S3 为事实源）
+	HeadObject(ctx context.Context, objectKey string) (size int64, etag string, err error)
 }
 
 // ShareServiceInterface share service 接口（避免循环依赖）
@@ -74,6 +102,16 @@ func (s *Service) SetShareService(svc ShareServiceInterface) {
 	s.shareService = svc
 }
 
+// SetStorage 注入存储服务（直传按当前激活后端落盘，含路径防御）
+func (s *Service) SetStorage(st StorageWriter) {
+	s.storage = st
+}
+
+// SetObjectStore 注入真预签名直传能力（s3 后端；不支持时 Init 自动回退自家中转）
+func (s *Service) SetObjectStore(o ObjectStore) {
+	s.objects = o
+}
+
 // InitMeta init 元信息
 type InitMeta struct {
 	UploadID    string    `json:"upload_id"`
@@ -89,7 +127,9 @@ type InitMeta struct {
 	ExpireStyle string    `json:"expire_style"`
 	RequireAuth bool      `json:"require_auth"`
 	// PasswordHash 为 require_auth=true 时分享密码的 bcrypt 哈希(明文不落存储)
-	PasswordHash string   `json:"password_hash,omitempty"`
+	PasswordHash string `json:"password_hash,omitempty"`
+	// FileHash 直传完成后服务端计算的 SHA-256（写入 file_codes.file_hash，秒传依据）
+	FileHash string `json:"file_hash,omitempty"`
 }
 
 // InitResult init 返回
@@ -114,8 +154,21 @@ func (s *Service) Init(ctx context.Context, meta InitMeta) (*InitResult, error) 
 	if utils.IsBlockedExtension(meta.FileName, utils.DefaultBlockedExtensions()) {
 		return nil, fmt.Errorf("该文件类型禁止上传")
 	}
+	// 过期样式白名单
+	if err := utils.CheckExpireStyleAllowed(meta.ExpireStyle); err != nil {
+		return nil, err
+	}
+	// 白名单优先（配置非空时生效）
+	if len(utils.GetAllowedExtensions()) > 0 && !utils.IsAllowedExtension(meta.FileName) {
+		return nil, fmt.Errorf("该文件类型不在允许列表内")
+	}
+	// 文件名消毒（展示/落库用原始名；磁盘路径与 ObjectKey 均服务端生成）
+	meta.FileName = utils.SanitizeFileName(meta.FileName)
 
-	// 1. 生成 upload_id
+	// 1. 生成 upload_id 与服务端 ObjectKey。
+	// 修复(P0)：此前 ObjectKey 恒为空串——直传写到 data 目录本身必然失败，
+	// 且分享记录 FilePath 为空、整条 presign 大文件链路断裂。
+	// ObjectKey 由服务端生成（客户端不可控），从构造上根除路径穿越。
 	uploadID, err := genID("up")
 	if err != nil {
 		return nil, err
@@ -123,27 +176,39 @@ func (s *Service) Init(ctx context.Context, meta InitMeta) (*InitResult, error) 
 	meta.UploadID = uploadID
 	meta.ExpireAt = time.Now().Add(s.defaultExpire)
 	meta.Complete = false
+	meta.ObjectKey = genObjectKey(uploadID, meta.FileName)
 
-	// 2. 存 meta
+	// 2. 决定直传模式（需在存 meta 前定案，meta.Scheme 随之持久化）：
+	//    - 后端为 s3 且支持离线签名 → 真预签名直传（客户端 PUT 对象存储，
+	//      下载/上传流量均不过服务器）
+	//    - 否则回退自家中转 URL（X-Upload-Token）
+	//    模式由服务端判定并无条件覆写（客户端传入的 scheme 不可信）
+	token := s.signToken(uploadID, meta.ObjectKey, meta.ExpireAt)
+	uploadURL := fmt.Sprintf("%s/api/v1/presign/upload-direct/%s", s.baseURL, uploadID)
+	headers := map[string]string{"X-Upload-Token": token}
+	meta.Scheme = SchemeSelf
+	if s.objects != nil {
+		if u, perr := s.objects.PresignPutURL(ctx, meta.ObjectKey, s.defaultExpire); perr == nil {
+			uploadURL = u
+			meta.Scheme = SchemeS3
+			headers = map[string]string{}
+			if meta.ContentType != "" {
+				headers["Content-Type"] = meta.ContentType
+			}
+		}
+	}
+
+	// 3. 存 meta（含最终 Scheme）
 	metaJSON, _ := json.Marshal(meta)
 	if err := s.rdb.Set(ctx, fmt.Sprintf(keyUploadMeta, uploadID), metaJSON, s.defaultExpire).Err(); err != nil {
 		return nil, err
 	}
 
-	// 3. 生成 token
-	token := s.signToken(uploadID, meta.ObjectKey, meta.ExpireAt)
-
-	// 4. 生成 upload URL
-	// 当前 fallback：自家直传 URL
-	uploadURL := fmt.Sprintf("%s/api/v1/presign/upload-direct/%s", s.baseURL, uploadID)
-
 	return &InitResult{
-		UploadID:  uploadID,
-		UploadURL: uploadURL,
-		Method:    "PUT",
-		Headers: map[string]string{
-			"X-Upload-Token": token,
-		},
+		UploadID:      uploadID,
+		UploadURL:     uploadURL,
+		Method:        "PUT",
+		Headers:       headers,
 		ExpireSeconds: int32(s.defaultExpire.Seconds()),
 		ObjectKey:     meta.ObjectKey,
 		Scheme:        meta.Scheme,
@@ -186,6 +251,25 @@ func (s *Service) Complete(ctx context.Context, uploadID, token, ownerIP string)
 	expected := s.signToken(meta.UploadID, meta.ObjectKey, meta.ExpireAt)
 	if !hmac.Equal([]byte(expected), []byte(token)) {
 		return nil, ErrTokenInvalid
+	}
+
+	// 3.5 s3 直传模式：向对象存储核实对象真实存在并取实际大小。
+	// 服务器没有经手流量，S3 是事实源；同时兜底最大上传限制。
+	// 校验失败不标记 complete，客户端可重传后再 Complete。
+	if meta.Scheme == SchemeS3 {
+		if s.objects == nil {
+			return nil, errors.New("s3 直传模式未配置对象存储能力")
+		}
+		actual, _, herr := s.objects.HeadObject(ctx, meta.ObjectKey)
+		if herr != nil {
+			return nil, fmt.Errorf("对象尚未上传或不可读: %w", herr)
+		}
+		if err := utils.CheckUploadSize(actual, utils.GetMaxUploadSize()); err != nil {
+			return nil, fmt.Errorf("文件过大")
+		}
+		meta.FileSize = actual
+		// 注意：服务器未接触内容，meta.FileHash 保持客户端提供的值（可为空，
+		// 为空则该分享不参与秒传指纹库）
 	}
 
 	// 4. 校验是否已完成
@@ -249,7 +333,7 @@ func (s *Service) createShareRecord(ctx context.Context, meta *InitMeta, ownerIP
 	req := &share.ShareFileReq{
 		FilePath:     meta.ObjectKey,
 		Size:         meta.FileSize,
-		Text:         meta.FileName,
+		Text:         utils.SanitizeFileName(meta.FileName),
 		ExpiredAt:    expireTime,
 		ExpiredCount: expireCount,
 		RequireAuth:  meta.RequireAuth,
@@ -257,6 +341,7 @@ func (s *Service) createShareRecord(ctx context.Context, meta *InitMeta, ownerIP
 		UserID:       userIDPtr,
 		UploadType:   uploadType,
 		OwnerIP:      ownerIP,
+		FileHash:     meta.FileHash,
 		UploadID:     meta.UploadID,
 	}
 
@@ -326,16 +411,70 @@ func (s *Service) UploadDirect(ctx context.Context, uploadID, token string, data
 	if err := utils.CheckUploadSize(int64(len(data)), utils.GetMaxUploadSize()); err != nil {
 		return fmt.Errorf("文件过大")
 	}
-	// 5. 写入 data 目录（meta.ObjectKey 作为相对路径）
-	dataPath := "./data"
-	targetPath := filepath.Join(dataPath, meta.ObjectKey)
-	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
-		return fmt.Errorf("create dir failed: %w", err)
+	// 5. 写入存储：注入了存储服务时走统一分派（路径防御已收敛在 SaveBytes，
+	// local/s3/webdav 一致）；未注入时保留本地盘直写（纯单测/降级形态）。
+	if s.storage != nil {
+		if err := s.storage.SaveBytes(ctx, meta.ObjectKey, data); err != nil {
+			return fmt.Errorf("write file failed: %w", err)
+		}
+	} else {
+		dataPath := "./data"
+		targetPath := filepath.Join(dataPath, meta.ObjectKey)
+		if !filepath.IsLocal(filepath.Clean(targetPath)) ||
+			filepath.Clean(targetPath) == filepath.Clean(dataPath) ||
+			!strings.HasPrefix(filepath.Clean(targetPath), filepath.Clean(dataPath)+string(filepath.Separator)) {
+			return fmt.Errorf("illegal object key")
+		}
+		if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+			return fmt.Errorf("create dir failed: %w", err)
+		}
+		if err := os.WriteFile(targetPath, data, 0o644); err != nil {
+			return fmt.Errorf("write file failed: %w", err)
+		}
 	}
-	if err := os.WriteFile(targetPath, data, 0o644); err != nil {
-		return fmt.Errorf("write file failed: %w", err)
+	// 6. 计算内容 SHA-256 并回写 meta（Complete 时写入 file_codes.file_hash）
+	fileHash := utils.HashBytes(data)
+	meta.FileHash = fileHash
+	if updated, err := json.Marshal(meta); err == nil {
+		remaining := time.Until(meta.ExpireAt)
+		if remaining > 0 {
+			s.rdb.Set(ctx, fmt.Sprintf(keyUploadMeta, uploadID), updated, remaining)
+		}
 	}
 	return nil
+}
+
+// genObjectKey 服务端生成存储相对路径：uploads/YYYY/MM/DD/<uploadID><消毒后扩展名>。
+func genObjectKey(uploadID, fileName string) string {
+	now := time.Now()
+	ext := strings.ToLower(filepath.Ext(fileName))
+	return filepath.Join("uploads", now.Format("2006"), now.Format("01"), now.Format("02"),
+		uploadID+ext)
+}
+
+// QuickUploadResult 秒传命中结果
+type QuickUploadResult struct {
+	ShareCode    string
+	FullShareURL string
+}
+
+// CheckQuickUpload 秒传检查：按客户端提供的 SHA-256 + 文件大小查找未过期的既有分享。
+// 命中即无需直传，直接出码（对标上游 init 返回 existed 语义）。
+func (s *Service) CheckQuickUpload(ctx context.Context, fileHash string, fileSize int64) (*QuickUploadResult, error) {
+	if fileHash == "" || fileSize <= 0 || s.shareService == nil {
+		return nil, errors.New("no quick upload candidate")
+	}
+	fc, err := dao.NewFileCodeRepository().GetByHashAndSize(ctx, fileHash, fileSize)
+	if err != nil || fc == nil {
+		return nil, errors.New("not found")
+	}
+	if fc.IsExpired() {
+		return nil, errors.New("expired")
+	}
+	return &QuickUploadResult{
+		ShareCode:    fc.Code,
+		FullShareURL: s.baseURL + "/share/" + fc.Code,
+	}, nil
 }
 
 // ============ 内部 ============
@@ -345,7 +484,7 @@ func (s *Service) UploadDirect(ctx context.Context, uploadID, token string, data
 //	token = hex(hmac-sha256(signingKey, uploadID|objectKey|expireAt.Unix))
 func (s *Service) signToken(uploadID, objectKey string, expireAt time.Time) string {
 	mac := hmac.New(sha256.New, s.signingKey)
-	mac.Write([]byte(fmt.Sprintf("%s|%s|%d", uploadID, objectKey, expireAt.Unix())))
+	_, _ = fmt.Fprintf(mac, "%s|%s|%d", uploadID, objectKey, expireAt.Unix())
 	return hex.EncodeToString(mac.Sum(nil))
 }
 

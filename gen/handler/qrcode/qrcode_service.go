@@ -135,5 +135,5 @@ func GetQRCode(ctx context.Context, c *app.RequestContext) {
 
 	// 返回PNG图片
 	c.SetContentType("image/png")
-	c.Write(storedQR.Data)
+	_, _ = c.Write(storedQR.Data)
 }

@@ -10,23 +10,17 @@
 // 解决方案：
 //   - OpenDAL 风格 API（Read/Write/Stat/Delete/List/Copy/Rename/CreateDir/RemoveAll）
 //   - scheme + options 统一配置（OpenDAL 风格）
-//   - 内部 dispatch 到现有 local/s3/webdav/nfs driver
+//   - 内部 dispatch：fs 走本地文件系统；s3/webdav 由 Driver 接口驱动
+//     （s3 → minio-go，webdav → gowebdav，见 s3.go / webdav.go）
 //   - 当真正 OpenDAL Go binding 能在 macOS/Windows 跑通时，可替换 backend
 //     实现（保持 interface 不变）
 //
 // 支持的 scheme（OpenDAL 命名约定）:
 //
 //	fs       - 本地文件系统
-//	s3       - AWS S3 / 兼容 S3 协议（MinIO/Ceph/...）
-//	oss      - 阿里云 OSS
-//	cos      - 腾讯云 COS
-//	obs      - 华为云 OBS
-//	azblob   - Azure Blob
-//	gcs      - Google Cloud Storage
-//	webdav   - WebDAV（含坚果云/Nextcloud）
-//	sftp     - SFTP
-//	hdfs     - HDFS
-//	memory   - 内存（仅测试）
+//	s3       - AWS S3 / 兼容 S3 协议（MinIO/Ceph/OSS/COS/B2/...）
+//	webdav   - WebDAV（含坚果云/Nextcloud/Alist）
+//	oss/cos/obs/azblob/gcs/sftp/hdfs/memory - 扩展点，未配置驱动时按 fs 兜底
 package opendal
 
 import (
@@ -66,8 +60,34 @@ var supportedSchemes = map[Scheme]bool{
 	SchemeS3:     true,
 	SchemeWebDAV: true,
 	// 其他 scheme（oss/cos/obs/azblob/gcs/sftp/hdfs/memory）作为扩展点
-	// 当前内部用 fs driver 兜底，需要时扩展
+	// 当前内部用 fs driver 兜底，需要时实现 Driver 接口扩展
 }
+
+// Driver 远端 scheme（s3/webdav 等）的底层驱动接口。
+// Operator 在 New 时按 scheme 构造具体驱动；NewCustom 允许测试注入假驱动。
+// key 一律为相对路径（无前导 /，不含 bucket/远端 root 前缀）。
+type Driver interface {
+	Write(ctx context.Context, key string, data []byte) error
+	// WriteStream 流式写入；size 为确切字节数（调用方先 Stat 求和得到）
+	WriteStream(ctx context.Context, key string, r io.Reader, size int64) error
+	Read(ctx context.Context, key string) ([]byte, error)
+	Reader(ctx context.Context, key string) (io.ReadCloser, error)
+	Stat(ctx context.Context, key string) (*Metadata, error)
+	Delete(ctx context.Context, key string) error
+	// RemoveAll 递归删除 key 前缀/目录；实现必须拒绝空 key（防全量误删）
+	RemoveAll(ctx context.Context, key string) error
+}
+
+// 可选能力接口：驱动按需实现，Operator 做类型断言后增强行为。
+type (
+	mkdirAller interface{ MkdirAll(ctx context.Context, key string) error }
+	lister     interface{ List(ctx context.Context, key string) ([]*Metadata, error) }
+	copier     interface{ Copy(ctx context.Context, src, dst string) error }
+	renamer    interface{ Rename(ctx context.Context, src, dst string) error }
+	presigner  interface {
+		Presign(ctx context.Context, method, key string, expire time.Duration) (*PresignedResult, error)
+	}
+)
 
 // Metadata 文件元数据
 type Metadata struct {
@@ -101,6 +121,9 @@ type Operator struct {
 	options map[string]string
 	mu      sync.RWMutex
 
+	// driver 远端 scheme 的底层驱动；scheme=fs 时为 nil
+	driver Driver
+
 	// 内部使用（未来扩展点）
 	presignEnabled bool
 }
@@ -108,84 +131,134 @@ type Operator struct {
 // Config 构造配置
 type Config struct {
 	Scheme  Scheme
-	Root    string            // scheme=fs 时为本地路径；其他 scheme 时为 bucket 名
-	Options map[string]string // 通用 options（按 scheme 解释）
+	Root    string            // scheme=fs 时为本地路径；scheme=s3 时为 bucket 名
+	Options map[string]string // 通用 options（按 scheme 解释，见 s3.go/webdav.go）
 }
 
-// New 创建 Operator
+// New 创建 Operator。
+//
+// s3/webdav 的连接参数缺失/非法时返回 error——不再静默回退 fs，
+// 「配置保存成功但实际读写落本地盘」正是拆分前遗留的假开关问题。
+// 未知 scheme 仍按 fs 兜底（真正 OpenDAL binding 接入后改为返回 error）。
 func New(cfg Config) (*Operator, error) {
 	if cfg.Scheme == "" {
 		cfg.Scheme = SchemeFS
 	}
-	if !supportedSchemes[cfg.Scheme] {
-		// 不直接报错，先打 warning，按 fs 兜底
-		// 真正 OpenDAL binding 接入后，这里返回 error
-	}
 	if cfg.Options == nil {
 		cfg.Options = map[string]string{}
 	}
-	return &Operator{
+	op := &Operator{
 		scheme:         cfg.Scheme,
 		root:           cfg.Root,
 		options:        cfg.Options,
 		presignEnabled: cfg.Scheme == SchemeS3 || cfg.Scheme == SchemeOSS || cfg.Scheme == SchemeCOS,
-	}, nil
+	}
+	switch cfg.Scheme {
+	case SchemeS3:
+		opts := cfg.Options
+		if opts["bucket"] == "" && cfg.Root != "" {
+			opts["bucket"] = cfg.Root // Root 约定为 bucket 名（OpenDAL 风格）
+		}
+		d, err := newS3Driver(opts)
+		if err != nil {
+			return nil, err
+		}
+		op.driver = d
+	case SchemeWebDAV:
+		d, err := newWebDAVDriver(cfg.Options)
+		if err != nil {
+			return nil, err
+		}
+		op.driver = d
+	default:
+		if !supportedSchemes[cfg.Scheme] {
+			// 未知 scheme：按 fs 兜底（保持既有宽容行为）
+			op.scheme = SchemeFS
+			op.presignEnabled = false
+		}
+	}
+	return op, nil
+}
+
+// NewCustom 用外部注入的驱动创建 Operator（测试专用：注入假驱动验证分派逻辑）。
+func NewCustom(scheme Scheme, d Driver) *Operator {
+	if scheme == "" {
+		scheme = SchemeFS
+	}
+	return &Operator{
+		scheme:         scheme,
+		options:        map[string]string{},
+		driver:         d,
+		presignEnabled: scheme == SchemeS3 || scheme == SchemeOSS || scheme == SchemeCOS,
+	}
 }
 
 // Scheme 返回当前 scheme
 func (op *Operator) Scheme() Scheme { return op.scheme }
 
-// resolvePath 把相对 path 解析为 backend 实际路径
+// resolvePath 把相对 path 解析为 fs backend 实际路径
 func (op *Operator) resolvePath(p string) string {
 	p = strings.TrimPrefix(p, "/")
-	if op.scheme == SchemeFS {
-		return filepath.Join(op.root, p)
-	}
-	// 其他 scheme：返回 key 形式（bucket/path）
-	if op.root == "" {
-		return p
-	}
-	return op.root + "/" + p
+	return filepath.Join(op.root, p)
+}
+
+// key 把相对 path 规范为远端驱动的 key（去前导 /；bucket/root 前缀由驱动负责）
+func (op *Operator) key(p string) string {
+	return strings.TrimPrefix(p, "/")
 }
 
 // ============ 基础文件操作（OpenDAL 风格 API）============
 
 // Write 写入数据
 func (op *Operator) Write(ctx context.Context, path string, data []byte) error {
-	fullPath := op.resolvePath(path)
 	if op.scheme == SchemeFS {
+		fullPath := op.resolvePath(path)
 		if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
 			return fmt.Errorf("mkdir: %w", err)
 		}
 		return os.WriteFile(fullPath, data, 0644)
 	}
-	// TODO: 其他 scheme 接入
-	return errors.New("scheme not implemented: " + string(op.scheme))
+	return op.driver.Write(ctx, op.key(path), data)
+}
+
+// WriteStream 流式写入（size 为确切字节数；fs 直接 create+copy）
+func (op *Operator) WriteStream(ctx context.Context, path string, r io.Reader, size int64) error {
+	if op.scheme == SchemeFS {
+		fullPath := op.resolvePath(path)
+		if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
+			return fmt.Errorf("mkdir: %w", err)
+		}
+		f, err := os.Create(fullPath)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = f.Close() }()
+		_, err = io.Copy(f, r)
+		return err
+	}
+	return op.driver.WriteStream(ctx, op.key(path), r, size)
 }
 
 // Read 读取整个文件
 func (op *Operator) Read(ctx context.Context, path string) ([]byte, error) {
-	fullPath := op.resolvePath(path)
 	if op.scheme == SchemeFS {
-		return os.ReadFile(fullPath)
+		return os.ReadFile(op.resolvePath(path))
 	}
-	return nil, errors.New("scheme not implemented: " + string(op.scheme))
+	return op.driver.Read(ctx, op.key(path))
 }
 
 // Reader 获取流式读取器
 func (op *Operator) Reader(ctx context.Context, path string) (io.ReadCloser, error) {
-	fullPath := op.resolvePath(path)
 	if op.scheme == SchemeFS {
-		return os.Open(fullPath)
+		return os.Open(op.resolvePath(path))
 	}
-	return nil, errors.New("scheme not implemented: " + string(op.scheme))
+	return op.driver.Reader(ctx, op.key(path))
 }
 
-// Stat 获取文件元信息
+// Stat 获取文件元信息；对象不存在时返回包装了 os.ErrNotExist 的错误
 func (op *Operator) Stat(ctx context.Context, path string) (*Metadata, error) {
-	fullPath := op.resolvePath(path)
 	if op.scheme == SchemeFS {
-		info, err := os.Stat(fullPath)
+		info, err := os.Stat(op.resolvePath(path))
 		if err != nil {
 			return nil, err
 		}
@@ -196,109 +269,114 @@ func (op *Operator) Stat(ctx context.Context, path string) (*Metadata, error) {
 			ModTime: info.ModTime(),
 		}, nil
 	}
-	return nil, errors.New("scheme not implemented: " + string(op.scheme))
+	return op.driver.Stat(ctx, op.key(path))
 }
 
 // Delete 删除文件
 func (op *Operator) Delete(ctx context.Context, path string) error {
-	fullPath := op.resolvePath(path)
 	if op.scheme == SchemeFS {
-		return os.Remove(fullPath)
+		return os.Remove(op.resolvePath(path))
 	}
-	return errors.New("scheme not implemented: " + string(op.scheme))
+	return op.driver.Delete(ctx, op.key(path))
 }
 
 // Exists 检查文件是否存在
 func (op *Operator) Exists(ctx context.Context, path string) bool {
-	fullPath := op.resolvePath(path)
-	if op.scheme == SchemeFS {
-		_, err := os.Stat(fullPath)
-		return !os.IsNotExist(err)
-	}
-	return false
+	_, err := op.Stat(ctx, path)
+	return err == nil
 }
 
-// CreateDir 创建目录
+// CreateDir 创建目录（对象存储无目录概念时为 no-op）
 func (op *Operator) CreateDir(ctx context.Context, path string) error {
-	fullPath := op.resolvePath(path)
 	if op.scheme == SchemeFS {
-		return os.MkdirAll(fullPath, 0755)
+		return os.MkdirAll(op.resolvePath(path), 0755)
 	}
-	return errors.New("scheme not implemented: " + string(op.scheme))
+	if m, ok := op.driver.(mkdirAller); ok {
+		return m.MkdirAll(ctx, op.key(path))
+	}
+	return nil
 }
 
 // RemoveAll 递归删除
 func (op *Operator) RemoveAll(ctx context.Context, path string) error {
-	fullPath := op.resolvePath(path)
 	if op.scheme == SchemeFS {
-		return os.RemoveAll(fullPath)
+		return os.RemoveAll(op.resolvePath(path))
 	}
-	return errors.New("scheme not implemented: " + string(op.scheme))
+	return op.driver.RemoveAll(ctx, op.key(path))
 }
 
-// List 列出目录下的所有条目
+// List 列出目录下的所有条目（驱动未实现时返回错误）
 func (op *Operator) List(ctx context.Context, path string) ([]*Metadata, error) {
-	fullPath := op.resolvePath(path)
-	if op.scheme != SchemeFS {
-		return nil, errors.New("scheme not implemented: " + string(op.scheme))
-	}
-	entries, err := os.ReadDir(fullPath)
-	if err != nil {
-		return nil, err
-	}
-	var result []*Metadata
-	for _, e := range entries {
-		info, err := e.Info()
+	if op.scheme == SchemeFS {
+		fullPath := op.resolvePath(path)
+		entries, err := os.ReadDir(fullPath)
 		if err != nil {
-			continue
+			return nil, err
 		}
-		rel, _ := filepath.Rel(op.root, filepath.Join(fullPath, e.Name()))
-		result = append(result, &Metadata{
-			Path:    rel,
-			Size:    info.Size(),
-			IsDir:   info.IsDir(),
-			ModTime: info.ModTime(),
-		})
+		var result []*Metadata
+		for _, e := range entries {
+			info, err := e.Info()
+			if err != nil {
+				continue
+			}
+			rel, _ := filepath.Rel(op.root, filepath.Join(fullPath, e.Name()))
+			result = append(result, &Metadata{
+				Path:    rel,
+				Size:    info.Size(),
+				IsDir:   info.IsDir(),
+				ModTime: info.ModTime(),
+			})
+		}
+		return result, nil
 	}
-	return result, nil
+	if l, ok := op.driver.(lister); ok {
+		return l.List(ctx, op.key(path))
+	}
+	return nil, errors.New("list not implemented for scheme: " + string(op.scheme))
 }
 
 // Copy 复制文件
 func (op *Operator) Copy(ctx context.Context, src, dst string) error {
-	if op.scheme != SchemeFS {
-		return errors.New("scheme not implemented: " + string(op.scheme))
+	if op.scheme == SchemeFS {
+		srcPath := op.resolvePath(src)
+		dstPath := op.resolvePath(dst)
+		data, err := os.ReadFile(srcPath)
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(dstPath), 0755); err != nil {
+			return err
+		}
+		return os.WriteFile(dstPath, data, 0644)
 	}
-	srcPath := op.resolvePath(src)
-	dstPath := op.resolvePath(dst)
-	data, err := os.ReadFile(srcPath)
-	if err != nil {
-		return err
+	if c, ok := op.driver.(copier); ok {
+		return c.Copy(ctx, op.key(src), op.key(dst))
 	}
-	if err := os.MkdirAll(filepath.Dir(dstPath), 0755); err != nil {
-		return err
-	}
-	return os.WriteFile(dstPath, data, 0644)
+	return errors.New("copy not implemented for scheme: " + string(op.scheme))
 }
 
 // Rename 重命名/移动
 func (op *Operator) Rename(ctx context.Context, src, dst string) error {
-	if op.scheme != SchemeFS {
-		return errors.New("scheme not implemented: " + string(op.scheme))
+	if op.scheme == SchemeFS {
+		srcPath := op.resolvePath(src)
+		dstPath := op.resolvePath(dst)
+		if err := os.MkdirAll(filepath.Dir(dstPath), 0755); err != nil {
+			return err
+		}
+		return os.Rename(srcPath, dstPath)
 	}
-	srcPath := op.resolvePath(src)
-	dstPath := op.resolvePath(dst)
-	if err := os.MkdirAll(filepath.Dir(dstPath), 0755); err != nil {
-		return err
+	if r, ok := op.driver.(renamer); ok {
+		return r.Rename(ctx, op.key(src), op.key(dst))
 	}
-	return os.Rename(srcPath, dstPath)
+	return errors.New("rename not implemented for scheme: " + string(op.scheme))
 }
 
 // ============ 预签名 URL（OpenDAL 风格）============
 
-// Presign 生成预签名 URL
+// Presign 生成预签名 URL。
 //
-// 当前实现：scheme != s3/oss/cos 时，返回本地直传 URL（走自家服务）
-// 真正 OpenDAL binding 接入后，会调底层 SDK 生成真实 presigned URL
+// s3：由 minio-go 离线签名生成真实 S3 预签名 URL（客户端可直传直下）。
+// 其余 scheme：回退为拼自家直传 URL（走自家服务中转，见 presign 域）。
 func (op *Operator) Presign(ctx context.Context, req PresignedRequest) (*PresignedResult, error) {
 	if req.Expire == 0 {
 		req.Expire = 1 * time.Hour
@@ -307,6 +385,18 @@ func (op *Operator) Presign(ctx context.Context, req PresignedRequest) (*Presign
 		req.Method = "PUT"
 	}
 	expireAt := time.Now().Add(req.Expire)
+
+	if p, ok := op.driver.(presigner); ok {
+		res, err := p.Presign(ctx, req.Method, op.key(req.Path), req.Expire)
+		if err != nil {
+			return nil, err
+		}
+		if res.Method == "" {
+			res.Method = req.Method
+		}
+		res.Expire = expireAt
+		return res, nil
+	}
 
 	if !op.presignEnabled {
 		// fallback: 用 base_url + token 拼成自家直传 URL
@@ -324,12 +414,19 @@ func (op *Operator) Presign(ctx context.Context, req PresignedRequest) (*Presign
 		}, nil
 	}
 
-	// TODO: 真正 S3/OSS/COS 预签名生成
-	// 等待 OpenDAL binding 或 aws-sdk-go 接入
 	return nil, errors.New("presign not implemented for scheme: " + string(op.scheme))
 }
 
 // ============ 辅助函数 ============
+
+// Probe 认证级连通性验证：s3 校验凭据+桶存在；webdav 校验根路径可达；
+// 其他 scheme（含 fs）直接通过。管理端切换/保存存储配置前调用。
+func Probe(ctx context.Context, op *Operator) error {
+	if p, ok := op.driver.(interface{ Probe(ctx context.Context) error }); ok {
+		return p.Probe(ctx)
+	}
+	return nil
+}
 
 func genToken() string {
 	b := make([]byte, 16)

@@ -31,7 +31,7 @@ func (g *ImageGenerator) Generate(ctx context.Context, filePath string, ext stri
 	if err != nil {
 		return nil, fmt.Errorf("failed to open image: %w", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	// 解码图片
 	img, format, err := image.Decode(file)

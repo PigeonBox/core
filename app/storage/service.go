@@ -2,15 +2,36 @@ package storage
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
+	"net/http"
 	"os"
+	"syscall"
+	"time"
 
 	"github.com/filescodebox/core/conf"
+	"github.com/filescodebox/core/pkg/security"
+	corestorage "github.com/filescodebox/core/storage"
 )
+
+// Runtime 存储运行时接口（bootstrap 注入单例 *storage.StorageService）。
+type Runtime interface {
+	Reload(cfg *corestorage.StorageConfig) error
+	EffectiveType() corestorage.StorageType
+}
+
+// RuntimePersister 运行时存储配置持久化（admin 域实现，bootstrap 装配；
+// 存储域不直接碰 system_configs，保持域间零耦合）。
+type RuntimePersister interface {
+	LoadRuntimeStorage(ctx context.Context) *conf.StorageConfig
+	SaveRuntimeStorage(ctx context.Context, cfg *conf.StorageConfig) error
+}
 
 // Service 存储服务
 type Service struct {
-	config *conf.AppConfiguration
+	config    *conf.AppConfiguration
+	runtime   Runtime
+	persister RuntimePersister
 }
 
 // NewService 创建存储服务
@@ -18,6 +39,76 @@ func NewService() *Service {
 	return &Service{
 		config: conf.GetGlobalConfig(),
 	}
+}
+
+// SetRuntime 注入存储运行时（在线切换后端热生效）
+func (s *Service) SetRuntime(rt Runtime) { s.runtime = rt }
+
+// SetPersister 注入持久化（在线切换写穿 DB，重启不丢）
+func (s *Service) SetPersister(p RuntimePersister) { s.persister = p }
+
+// baseURL 对外基础地址（与 presign 同规则：server.base_url 优先）
+func (s *Service) baseURL() string {
+	if s.config.Server.BaseURL != "" {
+		return s.config.Server.BaseURL
+	}
+	return fmt.Sprintf("http://%s:%d", s.config.Server.Host, s.config.Server.Port)
+}
+
+// candidateFor 复制全局存储段并覆盖目标类型（切换/更新的候选配置）
+func (s *Service) candidateFor(t string) *conf.StorageConfig {
+	c := &conf.StorageConfig{Type: t, StoragePath: s.config.Storage.StoragePath}
+	if s.config.Storage.S3 != nil {
+		cp := *s.config.Storage.S3
+		c.S3 = &cp
+	}
+	if s.config.Storage.WebDAV != nil {
+		cp := *s.config.Storage.WebDAV
+		c.WebDAV = &cp
+	}
+	return c
+}
+
+// validateEndpoints 远端端点 SSRF 校验（scheme 白名单 + 私网策略）
+func validateEndpoints(c *conf.StorageConfig) error {
+	if c.S3 != nil && c.S3.Endpoint != "" {
+		if err := security.ValidateEndpointURL(c.S3.Endpoint); err != nil {
+			return fmt.Errorf("S3 endpoint 校验失败: %w", err)
+		}
+	}
+	if c.WebDAV != nil && c.WebDAV.Endpoint != "" {
+		if err := security.ValidateEndpointURL(c.WebDAV.Endpoint); err != nil {
+			return fmt.Errorf("WebDAV endpoint 校验失败: %w", err)
+		}
+	}
+	return nil
+}
+
+// activate 存储切换公共流程：SSRF 校验 → 认证级 Probe → 热重载 → 提交全局配置 → 持久化。
+// Probe/Reload 任一失败都不改动现有配置（内存与运行时保持原后端）。
+func (s *Service) activate(ctx context.Context, candidate *conf.StorageConfig) error {
+	if err := validateEndpoints(candidate); err != nil {
+		return err
+	}
+	target := corestorage.ConfigFromConf(candidate, s.baseURL())
+	if err := corestorage.ProbeConfig(ctx, target); err != nil {
+		return fmt.Errorf("存储连通性验证失败: %w", err)
+	}
+	if s.runtime != nil {
+		if err := s.runtime.Reload(target); err != nil {
+			return fmt.Errorf("切换存储后端失败: %w", err)
+		}
+	}
+	s.config.Storage.Type = candidate.Type
+	s.config.Storage.StoragePath = candidate.StoragePath
+	s.config.Storage.S3 = candidate.S3
+	s.config.Storage.WebDAV = candidate.WebDAV
+	if s.persister != nil {
+		if err := s.persister.SaveRuntimeStorage(ctx, candidate); err != nil {
+			return fmt.Errorf("存储已生效但持久化失败（重启后可能回退到原配置）: %w", err)
+		}
+	}
+	return nil
 }
 
 // GetStorageInfo 获取存储信息
@@ -48,25 +139,35 @@ func (s *Service) GetStorageInfo(ctx context.Context) (*StorageInfo, error) {
 	// 存储配置
 	storageConfig := s.getStorageConfig()
 
+	// 实际生效的后端（远端驱动构造失败降级 local 时与 Current 不同）
+	effective := currentType
+	if s.runtime != nil {
+		effective = string(s.runtime.EffectiveType())
+	}
+
 	return &StorageInfo{
 		Current:        currentType,
+		Effective:      effective,
 		Available:      availableStorages,
 		StorageDetails: storageDetails,
 		StorageConfig:  storageConfig,
 	}, nil
 }
 
-// SwitchStorage 切换存储类型
+// SwitchStorage 切换存储类型：校验 → 认证级 Probe → 热重载（新写入立即走新后端）
+// → 更新全局配置 → 持久化到 system_configs（重启不丢）。
 func (s *Service) SwitchStorage(ctx context.Context, storageType string) error {
-	if storageType != "local" && storageType != "s3" && storageType != "webdav" && storageType != "nfs" {
+	switch storageType {
+	case "local", "s3", "webdav":
+	default:
 		return fmt.Errorf("不支持的存储类型: %s", storageType)
 	}
-	// TODO: 实现实际的存储切换逻辑
-	// 这里需要重新初始化存储管理器
-	return nil
+	return s.activate(ctx, s.candidateFor(storageType))
 }
 
-// TestStorageConnection 测试存储连接
+// TestStorageConnection 测试存储连接。
+// local：路径存在可写；s3/webdav：端点 URL 校验（scheme 白名单 + 私网策略）
+// 后做真实 HTTP 探测（不要求认证通过，能建立连接即可）。
 func (s *Service) TestStorageConnection(ctx context.Context, storageType string) error {
 	if storageType == "" {
 		return fmt.Errorf("存储类型不能为空")
@@ -87,37 +188,141 @@ func (s *Service) TestStorageConnection(ctx context.Context, storageType string)
 		if err := os.WriteFile(testFile, []byte("test"), 0644); err != nil {
 			return fmt.Errorf("存储路径不可写: %s", err)
 		}
-		os.Remove(testFile)
+		_ = os.Remove(testFile)
 		return nil
 
-	case "s3", "webdav", "nfs":
-		// TODO: 实现各存储类型的连接测试
-		return fmt.Errorf("存储类型 %s 连接测试暂未实现", storageType)
+	case "s3":
+		s3cfg := s.getS3Config()
+		endpoint := s3cfg.EndpointURL
+		if endpoint == "" {
+			return fmt.Errorf("S3 endpoint 未配置")
+		}
+		if err := security.ValidateEndpointURL(endpoint); err != nil {
+			return err
+		}
+		return probeHTTP(ctx, endpoint)
+
+	case "webdav":
+		webdavCfg := s.getWebDAVConfig()
+		endpoint := webdavCfg.URL
+		if endpoint == "" {
+			return fmt.Errorf("WebDAV URL 未配置")
+		}
+		if err := security.ValidateEndpointURL(endpoint); err != nil {
+			return err
+		}
+		return probeWebDAV(ctx, endpoint, webdavCfg.Username, webdavCfg.Password)
 
 	default:
 		return fmt.Errorf("不支持的存储类型: %s", storageType)
 	}
 }
 
-// UpdateStorageConfig 更新存储配置
-func (s *Service) UpdateStorageConfig(ctx context.Context, req *UpdateConfigRequest) error {
-	// TODO: 实现配置更新和持久化
-	// 这里需要更新配置文件并重新加载
+// probeHTTP 通用端点探测：能建立 TLS/HTTP 连接即视为可达（401/403/404 都算通）。
+func probeHTTP(ctx context.Context, endpoint string) error {
+	client := &http.Client{
+		Timeout: 5 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12},
+		},
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return fmt.Errorf("构造请求失败: %w", err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("端点不可达: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return nil
+}
 
+// probeWebDAV WebDAV 探测：OPTIONS 请求 + 基本认证
+func probeWebDAV(ctx context.Context, endpoint, username, password string) error {
+	client := &http.Client{
+		Timeout: 5 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12},
+		},
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodOptions, endpoint, nil)
+	if err != nil {
+		return fmt.Errorf("构造请求失败: %w", err)
+	}
+	if username != "" {
+		req.SetBasicAuth(username, password)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("WebDAV 端点不可达: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode == http.StatusUnauthorized {
+		return fmt.Errorf("WebDAV 认证失败（401），请检查用户名/密码")
+	}
+	return nil
+}
+
+// UpdateStorageConfig 更新存储配置。
+// 流程与 SwitchStorage 一致：SSRF 校验 → 认证级 Probe → 热重载 → 更新内存
+// → 持久化到 system_configs（管理端配置记录，重启后由 bootstrap 恢复）。
+// 注：use_ssl/path_style 未随请求传入时保留现值（use_ssl 缺省 true，与管理端历史行为一致）。
+func (s *Service) UpdateStorageConfig(ctx context.Context, req *UpdateConfigRequest) error {
 	switch req.Type {
 	case "local":
 		if req.Config.StoragePath != "" {
-			s.config.Storage.StoragePath = req.Config.StoragePath
+			candidate := s.candidateFor("local")
+			candidate.StoragePath = req.Config.StoragePath
+			return s.activate(ctx, candidate)
 		}
-	case "webdav", "s3", "nfs":
-		// TODO: 实现各存储类型的配置更新
-		return fmt.Errorf("存储类型 %s 配置更新暂未实现", req.Type)
+		return nil
+
+	case "webdav":
+		if req.Config.WebDAV == nil {
+			return nil
+		}
+		candidate := s.candidateFor("webdav")
+		if req.Config.WebDAV.URL != "" {
+			if err := security.ValidateEndpointURL(req.Config.WebDAV.URL); err != nil {
+				return fmt.Errorf("端点校验失败: %w", err)
+			}
+			candidate.WebDAV = &conf.WebDAVConfig{
+				Endpoint: req.Config.WebDAV.URL,
+				Username: req.Config.WebDAV.Username,
+				Password: req.Config.WebDAV.Password,
+			}
+		}
+		return s.activate(ctx, candidate)
+
+	case "s3":
+		if req.Config.S3 == nil {
+			return nil
+		}
+		candidate := s.candidateFor("s3")
+		if req.Config.S3.EndpointURL != "" {
+			if err := security.ValidateEndpointURL(req.Config.S3.EndpointURL); err != nil {
+				return fmt.Errorf("端点校验失败: %w", err)
+			}
+			useSSL, pathStyle := true, false
+			if candidate.S3 != nil {
+				useSSL, pathStyle = candidate.S3.UseSSL, candidate.S3.PathStyle
+			}
+			candidate.S3 = &conf.S3Config{
+				Endpoint:  req.Config.S3.EndpointURL,
+				Region:    req.Config.S3.RegionName,
+				Bucket:    req.Config.S3.BucketName,
+				AccessKey: req.Config.S3.AccessKeyID,
+				SecretKey: req.Config.S3.SecretAccessKey,
+				UseSSL:    useSSL,
+				PathStyle: pathStyle,
+			}
+		}
+		return s.activate(ctx, candidate)
 
 	default:
 		return fmt.Errorf("不支持的存储类型: %s", req.Type)
 	}
-
-	return nil
 }
 
 // getStoragePath 获取存储路径
@@ -131,11 +336,25 @@ func (s *Service) getStoragePath() string {
 	return "./data"
 }
 
-// getDiskUsage 获取磁盘使用率
+// getDiskUsage 获取磁盘使用率（0-100，statfs 真实计算；失败返回 0）
 func (s *Service) getDiskUsage() int32 {
-	// TODO: 实现磁盘使用率计算
-	// 可以使用 syscall.Statfs 获取磁盘信息
-	return 0
+	total, free, err := diskUsage(s.getStoragePath())
+	if err != nil || total <= 0 {
+		return 0
+	}
+	used := total - free
+	return int32(used * 100 / total)
+}
+
+// diskUsage 返回路径所在文件系统的 (总空间, 可用空间, error)
+func diskUsage(path string) (uint64, uint64, error) {
+	var st syscall.Statfs_t
+	if err := syscall.Statfs(path, &st); err != nil {
+		return 0, 0, err
+	}
+	total := st.Blocks * uint64(st.Bsize)
+	free := st.Bavail * uint64(st.Bsize)
+	return total, free, nil
 }
 
 // getStorageConfig 获取存储配置
@@ -149,30 +368,30 @@ func (s *Service) getStorageConfig() *StorageConfig {
 	}
 }
 
-// getWebDAVConfig 获取 WebDAV 配置
+// getWebDAVConfig 获取 WebDAV 配置（来自全局配置）
 func (s *Service) getWebDAVConfig() *WebDAVConfig {
-	// TODO: 从配置中读取 WebDAV 配置
-	return &WebDAVConfig{
-		Hostname: "",
-		Username: "",
-		Password: "",
-		RootPath: "",
-		URL:      "",
+	if s.config.Storage.WebDAV != nil {
+		return &WebDAVConfig{
+			URL:      s.config.Storage.WebDAV.Endpoint,
+			Username: s.config.Storage.WebDAV.Username,
+			Password: s.config.Storage.WebDAV.Password,
+		}
 	}
+	return &WebDAVConfig{}
 }
 
-// getS3Config 获取 S3 配置
+// getS3Config 获取 S3 配置（来自全局配置）
 func (s *Service) getS3Config() *S3Config {
-	// TODO: 从配置中读取 S3 配置
-	return &S3Config{
-		AccessKeyID:     "",
-		SecretAccessKey: "",
-		BucketName:      "",
-		EndpointURL:     "",
-		RegionName:      "",
-		Hostname:        "",
-		Proxy:           "",
+	if s.config.Storage.S3 != nil {
+		return &S3Config{
+			EndpointURL:     s.config.Storage.S3.Endpoint,
+			RegionName:      s.config.Storage.S3.Region,
+			BucketName:      s.config.Storage.S3.Bucket,
+			AccessKeyID:     s.config.Storage.S3.AccessKey,
+			SecretAccessKey: s.config.Storage.S3.SecretKey,
+		}
 	}
+	return &S3Config{}
 }
 
 // getNFSConfig 获取 NFS 配置
@@ -195,6 +414,7 @@ func (s *Service) getNFSConfig() *NFSConfig {
 
 type StorageInfo struct {
 	Current        string                    `json:"current"`
+	Effective      string                    `json:"effective"` // 实际生效后端（降级时与 current 不同）
 	Available      []string                  `json:"available"`
 	StorageDetails map[string]*StorageDetail `json:"storage_details"`
 	StorageConfig  *StorageConfig            `json:"storage_config"`

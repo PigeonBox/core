@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/filescodebox/core/conf"
 	"github.com/filescodebox/core/pkg/auth"
 	"github.com/filescodebox/core/pkg/logger"
 	"github.com/filescodebox/core/pkg/middleware"
@@ -46,6 +47,10 @@ type SystemConfig struct {
 		MaxCount      int `json:"max_count"`
 		ExpireDefault int `json:"expire_default"`
 	} `json:"transfer"`
+
+	// RuntimeStorage 运行时存储配置（存储域经 RuntimePersister 接口读写，
+	// 本域只负责持久化不解释其内容；nil 表示管理端从未在线改过存储后端）。
+	RuntimeStorage *conf.StorageConfig `json:"runtime_storage,omitempty"`
 }
 
 type Service struct {
@@ -367,10 +372,18 @@ func validateSystemConfig(cfg *SystemConfig) error {
 }
 
 // UpdateConfig 更新系统配置：写穿到 DB（单行），成功后才更新内存。
+// 防御性合并：handler 会从请求重建 SystemConfig，请求不含 runtime_storage
+// （存储域维护的运行时段），为 nil 时保留旧值，避免保存站点配置时被冲掉。
 func (s *Service) UpdateConfig(ctx context.Context, newConfig *SystemConfig) error {
 	if err := validateSystemConfig(newConfig); err != nil {
 		return err
 	}
+	s.ensureConfigLoaded(ctx)
+	s.configMu.RLock()
+	if newConfig.RuntimeStorage == nil && s.config != nil {
+		newConfig.RuntimeStorage = s.config.RuntimeStorage
+	}
+	s.configMu.RUnlock()
 	data, err := json.Marshal(newConfig)
 	if err != nil {
 		return err
@@ -389,6 +402,41 @@ func (s *Service) UpdateConfig(ctx context.Context, newConfig *SystemConfig) err
 	s.config = newConfig
 	s.configLoaded = true
 	s.logAdminOperation(ctx, "config.update", "system config persisted to database", true)
+	return nil
+}
+
+// LoadRuntimeStorage 读取持久化的运行时存储配置（storage.RuntimePersister 实现）。
+// 无记录/未设置返回 nil；DB 不可用返回 nil（与配置加载的降级策略一致）。
+func (s *Service) LoadRuntimeStorage(ctx context.Context) *conf.StorageConfig {
+	s.ensureConfigLoaded(ctx)
+	s.configMu.RLock()
+	defer s.configMu.RUnlock()
+	if s.config == nil {
+		return nil
+	}
+	return s.config.RuntimeStorage
+}
+
+// SaveRuntimeStorage 持久化运行时存储配置（storage.RuntimePersister 实现）。
+// 读改写单行 JSON，只更新 runtime_storage 段；DB 不可用时返回错误，
+// 由调用方（存储域）决定提示语义——切换已生效，仅持久化失败。
+func (s *Service) SaveRuntimeStorage(ctx context.Context, cfg *conf.StorageConfig) error {
+	s.ensureConfigLoaded(ctx)
+	s.configMu.Lock()
+	s.config.RuntimeStorage = cfg
+	data, err := json.Marshal(s.config)
+	s.configMu.Unlock()
+	if err != nil {
+		return err
+	}
+	rec := &model.SystemConfigRecord{Data: string(data)}
+	if err := s.configRepo.Save(ctx, rec); err != nil {
+		if errors.Is(err, dao.ErrDBNotInitialized) {
+			return fmt.Errorf("database not initialized: %w", err)
+		}
+		return err
+	}
+	s.logAdminOperation(ctx, "storage.config.persist", "runtime storage config persisted (type="+cfg.Type+")", true)
 	return nil
 }
 
@@ -598,12 +646,8 @@ func (s *Service) GetSystemLogs(ctx context.Context, level string, page, pageSiz
 		total = 1
 	}
 
-	if page < 1 {
-		page = 1
-	}
-	if pageSize < 1 {
-		pageSize = 20
-	}
+	_ = page    // 参数已用于说明分页意图；当前实现为占位数据
+	_ = pageSize
 
 	return logs, total, nil
 }

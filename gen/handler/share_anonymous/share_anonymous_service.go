@@ -15,7 +15,9 @@ import (
 	anonmodel "github.com/filescodebox/contracts/gen/share_anonymous"
 	anonapp "github.com/filescodebox/core/app/anonymous"
 	"github.com/filescodebox/contracts/errcode"
+	"github.com/filescodebox/core/pkg/middleware"
 	"github.com/filescodebox/core/pkg/resp"
+	"github.com/filescodebox/core/pkg/security"
 	"github.com/filescodebox/core/pkg/utils"
 )
 
@@ -51,10 +53,20 @@ func GenerateCode(ctx context.Context, c *app.RequestContext) {
 		resp.NewErrorWithMessage(c, errcode.CodeInvalidParam, "该文件类型禁止上传")
 		return
 	}
+	// 白名单优先 + 文件名消毒（展示名入库前统一清洗）
+	if len(utils.GetAllowedExtensions()) > 0 && !utils.IsAllowedExtension(req.FileName) {
+		resp.NewErrorWithMessage(c, errcode.CodeInvalidParam, "该文件类型不在允许列表内")
+		return
+	}
+	safeName := utils.SanitizeFileName(req.FileName)
 	// 过期时间：从请求读，默认 24h
 	expireAt := time.Now().Add(24 * time.Hour)
 	if req.IsSetExpireValue() && req.IsSetExpireStyle() {
 		v, _ := strconv.Atoi(req.GetExpireValue())
+		if err := utils.CheckExpireStyleAllowed(req.GetExpireStyle()); err != nil {
+			resp.NewErrorWithMessage(c, errcode.CodeInvalidParam, err.Error())
+			return
+		}
 		if t := utils.CalculateExpireTime(v, req.GetExpireStyle()); t != nil {
 			expireAt = *t
 		}
@@ -71,7 +83,7 @@ func GenerateCode(ctx context.Context, c *app.RequestContext) {
 
 	pickupCode, err := getService().CreateAnonymousShare(ctx, anonapp.AnonymousShareParams{
 		FilePath:       "", // 匿名取件文件路径由前端直传后回填；此处先建占位记录
-		FileName:       req.FileName,
+		FileName:       safeName,
 		FileSize:       req.FileSize,
 		ContentType:    "application/octet-stream",
 		ExpireAt:       &expireAt,
@@ -103,27 +115,48 @@ func Retrieve(ctx context.Context, c *app.RequestContext) {
 	if req.IsSetPassword() {
 		password = *req.Password
 	}
+
+	// 失败锁定检查（防取件码枚举/密码爆破；维度 = IP + 取件码）
+	lock := middleware.GetDefaultLockout()
+	lockKey := middleware.FormatLockKey("anon", middleware.ClientIP(c), req.Code)
+	if remain, locked := lock.CheckLocked(ctx, lockKey); locked {
+		c.JSON(consts.StatusTooManyRequests, map[string]interface{}{
+			"code":    errcode.CodeTooManyAttempts,
+			"message": "尝试过于频繁，已临时锁定，请 " + strconv.Itoa(remain) + " 秒后重试",
+		})
+		return
+	}
+
 	meta, err := getService().Retrieve(ctx, req.Code, password)
 	if err != nil {
 		switch err {
 		case anonapp.ErrCodeNotFound:
+			_, _ = lock.RecordFailure(ctx, lockKey)
 			resp.NewErrorByCode(c, errcode.CodePickupCodeNotFound)
 		case anonapp.ErrCodeExpired:
 			resp.NewErrorByCode(c, errcode.CodePickupCodeExpired)
 		case anonapp.ErrCodeExhausted:
 			resp.NewErrorByCode(c, errcode.CodePickupCodeExhausted)
 		case anonapp.ErrPasswordWrong:
+			_, _ = lock.RecordFailure(ctx, lockKey)
 			resp.NewErrorByCode(c, errcode.CodeSharePasswordWrong)
 		default:
 			resp.NewErrorWithMessage(c, errcode.CodeInternal, err.Error())
 		}
 		return
 	}
+	lock.Reset(ctx, lockKey)
+
+	// 下载链接附时间窗令牌（security.download_token.enabled 时 /share/download 必需）
+	downloadURL := "/share/download?code=" + meta.ShareCode
+	if tk := security.GenerateDownloadToken(meta.ShareCode); tk != "" {
+		downloadURL += "&token=" + tk
+	}
 	resp.Success(c, &anonmodel.RetrieveData{
 		FileName:        meta.FileName,
 		FileSize:        meta.FileSize,
 		ContentType:     meta.ContentType,
-		DownloadURL:     "/share/download?code=" + meta.ShareCode,
+		DownloadURL:     downloadURL,
 		RemainingCount:  0, // 剩余次数由 DB 管理，前端如需可单独查询
 		ExpireAt:        0, // 由 DB 决定
 		RequirePassword: meta.RequireAuth,
@@ -138,8 +171,12 @@ func Download(ctx context.Context, c *app.RequestContext) {
 		resp.NewErrorWithMessage(c, errcode.CodeInvalidParam, "code required")
 		return
 	}
-	// 复用 share 服务的下载逻辑
-	c.Redirect(consts.StatusFound, []byte("/share/download?code="+code))
+	// 复用 share 服务的下载逻辑；服务端签发下载令牌随重定向携带
+	target := "/share/download?code=" + code
+	if tk := security.GenerateDownloadToken(code); tk != "" {
+		target += "&token=" + tk
+	}
+	c.Redirect(consts.StatusFound, []byte(target))
 }
 
 // SearchByCode 按码查询分享信息（不下载、不扣次数）。

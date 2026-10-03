@@ -3,8 +3,45 @@ package utils
 import (
 	"errors"
 	"strconv"
+	"strings"
 	"time"
+
+	"github.com/filescodebox/core/conf"
 )
+
+// allExpireStyles 全部合法的过期样式
+var allExpireStyles = map[string]bool{
+	"minute": true, "hour": true, "day": true, "week": true,
+	"month": true, "year": true, "forever": true, "count": true,
+}
+
+// IsValidExpireStyle 样式是否合法（在已知样式表内）
+func IsValidExpireStyle(style string) bool {
+	return allExpireStyles[strings.ToLower(style)]
+}
+
+// CheckExpireStyleAllowed 过期样式白名单校验（对标上游"管理员裁剪过期样式"）。
+// upload.allowed_expire_styles 为空 = 全部允许；否则样式必须在列表内。
+// 空样式 = 未指定（历史语义，下游 CalculateExpireTime 会默认 day），放行。
+func CheckExpireStyleAllowed(style string) error {
+	style = strings.ToLower(style)
+	if style == "" {
+		return nil
+	}
+	if !IsValidExpireStyle(style) {
+		return errors.New("无效的过期样式: " + style)
+	}
+	cfg := conf.GetGlobalConfig()
+	if cfg == nil || len(cfg.Upload.AllowedExpireStyles) == 0 {
+		return nil
+	}
+	for _, s := range cfg.Upload.AllowedExpireStyles {
+		if strings.ToLower(s) == style {
+			return nil
+		}
+	}
+	return errors.New("该过期样式已被管理员禁用: " + style)
+}
 
 // ExpireParams 过期参数
 type ExpireParams struct {

@@ -140,8 +140,10 @@ func httpStatusForCode(code int) int {
 		return consts.StatusForbidden
 	case code == errcode.CodeNotFound, code == errcode.CodeShareNotFound, code == errcode.CodeFileNotFound, code == errcode.CodePickupCodeNotFound, code == errcode.CodeUserNotFound:
 		return consts.StatusNotFound
-	case code == errcode.CodeRateLimit:
+	case code == errcode.CodeRateLimit, code == errcode.CodeTooManyAttempts:
 		return consts.StatusTooManyRequests
+	case code == errcode.CodeDownloadToken, code == errcode.CodeSharePasswordWrong, code == errcode.CodePasswordWrong:
+		return consts.StatusUnauthorized
 	case code == errcode.CodeMethodNotAllowed:
 		return consts.StatusMethodNotAllowed
 	case code == errcode.CodeTooLarge:

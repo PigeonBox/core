@@ -4,6 +4,7 @@ package storage
 
 import (
 	"github.com/cloudwego/hertz/pkg/app"
+	"github.com/filescodebox/core/pkg/middleware"
 )
 
 func rootMw() []app.HandlerFunc {
@@ -11,9 +12,12 @@ func rootMw() []app.HandlerFunc {
 	return nil
 }
 
+// _adminMw 安全修复：/admin/storage/* 此前完全无认证（匿名可切换存储/写端点配置），
+// 现挂管理员中间件。
 func _adminMw() []app.HandlerFunc {
-	// your code...
-	return nil
+	return []app.HandlerFunc{
+		middleware.AdminMiddleware(),
+	}
 }
 
 func _storageMw() []app.HandlerFunc {

@@ -6,7 +6,7 @@ import (
 	"github.com/cloudwego/hertz/pkg/app"
 )
 
-// SecurityHeaders 设置常见安全响应头，缓解 XSS / 点击劫持 / MIME 嗅探等风险。
+// SecurityHeadersConfig 安全响应头中间件的配置项。
 //
 //   - X-Content-Type-Options: nosniff  → 禁止浏览器嗅探 MIME 类型
 //   - X-Frame-Options: SAMEORIGIN      → 防止点击劫持（页面只能被同源 iframe 嵌入）

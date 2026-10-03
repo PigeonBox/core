@@ -10,6 +10,49 @@ import (
 	"github.com/filescodebox/core/pkg/auth"
 )
 
+// context key 类型（非导出，防止跨包键冲突）
+type ctxKey int
+
+const (
+	ctxKeyUserID ctxKey = iota
+	ctxKeyUsername
+	ctxKeyRole
+	ctxKeyClientIP
+)
+
+// 注入/读取工具：中间件将认证信息写入 ctx，service 层经此提取操作者（审计用）。
+func withIdentity(ctx context.Context, userID uint, username, role, ip string) context.Context {
+	ctx = context.WithValue(ctx, ctxKeyUserID, userID)
+	ctx = context.WithValue(ctx, ctxKeyUsername, username)
+	ctx = context.WithValue(ctx, ctxKeyRole, role)
+	ctx = context.WithValue(ctx, ctxKeyClientIP, ip)
+	return ctx
+}
+
+// UserIDFromContext 从 ctx 读取用户 ID（未认证返回 false）
+func UserIDFromContext(ctx context.Context) (uint, bool) {
+	v, ok := ctx.Value(ctxKeyUserID).(uint)
+	return v, ok
+}
+
+// UsernameFromContext 从 ctx 读取用户名（未认证返回空串）
+func UsernameFromContext(ctx context.Context) string {
+	v, _ := ctx.Value(ctxKeyUsername).(string)
+	return v
+}
+
+// RoleFromContext 从 ctx 读取角色
+func RoleFromContext(ctx context.Context) string {
+	v, _ := ctx.Value(ctxKeyRole).(string)
+	return v
+}
+
+// ClientIPFromContext 从 ctx 读取已解析的客户端 IP
+func ClientIPFromContext(ctx context.Context) string {
+	v, _ := ctx.Value(ctxKeyClientIP).(string)
+	return v
+}
+
 // AuthMiddleware JWT认证中间件
 func AuthMiddleware() app.HandlerFunc {
 	return func(ctx context.Context, c *app.RequestContext) {
@@ -26,7 +69,7 @@ func AuthMiddleware() app.HandlerFunc {
 
 		// 验证Bearer token格式
 		parts := strings.SplitN(authHeader, " ", 2)
-		if !(len(parts) == 2 && parts[0] == "Bearer") {
+		if len(parts) != 2 || parts[0] != "Bearer" {
 			c.JSON(http.StatusUnauthorized, map[string]interface{}{
 				"code":    http.StatusUnauthorized,
 				"message": "Authorization header format must be Bearer {token}",
@@ -46,10 +89,22 @@ func AuthMiddleware() app.HandlerFunc {
 			return
 		}
 
-		// 将用户信息存储到上下文中
+		// 注销黑名单检查（logout 端点写入；已注销 token 即刻失效）
+		if auth.IsTokenRevoked(ctx, parts[1]) {
+			c.JSON(http.StatusUnauthorized, map[string]interface{}{
+				"code":    http.StatusUnauthorized,
+				"message": "Token has been revoked",
+			})
+			c.Abort()
+			return
+		}
+
+		// 将用户信息存储到上下文中（RequestContext + ctx 双写：
+		// c.Get 供 handler 用，ctx value 供 service 层提取审计操作者）
 		c.Set("user_id", claims.UserID)
 		c.Set("username", claims.Username)
 		c.Set("role", claims.Role)
+		ctx = withIdentity(ctx, claims.UserID, claims.Username, claims.Role, ClientIP(c))
 
 		// 同时设置 Header，方便 handler 读取
 		c.Header("X-User-ID", fmt.Sprintf("%d", claims.UserID))
@@ -69,8 +124,7 @@ func AdminMiddleware() app.HandlerFunc {
 
 	return func(ctx context.Context, c *app.RequestContext) {
 		// 检查是否在白名单中
-		path := string(c.URI().Path())
-		if skipPaths[path] {
+		if skipPaths[string(c.URI().Path())] {
 			c.Next(ctx)
 			return
 		}
@@ -108,7 +162,7 @@ func OptionalAuthMiddleware() app.HandlerFunc {
 
 		// 验证Bearer token格式
 		parts := strings.SplitN(authHeader, " ", 2)
-		if !(len(parts) == 2 && parts[0] == "Bearer") {
+		if len(parts) != 2 || parts[0] != "Bearer" {
 			c.Next(ctx)
 			return
 		}

@@ -350,3 +350,19 @@ func TestCreateShare_WithPassword(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "$2a$10$dummyhash", fc.PasswordHash)
 }
+
+// TestIsTextShare 回归（P0）：ShareFile 把原始文件名存进 Text 字段，
+// 下载端点曾因仅凭 Text != "" 判定文本分享，把文件分享的下载拦截成
+// "返回文件名字符串"。正确判定 = Text 非空且无文件路径。
+func TestIsTextShare(t *testing.T) {
+	fileNameInText := &model.FileCode{Text: "report.pdf", FilePath: "uploads/2026/10/03/uuid.pdf"}
+	assert.False(t, IsTextShare(fileNameInText), "文件分享（Text 存的是文件名）不得判为文本分享")
+
+	pureText := &model.FileCode{Text: "hello world", FilePath: ""}
+	assert.True(t, IsTextShare(pureText))
+
+	legacyFile := &model.FileCode{Text: "", FilePath: "uploads/x/y.bin"}
+	assert.False(t, IsTextShare(legacyFile))
+
+	assert.False(t, IsTextShare(nil))
+}

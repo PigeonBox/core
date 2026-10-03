@@ -11,13 +11,19 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26"
-          cache-dependency-path: core/go.sum
+          cache-dependency-path: go.sum
       - name: Build
         run: go build ./...
       - name: Vet
         run: go vet ./...
       - name: Test
         run: go test ./...
+      # lint 棘轮（.golangci.yml 从 0 issues 起步，只收紧不放宽）
+      - name: Lint (golangci-lint)
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.14
+          args: --timeout 9m
       - name: Dep guard(core 不许依赖下游)
         run: |
           BAD=$(go list -deps ./... | grep -E '^github.com/filescodebox/(server|frontend|filecodebox-fnos)' || true)

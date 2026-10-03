@@ -1,20 +1,25 @@
 // Package middleware 提供 Hertz 中间件：
 //   - RateLimit: IP 维度 + 接口维度双层限流
 //
-// 基于 golang.org/x/time/rate 实现 token bucket。
-// 配置存 runtime_configs 表，运行时可调。
+// 实现：默认进程内 token bucket（x/time/rate）；配置 rate_limit.use_redis=true
+// 且 Redis 可用时切换为 Redis 固定窗口计数（多实例共享）。
+// 命中限流后按 block_seconds 封禁该 IP+维度（封禁同样 Redis/内存双写）。
+// 配置可经 /admin/ratelimit/config 运行时热更。
 package middleware
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
 	"github.com/cloudwego/hertz/pkg/app"
+	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 	"golang.org/x/time/rate"
 
 	"github.com/filescodebox/contracts/errcode"
+	"github.com/filescodebox/core/conf"
 	"github.com/filescodebox/core/pkg/logger"
 	"github.com/filescodebox/core/pkg/resp"
 )
@@ -27,7 +32,8 @@ type RateLimitConfig struct {
 	LoginQPS     int  // 登录接口 QPS
 	Burst        int  // 突发容量
 	Enabled      bool // 总开关
-	BlockSeconds int  // 阻断后封禁秒数
+	BlockSeconds int  // 触发限流后的封禁秒数（0 = 不封禁）
+	UseRedis     bool // Redis 固定窗口模式（多实例共享）
 }
 
 // DefaultRateLimitConfig 默认限流配置
@@ -43,6 +49,39 @@ func DefaultRateLimitConfig() RateLimitConfig {
 	}
 }
 
+// RateLimitConfigFromConf 从全局配置读取（未配置段时用默认值）
+func RateLimitConfigFromConf() RateLimitConfig {
+	cfg := DefaultRateLimitConfig()
+	c := conf.GetGlobalConfig()
+	if c == nil {
+		return cfg
+	}
+	rl := c.RateLimit
+	if rl.GlobalQPS > 0 {
+		cfg.GlobalQPS = rl.GlobalQPS
+	}
+	if rl.UploadQPS > 0 {
+		cfg.UploadQPS = rl.UploadQPS
+	}
+	if rl.DownloadQPS > 0 {
+		cfg.DownloadQPS = rl.DownloadQPS
+	}
+	if rl.LoginQPS > 0 {
+		cfg.LoginQPS = rl.LoginQPS
+	}
+	if rl.Burst > 0 {
+		cfg.Burst = rl.Burst
+	}
+	if rl.BlockSeconds > 0 {
+		cfg.BlockSeconds = rl.BlockSeconds
+	}
+	if rl.Enabled != nil {
+		cfg.Enabled = *rl.Enabled
+	}
+	cfg.UseRedis = rl.UseRedis
+	return cfg
+}
+
 // scope 限流维度
 type scope string
 
@@ -52,6 +91,19 @@ const (
 	scopeDownload scope = "download"
 	scopeLogin    scope = "login"
 )
+
+func (s scope) qpsOf(cfg RateLimitConfig) int {
+	switch s {
+	case scopeUpload:
+		return cfg.UploadQPS
+	case scopeDownload:
+		return cfg.DownloadQPS
+	case scopeLogin:
+		return cfg.LoginQPS
+	default:
+		return cfg.GlobalQPS
+	}
+}
 
 // clientLimiter 单 IP 在某 scope 下的 limiter
 type clientLimiter struct {
@@ -63,8 +115,12 @@ type clientLimiter struct {
 type RateLimiter struct {
 	mu      sync.Mutex
 	clients map[scope]map[string]*clientLimiter
+	blocked map[string]time.Time // "scope|ip" → 封禁截止
 	cfg     RateLimitConfig
+	rdb     *redis.Client
 	stopCh  chan struct{}
+
+	blockedTotal int64 // 累计封禁次数（观测用）
 }
 
 // NewRateLimiter 创建限流管理器
@@ -76,12 +132,20 @@ func NewRateLimiter(cfg RateLimitConfig) *RateLimiter {
 			scopeDownload: {},
 			scopeLogin:    {},
 		},
-		cfg:    cfg,
-		stopCh: make(chan struct{}),
+		blocked: map[string]time.Time{},
+		cfg:     cfg,
+		stopCh:  make(chan struct{}),
 	}
 	// 后台定期清理过期 limiter（防止 map 无限增长）
 	go rl.gcLoop()
 	return rl
+}
+
+// SetRedis 注入 Redis（use_redis=true 时启用分布式固定窗口）
+func (rl *RateLimiter) SetRedis(rdb *redis.Client) {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	rl.rdb = rdb
 }
 
 // UpdateConfig 热更新配置
@@ -124,6 +188,11 @@ func (rl *RateLimiter) gc() {
 			}
 		}
 	}
+	for k, until := range rl.blocked {
+		if until.Before(time.Now()) {
+			delete(rl.blocked, k)
+		}
+	}
 }
 
 // getLimiter 获取或创建某 IP 在某 scope 下的 limiter
@@ -136,17 +205,7 @@ func (rl *RateLimiter) getLimiter(s scope, ip string) *rate.Limiter {
 	}
 	cl, ok := m[ip]
 	if !ok {
-		var qps int
-		switch s {
-		case scopeUpload:
-			qps = rl.cfg.UploadQPS
-		case scopeDownload:
-			qps = rl.cfg.DownloadQPS
-		case scopeLogin:
-			qps = rl.cfg.LoginQPS
-		default:
-			qps = rl.cfg.GlobalQPS
-		}
+		qps := s.qpsOf(rl.cfg)
 		if qps <= 0 {
 			qps = 1
 		}
@@ -163,34 +222,140 @@ func (rl *RateLimiter) getLimiter(s scope, ip string) *rate.Limiter {
 	return cl.limiter
 }
 
+// blockKey 封禁/Redis 计数的组合键
+func blockKey(s scope, ip string) string { return string(s) + "|" + ip }
+
+// isBlocked 检查（内存 + Redis 双层）
+func (rl *RateLimiter) isBlocked(ctx context.Context, s scope, ip string) bool {
+	key := blockKey(s, ip)
+	if rl.rdb != nil {
+		if n, err := rl.rdb.Exists(ctx, "fcb:rl:block:"+key).Result(); err == nil && n > 0 {
+			return true
+		}
+	}
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	until, ok := rl.blocked[key]
+	return ok && until.After(time.Now())
+}
+
+// addBlock 写入封禁（内存 + Redis，取两者较长）
+func (rl *RateLimiter) addBlock(ctx context.Context, s scope, ip string) {
+	secs := rl.cfg.BlockSeconds
+	if secs <= 0 {
+		return
+	}
+	key := blockKey(s, ip)
+	until := time.Now().Add(time.Duration(secs) * time.Second)
+	rl.mu.Lock()
+	rl.blocked[key] = until
+	rl.blockedTotal++
+	rl.mu.Unlock()
+	if rl.rdb != nil {
+		rl.rdb.Set(ctx, "fcb:rl:block:"+key, "1", time.Duration(secs)*time.Second)
+	}
+}
+
+// allowRedis Redis 固定窗口计数（1s 窗口，INCR + 首次 EXPIRE）
+func (rl *RateLimiter) allowRedis(ctx context.Context, s scope, ip string) bool {
+	qps := s.qpsOf(rl.cfg)
+	if qps <= 0 {
+		qps = 1
+	}
+	key := fmt.Sprintf("fcb:rl:cnt:%s:%s:%d", s, ip, time.Now().Unix())
+	n, err := rl.rdb.Incr(ctx, key).Result()
+	if err != nil {
+		// Redis 故障：回退进程内 bucket
+		limiter := rl.getLimiter(s, ip)
+		return limiter == nil || limiter.Allow()
+	}
+	if n == 1 {
+		rl.rdb.Expire(ctx, key, 2*time.Second)
+	}
+	return n <= int64(qps)
+}
+
 // allow 检查 IP 在某 scope 下是否被允许
 func (rl *RateLimiter) allow(ctx context.Context, s scope, ip string) bool {
 	if !rl.cfg.Enabled {
 		return true
 	}
-	limiter := rl.getLimiter(s, ip)
-	if limiter == nil {
-		return true
+	if rl.isBlocked(ctx, s, ip) {
+		return false
 	}
-	return limiter.Allow()
+	var ok bool
+	if rl.cfg.UseRedis && rl.rdb != nil {
+		ok = rl.allowRedis(ctx, s, ip)
+	} else {
+		limiter := rl.getLimiter(s, ip)
+		ok = limiter == nil || limiter.Allow()
+	}
+	if !ok {
+		rl.addBlock(ctx, s, ip)
+	}
+	return ok
 }
 
-// getClientIP 取客户端 IP（兼容 X-Forwarded-For / X-Real-IP）
-func getClientIP(c *app.RequestContext) string {
-	if xff := string(c.GetHeader("X-Forwarded-For")); xff != "" {
-		// X-Forwarded-For 格式: client, proxy1, proxy2
-		// 取第一个
-		for i := 0; i < len(xff); i++ {
-			if xff[i] == ',' {
-				return xff[:i]
-			}
+// SnapshotConfig 返回当前配置副本（并发安全，admin 接口用）
+func (rl *RateLimiter) SnapshotConfig() RateLimitConfig {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	return rl.cfg
+}
+
+// ProbeAllow 独立探测（不落内存 limiter 状态，admin /test 实测用）。
+// probeIP 以 "_test" 后缀隔离，避免污染真实客户端的限流计数。
+func (rl *RateLimiter) ProbeAllow(ctx context.Context, s scope, probeIP string) bool {
+	if !rl.cfg.Enabled {
+		return true
+	}
+	// 复用 allow 的判定路径，但封禁/计数写入都带 _test 键
+	if rl.isBlocked(ctx, s, probeIP) {
+		return false
+	}
+	var ok bool
+	if rl.cfg.UseRedis && rl.rdb != nil {
+		ok = rl.allowRedis(ctx, s, probeIP)
+	} else {
+		limiter := rl.getLimiter(s, probeIP)
+		ok = limiter == nil || limiter.Allow()
+	}
+	if !ok {
+		rl.addBlock(ctx, s, probeIP)
+	}
+	return ok
+}
+
+// Stats 返回限流器运行状态（/admin/ratelimit/status 用）
+func (rl *RateLimiter) Stats() map[string]interface{} {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	active := map[string]int{}
+	for s, m := range rl.clients {
+		active[string(s)] = len(m)
+	}
+	blockedActive := 0
+	now := time.Now()
+	for _, until := range rl.blocked {
+		if until.After(now) {
+			blockedActive++
 		}
-		return xff
 	}
-	if xri := string(c.GetHeader("X-Real-IP")); xri != "" {
-		return xri
+	return map[string]interface{}{
+		"enabled":            rl.cfg.Enabled,
+		"config":             rl.cfg,
+		"active_limiters":    active,
+		"blocked_current":    blockedActive,
+		"blocked_total":      rl.blockedTotal,
+		"backend":            backendName(rl.cfg.UseRedis, rl.rdb != nil),
 	}
-	return c.RemoteAddr().String()
+}
+
+func backendName(useRedis bool, hasRDB bool) string {
+	if useRedis && hasRDB {
+		return "redis"
+	}
+	return "memory"
 }
 
 // Middleware 返回 Hertz 限流中间件
@@ -201,7 +366,7 @@ func (rl *RateLimiter) Middleware(s scope) app.HandlerFunc {
 			ctx.Next(c)
 			return
 		}
-		ip := getClientIP(ctx)
+		ip := ClientIP(ctx)
 		if !rl.allow(c, s, ip) {
 			if logger.Logger != nil {
 				logger.Logger.Warn("[ratelimit] blocked",

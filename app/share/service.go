@@ -47,6 +47,7 @@ type ShareFileReq struct {
 }
 
 type ShareResp struct {
+	ID           uint       `json:"id"`
 	Code         string     `json:"code"`
 	Prefix       string     `json:"prefix"`
 	Suffix       string     `json:"suffix"`
@@ -74,6 +75,7 @@ type Service struct {
 	storage      storage.StorageInterface
 	baseURL      string // 基础 URL，用于生成分享链接
 	notifySvc    NotifyServiceInterface
+	quotaChecker QuotaChecker
 }
 
 // NotifyServiceInterface 取件通知接口（避免 share → notify 直接依赖）
@@ -84,6 +86,20 @@ type NotifyServiceInterface interface {
 // UserServiceInterface 定义用户服务接口，避免循环依赖
 type UserServiceInterface interface {
 	UpdateUserStats(userID uint, statsType string, value int64) error
+}
+
+// QuotaChecker 存储配额检查接口（bootstrap 注入 user service 实现）
+type QuotaChecker interface {
+	CheckQuota(ctx context.Context, userID uint, addBytes int64) error
+}
+
+// IsTextShare 判定是否纯文本分享：Text 非空且无文件路径。
+//
+// 回归要点（P0）：ShareFile 会把原始文件名存进 Text 字段，因此仅凭
+// Text != "" 判定会把文件分享误判为文本——文件下载曾被文本分支拦截，
+// 返回文件名字符串而非文件内容（smoke 只测文本分享所以长期未暴露）。
+func IsTextShare(fc *model.FileCode) bool {
+	return fc != nil && fc.Text != "" && fc.FilePath == ""
 }
 
 func NewService(baseURL string, storageService storage.StorageInterface) *Service {
@@ -111,6 +127,20 @@ func (s *Service) SetUserService(userService UserServiceInterface) {
 // SetNotifyService 注入 notify service（取件时给 owner 发通知）
 func (s *Service) SetNotifyService(svc NotifyServiceInterface) {
 	s.notifySvc = svc
+}
+
+// SetQuotaChecker 注入存储配额检查器（bootstrap 注入 user service 实现；
+// 未注入时上传不检查配额——保持向后兼容）
+func (s *Service) SetQuotaChecker(qc QuotaChecker) {
+	s.quotaChecker = qc
+}
+
+// checkQuota 登录用户上传前配额检查（匿名上传无配额语义，跳过）
+func (s *Service) checkQuota(ctx context.Context, userID *uint, addBytes int64) error {
+	if s.quotaChecker == nil || userID == nil {
+		return nil
+	}
+	return s.quotaChecker.CheckQuota(ctx, *userID, addBytes)
 }
 
 // GenerateCode 生成分享代码（crypto/rand，8 位字母数字）。
@@ -183,6 +213,10 @@ func (s *Service) ShareTextWithAuth(ctx context.Context, text string, expireValu
 	if requireAuth && passwordHash == "" {
 		return nil, errors.New("开启密码保护时必须提供密码")
 	}
+	// 文本大小上限（service 层兜底，handler 已先行校验）
+	if maxBytes := utils.GetTextShareMaxBytes(); maxBytes > 0 && int64(len(text)) > maxBytes {
+		return nil, fmt.Errorf("%w（上限 %d 字节）", utils.ErrTextTooLarge, maxBytes)
+	}
 	// 计算过期时间
 	expireTime := utils.CalculateExpireTime(expireValue, expireStyle)
 	expireCount := utils.CalculateExpireCount(expireStyle, expireValue)
@@ -221,9 +255,14 @@ func (s *Service) ShareFile(ctx context.Context, req *ShareFileReq) (*ShareResp,
 }
 
 // CreateShare 创建分享记录（ShareFile 的语义化别名，便于其他 service 调用）
-// 行为：生成 code → 写 file_codes 表 → 返回 share_code / url
+// 行为：配额检查 → 生成 code → 写 file_codes 表 → 返回 share_code / url
 func (s *Service) CreateShare(ctx context.Context, req *ShareFileReq) (*ShareResp, error) {
 	s.ensureRepository()
+
+	// 存储配额强制执行（此前字段存在但从未生效）
+	if err := s.checkQuota(ctx, req.UserID, req.Size); err != nil {
+		return nil, err
+	}
 
 	fileCode, err := s.createWithRetry(ctx, func(code string) *model.FileCode {
 		return &model.FileCode{
@@ -432,7 +471,7 @@ func (s *Service) RecordViewerAndNotify(ctx context.Context, code, viewerIP, vie
 	}
 
 	title := "您的分享已被取件"
-	if fc.Text != "" {
+	if IsTextShare(fc) {
 		title = "您的文本分享已被查看"
 	}
 	content := fmt.Sprintf("分享码: %s\n取件人 IP: %s\n时间: %s", code, viewerIP, now.Format("2006-01-02 15:04:05"))
@@ -445,6 +484,7 @@ func (s *Service) RecordViewerAndNotify(ctx context.Context, code, viewerIP, vie
 // modelToResp 将模型转换为响应
 func (s *Service) modelToResp(fileCode *model.FileCode) *ShareResp {
 	return &ShareResp{
+		ID:           fileCode.ID,
 		Code:         fileCode.Code,
 		Prefix:       fileCode.Prefix,
 		Suffix:       fileCode.Suffix,

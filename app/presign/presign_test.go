@@ -3,6 +3,7 @@ package presign
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -54,7 +55,7 @@ func newTestService(t *testing.T) (*Service, *miniredis.Miniredis) {
 	t.Cleanup(mr.Close)
 
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	t.Cleanup(func() { rdb.Close() })
+	t.Cleanup(func() { _ = rdb.Close() })
 
 	svc := NewService(rdb, "http://test.local", "test-signing-key")
 	return svc, mr
@@ -70,7 +71,6 @@ func TestInit_GeneratesUniqueToken(t *testing.T) {
 			FileName:    "test.txt",
 			FileSize:    1024,
 			ContentType: "text/plain",
-			ObjectKey:   "uploads/test.txt",
 		}
 		result, err := svc.Init(ctx, meta)
 		require.NoError(t, err)
@@ -91,7 +91,6 @@ func TestInit_ResultContainsUploadURL(t *testing.T) {
 		FileName:    "test.txt",
 		FileSize:    1024,
 		ContentType: "text/plain",
-		ObjectKey:   "uploads/test.txt",
 	}
 	result, err := svc.Init(ctx, meta)
 	require.NoError(t, err)
@@ -114,7 +113,6 @@ func TestComplete_HappyPath(t *testing.T) {
 		FileName:    "test.txt",
 		FileSize:    1024,
 		ContentType: "text/plain",
-		ObjectKey:   "uploads/test.txt",
 		UserID:      0,
 		ExpireValue: 1,
 		ExpireStyle: "hour",
@@ -136,7 +134,10 @@ func TestComplete_HappyPath(t *testing.T) {
 	// mock share service 被调用 1 次
 	assert.Equal(t, 1, mock.called)
 	require.NotNil(t, mock.lastReq)
-	assert.Equal(t, "uploads/test.txt", mock.lastReq.FilePath)
+	// ObjectKey 现由服务端生成（uploads/YYYY/MM/DD/<uploadID><ext>，防路径穿越）
+	now := time.Now()
+	expectedKey := fmt.Sprintf("uploads/%04d/%02d/%02d/%s.txt", now.Year(), int(now.Month()), now.Day(), result.UploadID)
+	assert.Equal(t, expectedKey, mock.lastReq.FilePath)
 	assert.Equal(t, int64(1024), mock.lastReq.Size)
 	assert.Equal(t, "test.txt", mock.lastReq.Text)
 	assert.Equal(t, "presign_anonymous", mock.lastReq.UploadType)
@@ -154,7 +155,6 @@ func TestComplete_WithAuthenticatedUser(t *testing.T) {
 		FileName:    "auth.txt",
 		FileSize:    2048,
 		ContentType: "text/plain",
-		ObjectKey:   "uploads/auth.txt",
 		UserID:      42, // 已认证用户
 	}
 	initRes, err := svc.Init(ctx, meta)
@@ -175,9 +175,8 @@ func TestComplete_InvalidToken(t *testing.T) {
 
 	ctx := context.Background()
 	meta := InitMeta{
-		FileName:  "test.txt",
-		FileSize:  1024,
-		ObjectKey: "uploads/test.txt",
+		FileName: "test.txt",
+		FileSize: 1024,
 	}
 	initRes, err := svc.Init(ctx, meta)
 	require.NoError(t, err)
@@ -207,9 +206,8 @@ func TestComplete_AlreadyComplete(t *testing.T) {
 
 	ctx := context.Background()
 	meta := InitMeta{
-		FileName:  "test.txt",
-		FileSize:  1024,
-		ObjectKey: "uploads/test.txt",
+		FileName: "test.txt",
+		FileSize: 1024,
 	}
 	initRes, err := svc.Init(ctx, meta)
 	require.NoError(t, err)
@@ -230,9 +228,8 @@ func TestComplete_ExpiredUpload(t *testing.T) {
 
 	ctx := context.Background()
 	meta := InitMeta{
-		FileName:  "test.txt",
-		FileSize:  1024,
-		ObjectKey: "uploads/test.txt",
+		FileName: "test.txt",
+		FileSize: 1024,
 	}
 	initRes, err := svc.Init(ctx, meta)
 	require.NoError(t, err)
@@ -253,9 +250,8 @@ func TestComplete_ShareServiceError(t *testing.T) {
 
 	ctx := context.Background()
 	meta := InitMeta{
-		FileName:  "test.txt",
-		FileSize:  1024,
-		ObjectKey: "uploads/test.txt",
+		FileName: "test.txt",
+		FileSize: 1024,
 	}
 	initRes, err := svc.Init(ctx, meta)
 	require.NoError(t, err)
@@ -276,9 +272,8 @@ func TestAbort(t *testing.T) {
 
 	ctx := context.Background()
 	meta := InitMeta{
-		FileName:  "test.txt",
-		FileSize:  1024,
-		ObjectKey: "uploads/test.txt",
+		FileName: "test.txt",
+		FileSize: 1024,
 	}
 	initRes, err := svc.Init(ctx, meta)
 	require.NoError(t, err)
@@ -297,9 +292,8 @@ func TestAbort_InvalidToken(t *testing.T) {
 	svc, _ := newTestService(t)
 	ctx := context.Background()
 	meta := InitMeta{
-		FileName:  "test.txt",
-		FileSize:  1024,
-		ObjectKey: "uploads/test.txt",
+		FileName: "test.txt",
+		FileSize: 1024,
 	}
 	initRes, err := svc.Init(ctx, meta)
 	require.NoError(t, err)

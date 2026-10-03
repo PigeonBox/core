@@ -1,0 +1,119 @@
+package middleware
+
+import (
+	"net"
+	"strings"
+	"sync"
+
+	"github.com/cloudwego/hertz/pkg/app"
+)
+
+// 可信代理配置（bootstrap 从 security.trusted_proxies 注入）。
+//
+// 安全语义：只有当"直连对端"（RemoteAddr）落在可信代理网段内时，才采信
+// X-Forwarded-For / X-Real-IP；否则一律以直连地址为准。
+// 这样反向代理部署（配置了 CIDR）下能取到真实客户端 IP，
+// 而直连部署下伪造 XFF 无法绕过 IP 维度限流/锁定。
+var (
+	trustedMu      sync.RWMutex
+	trustedCIDRs   []*net.IPNet
+	trustedEnabled bool
+)
+
+// SetTrustedProxies 配置可信代理网段（CIDR 或单 IP）。
+// 空列表 = 不信任任何代理头（直连部署的安全默认）。
+func SetTrustedProxies(cidrs []string) error {
+	trustedMu.Lock()
+	defer trustedMu.Unlock()
+	parsed := make([]*net.IPNet, 0, len(cidrs))
+	for _, c := range cidrs {
+		c = strings.TrimSpace(c)
+		if c == "" {
+			continue
+		}
+		if !strings.Contains(c, "/") {
+			c += "/32"
+		}
+		_, ipnet, err := net.ParseCIDR(c)
+		if err != nil {
+			return err
+		}
+		parsed = append(parsed, ipnet)
+	}
+	trustedCIDRs = parsed
+	trustedEnabled = len(parsed) > 0
+	return nil
+}
+
+// isTrustedProxy 判断 addr（host:port 或裸 IP）是否在可信代理网段内
+func isTrustedProxy(addr string) bool {
+	trustedMu.RLock()
+	defer trustedMu.RUnlock()
+	if !trustedEnabled {
+		return false
+	}
+	host := addr
+	if h, _, err := net.SplitHostPort(addr); err == nil {
+		host = h
+	}
+	ip := net.ParseIP(strings.TrimSpace(host))
+	if ip == nil {
+		return false
+	}
+	for _, cidr := range trustedCIDRs {
+		if cidr.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// ClientIP 解析客户端真实 IP（可信代理解析，XFF 从右向左）。
+//
+// 规则：
+//  1. 直连地址不在可信代理网段 → 返回直连地址（忽略一切代理头）
+//  2. 直连地址可信 → 从 X-Forwarded-For 最右端向左扫描，
+//     跳过可信代理地址，返回第一个不可信地址（即真实客户端）
+//  3. 无 XFF 时回退 X-Real-IP（仅当直连可信），再回退直连地址
+func ClientIP(c *app.RequestContext) string {
+	// RemoteAddr 返回的 net.Addr 接口值恒非 nil，直接取字符串
+	remote := c.RemoteAddr().String()
+	if remote == "" {
+		return "unknown"
+	}
+	if !isTrustedProxy(remote) {
+		return stripPort(remote)
+	}
+
+	// X-Forwarded-For: client, proxy1, proxy2（从右向左，跳过可信代理）
+	if xff := string(c.GetHeader("X-Forwarded-For")); xff != "" {
+		parts := strings.Split(xff, ",")
+		for i := len(parts) - 1; i >= 0; i-- {
+			cand := strings.TrimSpace(parts[i])
+			if cand == "" {
+				continue
+			}
+			if isTrustedProxy(cand) {
+				continue
+			}
+			return stripPort(cand)
+		}
+		// 链上全部可信（代理嵌套过深），取最左端
+		if cand := strings.TrimSpace(parts[0]); cand != "" {
+			return stripPort(cand)
+		}
+	}
+
+	if xri := string(c.GetHeader("X-Real-IP")); xri != "" {
+		return strings.TrimSpace(xri)
+	}
+	return stripPort(remote)
+}
+
+// stripPort 去掉 IP:port 的端口部分（IPv6 [::1]:8080 同样处理）
+func stripPort(addr string) string {
+	if h, _, err := net.SplitHostPort(addr); err == nil {
+		return h
+	}
+	return addr
+}

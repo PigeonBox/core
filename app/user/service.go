@@ -11,7 +11,9 @@ import (
 	"time"
 
 	usermodel "github.com/filescodebox/contracts/gen/user"
+	"github.com/filescodebox/contracts/errcode"
 	"github.com/filescodebox/core/pkg/auth"
+	"github.com/filescodebox/core/conf"
 	"github.com/filescodebox/core/repo/db/dao"
 	"github.com/filescodebox/core/repo/db/model"
 	"golang.org/x/crypto/bcrypt"
@@ -254,25 +256,88 @@ func (s *Service) ChangePassword(ctx context.Context, userID uint, oldPassword, 
 	return s.repo.Update(ctx, user)
 }
 
-// UpdateUserStats 更新用户统计信息
+// UpdateUserStats 更新用户统计信息。
+// 用 SQL 表达式原子自增（此前为 GetByID+Update 读改写，并发下丢更新）。
 func (s *Service) UpdateUserStats(userID uint, statsType string, value int64) error {
 	s.ensureRepository()
 	ctx := context.Background()
-	user, err := s.repo.GetByID(ctx, userID)
-	if err != nil {
-		return err
-	}
 
+	updates := map[string]interface{}{}
 	switch statsType {
 	case "upload", "uploads":
-		user.TotalUploads += int(value)
+		updates["total_uploads"] = gorm.Expr("total_uploads + ?", value)
 	case "download", "downloads":
-		user.TotalDownloads += int(value)
+		updates["total_downloads"] = gorm.Expr("total_downloads + ?", value)
 	case "storage":
-		user.TotalStorage += value
+		updates["total_storage"] = gorm.Expr("total_storage + ?", value)
+	default:
+		return nil
 	}
+	return s.repo.UpdateColumns(ctx, userID, updates)
+}
 
-	return s.repo.Update(ctx, user)
+// QuotaExceededError 存储配额超限（handler 侧可断言后返回 CodeStorageQuota）
+type QuotaExceededError struct{ Msg string }
+
+func (e *QuotaExceededError) Error() string  { return e.Msg }
+func (e *QuotaExceededError) ErrCode() int   { return errcode.CodeStorageQuota }
+
+// CheckQuota 存储配额强制检查（上传前调用）。
+// 生效优先级：用户级 MaxStorageQuota > 系统默认 user.user_storage_quota；0 = 不限。
+// 已用配额以 file_codes 表实时聚合为准（比 users.total_storage 计数器更抗漂移）。
+func (s *Service) CheckQuota(ctx context.Context, userID uint, addBytes int64) error {
+	s.ensureRepository()
+	user, err := s.repo.GetByID(ctx, userID)
+	if err != nil {
+		// 用户不存在/查询失败时不阻断上传（统计与配额是运营约束，不是可用性前提）
+		return nil
+	}
+	limit := user.MaxStorageQuota
+	if limit <= 0 {
+		if cfg := conf.GetGlobalConfig(); cfg != nil {
+			limit = cfg.User.UserStorageQuota
+		}
+	}
+	if limit <= 0 {
+		return nil
+	}
+	used, err := s.fileCodeRepo.GetTotalSizeByUserID(ctx, userID)
+	if err != nil {
+		return nil // 统计失败放行，避免存储故障阻断业务
+	}
+	if used+addBytes > limit {
+		return &QuotaExceededError{Msg: fmt.Sprintf(
+			"存储配额超限（已用 %d / 上限 %d 字节，本次需 %d 字节）", used, limit, addBytes)}
+	}
+	return nil
+}
+
+// SetStorageQuota 管理员设置用户存储配额（0 = 不限，回退系统默认）
+func (s *Service) SetStorageQuota(ctx context.Context, userID uint, quota int64) (*model.UserResp, error) {
+	s.ensureRepository()
+	user, err := s.repo.GetByID(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	user.MaxStorageQuota = quota
+	if err := s.repo.Update(ctx, user); err != nil {
+		return nil, err
+	}
+	return user.ToResp(), nil
+}
+
+// SetUploadSize 管理员设置用户单次上传大小上限（0 = 用系统默认）
+func (s *Service) SetUploadSize(ctx context.Context, userID uint, size int64) (*model.UserResp, error) {
+	s.ensureRepository()
+	user, err := s.repo.GetByID(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	user.MaxUploadSize = size
+	if err := s.repo.Update(ctx, user); err != nil {
+		return nil, err
+	}
+	return user.ToResp(), nil
 }
 
 // GetStats 获取用户统计信息

@@ -49,7 +49,7 @@ type UserResp struct {
 
 func (u *User) ToResp() *UserResp {
 	return &UserResp{
-		ID:              u.Model.ID,
+		ID:              u.ID,
 		Username:        u.Username,
 		Email:           u.Email,
 		Nickname:        u.Nickname,
@@ -64,8 +64,8 @@ func (u *User) ToResp() *UserResp {
 		TotalStorage:    u.TotalStorage,
 		MaxUploadSize:   u.MaxUploadSize,
 		MaxStorageQuota: u.MaxStorageQuota,
-		CreatedAt:       u.Model.CreatedAt,
-		UpdatedAt:       u.Model.UpdatedAt,
+		CreatedAt:       u.CreatedAt,
+		UpdatedAt:       u.UpdatedAt,
 	}
 }
 

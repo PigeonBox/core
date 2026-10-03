@@ -1,0 +1,480 @@
+// Package handler 提供定制 HTTP handlers（不走 thrift IDL 生成）。
+// admin_manage.go 管理端增强：用户 CRUD / 文件管理 / 富统计 Dashboard。
+// 均注册在 /admin 组（AdminMiddleware 保护），操作经审计落 admin_operation_logs。
+package handler
+
+import (
+	"context"
+	"fmt"
+	"strconv"
+	"time"
+
+	"github.com/cloudwego/hertz/pkg/app"
+	"github.com/cloudwego/hertz/pkg/protocol/consts"
+	"golang.org/x/crypto/bcrypt"
+
+	adminapp "github.com/filescodebox/core/app/admin"
+	userapp "github.com/filescodebox/core/app/user"
+	"github.com/filescodebox/core/pkg/logger"
+	"github.com/filescodebox/core/pkg/middleware"
+	"github.com/filescodebox/core/pkg/resp"
+	"github.com/filescodebox/core/pkg/security"
+	"github.com/filescodebox/core/pkg/utils"
+	"github.com/filescodebox/core/repo/db/dao"
+	"github.com/filescodebox/core/repo/db/model"
+	"github.com/filescodebox/core/storage"
+	"go.uber.org/zap"
+)
+
+var (
+	manageSvc    *adminapp.Service
+	manageUserSvc *userapp.Service
+	manageStorage storage.StorageInterface
+)
+
+// SetManageServices 注入管理端增强服务（bootstrap 调用）
+func SetManageServices(svc *adminapp.Service, userSvc *userapp.Service, st storage.StorageInterface) {
+	manageSvc = svc
+	manageUserSvc = userSvc
+	manageStorage = st
+}
+
+func getManageSvc() *adminapp.Service {
+	if manageSvc == nil {
+		manageSvc = adminapp.NewService()
+	}
+	return manageSvc
+}
+
+func getManageUserSvc() *userapp.Service {
+	if manageUserSvc == nil {
+		manageUserSvc = userapp.NewService()
+	}
+	return manageUserSvc
+}
+
+// audit 管理端增强操作审计（复用 admin_operation_logs）
+func audit(ctx context.Context, action, target string, success bool) {
+	repo := dao.NewAdminOperationLogRepository()
+	var id *uint
+	name := "system"
+	if uid, ok := middleware.UserIDFromContext(ctx); ok {
+		id = &uid
+	}
+	if n := middleware.UsernameFromContext(ctx); n != "" {
+		name = n
+	}
+	entry := &model.AdminOperationLog{
+		Action:    action,
+		Target:    target,
+		Success:   success,
+		ActorID:   id,
+		ActorName: name,
+		IP:        middleware.ClientIPFromContext(ctx),
+	}
+	if err := repo.Create(ctx, entry); err != nil {
+		logger.Warn("admin audit log write failed", zap.String("action", action), zap.Error(err))
+	}
+}
+
+// ==================== 用户管理（CRUD 补齐） ====================
+
+// AdminCreateUser 创建用户
+// POST /admin/users  {username,email,password,nickname,role,max_storage_quota}
+func AdminCreateUser(ctx context.Context, c *app.RequestContext) {
+	var req struct {
+		Username        string `json:"username"`
+		Email           string `json:"email"`
+		Password        string `json:"password"`
+		Nickname        string `json:"nickname"`
+		Role            string `json:"role"`
+		MaxStorageQuota int64  `json:"max_storage_quota"`
+	}
+	if err := c.BindAndValidate(&req); err != nil || req.Username == "" || req.Password == "" {
+		resp.NewErrorWithMessage(c, 10001, "username 与 password 必填")
+		return
+	}
+	userSvc := getManageUserSvc()
+	created, err := userSvc.Create(ctx, &userapp.CreateUserReq{
+		Username: req.Username,
+		Email:    req.Email,
+		Password: req.Password,
+		Nickname: req.Nickname,
+	})
+	if err == nil && req.Role != "" {
+		_, err = userSvc.Update(ctx, created.ID, &userapp.UpdateUserReq{Role: req.Role})
+	}
+	if err == nil && req.MaxStorageQuota > 0 {
+		_, err = userSvc.SetStorageQuota(ctx, created.ID, req.MaxStorageQuota)
+	}
+	if err != nil {
+		resp.NewErrorWithMessage(c, 40002, "创建用户失败: "+err.Error())
+		return
+	}
+	audit(ctx, "user.create", fmt.Sprintf("user %d (username=%s) created", created.ID, created.Username), true)
+	resp.Success(c, created)
+}
+
+// AdminUpdateUser 更新用户（昵称/角色/状态/配额）
+// PUT /admin/users/:id  {nickname,role,status,max_storage_quota,max_upload_size}
+func AdminUpdateUser(ctx context.Context, c *app.RequestContext) {
+	id64, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		resp.NewErrorWithMessage(c, 10001, "用户 ID 格式错误")
+		return
+	}
+	var req struct {
+		Nickname        string `json:"nickname"`
+		Role            string `json:"role"`
+		Status          string `json:"status"`
+		MaxStorageQuota *int64 `json:"max_storage_quota"`
+		MaxUploadSize   *int64 `json:"max_upload_size"`
+	}
+	if err := c.BindAndValidate(&req); err != nil {
+		resp.NewErrorWithMessage(c, 10001, err.Error())
+		return
+	}
+	if req.Status != "" && req.Status != "active" && req.Status != "inactive" && req.Status != "banned" {
+		resp.NewErrorWithMessage(c, 10001, "status 仅支持 active/inactive/banned")
+		return
+	}
+	if req.Role != "" && req.Role != "admin" && req.Role != "user" {
+		resp.NewErrorWithMessage(c, 10001, "role 仅支持 admin/user")
+		return
+	}
+
+	userSvc := getManageUserSvc()
+	updated, err := userSvc.Update(ctx, uint(id64), &userapp.UpdateUserReq{
+		Nickname: req.Nickname,
+		Role:     req.Role,
+		Status:   req.Status,
+	})
+	if err == nil && req.MaxStorageQuota != nil {
+		_, err = userSvc.SetStorageQuota(ctx, uint(id64), *req.MaxStorageQuota)
+	}
+	if err == nil && req.MaxUploadSize != nil {
+		_, err = userSvc.SetUploadSize(ctx, uint(id64), *req.MaxUploadSize)
+	}
+	if err != nil {
+		resp.NewErrorWithMessage(c, 40001, "更新用户失败: "+err.Error())
+		return
+	}
+	audit(ctx, "user.update", fmt.Sprintf("user %d updated (role=%s status=%s)", id64, req.Role, req.Status), true)
+	resp.Success(c, updated)
+}
+
+// AdminDeleteUser 删除用户（级联软删分享，带审计）
+// DELETE /admin/users/:id
+func AdminDeleteUser(ctx context.Context, c *app.RequestContext) {
+	id64, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		resp.NewErrorWithMessage(c, 10001, "用户 ID 格式错误")
+		return
+	}
+	if err := getManageSvc().DeleteUser(ctx, uint(id64)); err != nil {
+		resp.NewErrorWithMessage(c, 40001, "删除用户失败: "+err.Error())
+		return
+	}
+	resp.SuccessWithMessage(c, "用户已删除", nil)
+}
+
+// AdminResetUserPassword 管理员重置用户密码
+// POST /admin/users/:id/reset-password  {password}
+func AdminResetUserPassword(ctx context.Context, c *app.RequestContext) {
+	id64, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		resp.NewErrorWithMessage(c, 10001, "用户 ID 格式错误")
+		return
+	}
+	var req struct {
+		Password string `json:"password"`
+	}
+	if err := c.BindAndValidate(&req); err != nil || len(req.Password) < 6 {
+		resp.NewErrorWithMessage(c, 10001, "password 必填且至少 6 位")
+		return
+	}
+	hashed, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+	if err != nil {
+		resp.NewErrorWithMessage(c, 10008, "密码哈希失败")
+		return
+	}
+	repo := dao.NewUserRepository()
+	if err := repo.UpdatePasswordHash(ctx, uint(id64), string(hashed)); err != nil {
+		resp.NewErrorWithMessage(c, 40001, "重置密码失败: "+err.Error())
+		return
+	}
+	audit(ctx, "user.reset_password", fmt.Sprintf("user %d password reset", id64), true)
+	resp.SuccessWithMessage(c, "密码已重置", nil)
+}
+
+// AdminListUsersFiltered 带筛选的用户列表（keyword/status/role）
+// GET /admin/users/filter?keyword=&status=&role=&page=&page_size=
+func AdminListUsersFiltered(ctx context.Context, c *app.RequestContext) {
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
+	users, total, err := dao.NewUserRepository().ListFiltered(ctx, dao.UserFilter{
+		Keyword:  c.Query("keyword"),
+		Status:   c.Query("status"),
+		Role:     c.Query("role"),
+		Page:     page,
+		PageSize: pageSize,
+	})
+	if err != nil {
+		resp.NewErrorWithMessage(c, 10008, "查询用户失败: "+err.Error())
+		return
+	}
+	items := make([]*model.UserResp, len(users))
+	for i, u := range users {
+		items[i] = u.ToResp()
+	}
+	resp.Page(c, items, total, page, pageSize)
+}
+
+// ==================== 文件管理（详情/编辑/批量/下载） ====================
+
+// AdminFileDetail 文件详情
+// GET /admin/files/:id
+func AdminFileDetail(ctx context.Context, c *app.RequestContext) {
+	id64, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		resp.NewErrorWithMessage(c, 10001, "文件 ID 格式错误")
+		return
+	}
+	fc, err := dao.NewFileCodeRepository().GetByID(ctx, uint(id64))
+	if err != nil {
+		resp.NewErrorByCode(c, 20008)
+		return
+	}
+	resp.Success(c, fc)
+}
+
+// AdminUpdateFile 编辑文件（延期 / 改剩余次数）
+// PUT /admin/files/:id  {expire_value, expire_style, expired_count}
+func AdminUpdateFile(ctx context.Context, c *app.RequestContext) {
+	id64, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		resp.NewErrorWithMessage(c, 10001, "文件 ID 格式错误")
+		return
+	}
+	var req struct {
+		ExpireValue  *int   `json:"expire_value"`
+		ExpireStyle  string `json:"expire_style"`
+		ExpiredCount *int   `json:"expired_count"`
+	}
+	if err := c.BindAndValidate(&req); err != nil {
+		resp.NewErrorWithMessage(c, 10001, err.Error())
+		return
+	}
+
+	var expireAt *time.Time
+	if req.ExpireValue != nil {
+		if t := utils.CalculateExpireTime(*req.ExpireValue, req.ExpireStyle); t != nil {
+			expireAt = t
+		}
+	}
+	if err := dao.NewFileCodeRepository().UpdateExpireByID(ctx, uint(id64), expireAt, req.ExpiredCount); err != nil {
+		resp.NewErrorWithMessage(c, 10008, "更新失败: "+err.Error())
+		return
+	}
+	audit(ctx, "file.update", fmt.Sprintf("file %d updated (expire set, count=%v)", id64, req.ExpiredCount), true)
+	resp.SuccessWithMessage(c, "已更新", nil)
+}
+
+// AdminBatchDeleteFiles 批量删除文件
+// POST /admin/files/batch-delete  {ids:[]}
+func AdminBatchDeleteFiles(ctx context.Context, c *app.RequestContext) {
+	var req struct {
+		IDs []uint `json:"ids"`
+	}
+	if err := c.BindAndValidate(&req); err != nil || len(req.IDs) == 0 {
+		resp.NewErrorWithMessage(c, 10001, "ids 必填")
+		return
+	}
+	repo := dao.NewFileCodeRepository()
+
+	// 物理文件清理（失败不阻断）
+	for _, id := range req.IDs {
+		if fc, err := repo.GetByID(ctx, id); err == nil && manageStorage != nil && fc.FilePath != "" {
+			if fp := fc.GetFilePath(); fp != "" {
+				if err := manageStorage.DeleteFile(ctx, fp); err != nil {
+					logger.Warn("batch delete physical file failed", zap.String("path", fp), zap.Error(err))
+				}
+			}
+		}
+	}
+
+	n, err := repo.BatchDeleteByIDs(ctx, req.IDs)
+	if err != nil {
+		resp.NewErrorWithMessage(c, 10008, "批量删除失败: "+err.Error())
+		return
+	}
+	audit(ctx, "file.batch_delete", fmt.Sprintf("%d files deleted", n), true)
+	resp.Success(c, map[string]interface{}{"deleted": n})
+}
+
+// AdminBatchExtendFiles 批量延期
+// POST /admin/files/batch-extend  {ids:[], expire_value, expire_style}
+func AdminBatchExtendFiles(ctx context.Context, c *app.RequestContext) {
+	var req struct {
+		IDs         []uint `json:"ids"`
+		ExpireValue int    `json:"expire_value"`
+		ExpireStyle string `json:"expire_style"`
+	}
+	if err := c.BindAndValidate(&req); err != nil || len(req.IDs) == 0 {
+		resp.NewErrorWithMessage(c, 10001, "ids 必填")
+		return
+	}
+	expireAt := utils.CalculateExpireTime(req.ExpireValue, req.ExpireStyle)
+	if expireAt == nil {
+		resp.NewErrorWithMessage(c, 10001, "无效的过期样式: "+req.ExpireStyle)
+		return
+	}
+	n, err := dao.NewFileCodeRepository().BatchExtendByIDsAdmin(ctx, req.IDs, *expireAt)
+	if err != nil {
+		resp.NewErrorWithMessage(c, 10008, "批量延期失败: "+err.Error())
+		return
+	}
+	audit(ctx, "file.batch_extend", fmt.Sprintf("%d files extended to %s", n, expireAt.Format(time.RFC3339)), true)
+	resp.Success(c, map[string]interface{}{"extended": n})
+}
+
+// AdminDownloadFile 管理端下载：302 到公开下载端点（附服务端签发的下载令牌）
+// GET /admin/files/:id/download
+func AdminDownloadFile(ctx context.Context, c *app.RequestContext) {
+	id64, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		resp.NewErrorWithMessage(c, 10001, "文件 ID 格式错误")
+		return
+	}
+	fc, err := dao.NewFileCodeRepository().GetByID(ctx, uint(id64))
+	if err != nil {
+		resp.NewErrorByCode(c, 20008)
+		return
+	}
+	target := "/share/download?code=" + fc.Code
+	if tk := security.GenerateDownloadToken(fc.Code); tk != "" {
+		target += "&token=" + tk
+	}
+	c.Redirect(consts.StatusFound, []byte(target))
+}
+
+// ==================== Dashboard 富统计 ====================
+
+// AdminEnhancedStats 富指标（昨日对比 / 下载总量 / top 后缀 / 类型分布 / 磁盘状态）
+// GET /admin/stats/enhanced
+func AdminEnhancedStats(ctx context.Context, c *app.RequestContext) {
+	repo := dao.NewFileCodeRepository()
+	now := time.Now()
+	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	yesterdayStart := todayStart.Add(-24 * time.Hour)
+
+	todayUploads, _ := repo.CountCreatedBetween(ctx, todayStart, now.Add(time.Minute))
+	yesterdayUploads, _ := repo.CountCreatedBetween(ctx, yesterdayStart, todayStart)
+	totalDownloads, _ := repo.SumUsedCount(ctx)
+	expiredFiles, _ := repo.CountExpired(ctx)
+	anonymousFiles, _ := repo.CountByUploadType(ctx, "anonymous")
+	presignFiles, _ := repo.CountByUploadType(ctx, "presign_anonymous")
+	presignAuthFiles, _ := repo.CountByUploadType(ctx, "presign_authenticated")
+	topSuffixes, _ := repo.TopSuffixes(ctx, 10)
+
+	resp.Success(c, map[string]interface{}{
+		"today_uploads":     todayUploads,
+		"yesterday_uploads": yesterdayUploads,
+		"total_downloads":   totalDownloads,
+		"expired_files":     expiredFiles,
+		"anonymous_files":   anonymousFiles,
+		"presign_files":     presignFiles + presignAuthFiles,
+		"top_suffixes":      topSuffixes,
+	})
+}
+
+// AdminStatsTrend 趋势序列（连续 N 天，缺失日补 0）：
+// uploads 来自 file_codes 按天创建数，downloads 来自 transfer_logs（pkg/transfer 写入）。
+// GET /admin/stats/trend?days=7
+func AdminStatsTrend(ctx context.Context, c *app.RequestContext) {
+	days := 7
+	if v, err := strconv.Atoi(c.Query("days")); err == nil && v > 0 && v <= 30 {
+		days = v
+	}
+	now := time.Now()
+	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	from := todayStart.AddDate(0, 0, -(days - 1))
+
+	upRows, err := dao.NewFileCodeRepository().TrendByDay(ctx, from)
+	if err != nil {
+		resp.NewErrorWithMessage(c, 10008, "统计上传趋势失败: "+err.Error())
+		return
+	}
+	// 下载日志查询失败不阻断（表可能尚无数据/旧库未建）——降级为全 0 序列
+	dlRows, _ := dao.NewTransferLogRepository().TrendByDay(ctx, from, "download")
+
+	upMap := make(map[string]int64, len(upRows))
+	for _, r := range upRows {
+		upMap[r.Date] = r.Count
+	}
+	dlMap := make(map[string]int64, len(dlRows))
+	for _, r := range dlRows {
+		dlMap[r.Date] = r.Count
+	}
+
+	series := make([]map[string]interface{}, 0, days)
+	for i := 0; i < days; i++ {
+		date := from.AddDate(0, 0, i).Format("2006-01-02")
+		series = append(series, map[string]interface{}{
+			"date":      date,
+			"uploads":   upMap[date],
+			"downloads": dlMap[date],
+		})
+	}
+	resp.Success(c, map[string]interface{}{"days": series})
+}
+
+// ==================== 传输日志（补齐断线：此前前端调用的端点不存在、
+// transfer_log 表无写入方，页面一直空数据） ====================
+
+// AdminTransferLogs 传输日志分页查询
+// GET /admin/logs/transfer?page=&page_size=&operation=&keyword=
+func AdminTransferLogs(ctx context.Context, c *app.RequestContext) {
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
+	if pageSize <= 0 || pageSize > 200 {
+		pageSize = 20
+	}
+	query := model.TransferLogQuery{
+		Operation: c.Query("operation"),
+		Search:    c.Query("keyword"),
+		Page:      page,
+		PageSize:  pageSize,
+	}
+	logs, total, err := dao.NewTransferLogRepository().List(ctx, query)
+	if err != nil {
+		resp.NewErrorWithMessage(c, 10008, "查询传输日志失败: "+err.Error())
+		return
+	}
+	// 显式小写字段映射（gorm.Model 默认序列化为大写 CreatedAt，与前端约定不符）
+	items := make([]map[string]interface{}, 0, len(logs))
+	for _, lg := range logs {
+		items = append(items, map[string]interface{}{
+			"id":          lg.ID,
+			"operation":   lg.Operation,
+			"file_code":   lg.FileCode,
+			"file_name":   lg.FileName,
+			"file_size":   lg.FileSize,
+			"username":    lg.Username,
+			"ip":          lg.IP,
+			"duration_ms": lg.DurationMs,
+			"created_at":  lg.CreatedAt.Format("2006-01-02 15:04:05"),
+		})
+	}
+	// 前端 TransferLogs.vue 判 code===200 且读 data.items/total，故不用 resp.Success（code=0）
+	c.JSON(consts.StatusOK, map[string]interface{}{
+		"code":    200,
+		"message": "success",
+		"data": map[string]interface{}{
+			"items":     items,
+			"total":     total,
+			"page":      page,
+			"page_size": pageSize,
+		},
+	})
+}

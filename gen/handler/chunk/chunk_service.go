@@ -6,8 +6,10 @@ import (
 	"context"
 	"crypto/md5"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"strconv"
 	"time"
@@ -15,9 +17,12 @@ import (
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
 	"github.com/google/uuid"
+	"github.com/filescodebox/contracts/errcode"
 	chunkmodel "github.com/filescodebox/contracts/gen/chunk"
 	chunkService "github.com/filescodebox/core/app/chunk"
 	shareService "github.com/filescodebox/core/app/share"
+	"github.com/filescodebox/core/pkg/middleware"
+	"github.com/filescodebox/core/pkg/security"
 	"github.com/filescodebox/core/pkg/utils"
 	"github.com/filescodebox/core/storage"
 )
@@ -197,7 +202,7 @@ func ChunkUpload(ctx context.Context, c *app.RequestContext) {
 		})
 		return
 	}
-	defer src.Close()
+	defer func() { _ = src.Close() }()
 
 	// 读取文件数据到内存
 	data := make([]byte, file.Size)
@@ -400,7 +405,36 @@ func ChunkUploadComplete(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
+	// 计算合并后整文件 SHA-256（秒传依据；此前恒以 uploadID 冒充 file_hash）
+	fullPath := filepath.Join("./data", relativePath)
+	fileHash, hashErr := utils.HashFile(fullPath)
+	if hashErr != nil {
+		// 哈希失败不阻断分享创建（仅失去秒传能力），记空
+		fmt.Printf("计算文件哈希失败: %v\n", hashErr)
+		fileHash = ""
+	}
+
+	// 魔数+扩展名复检（首分片可能绕过 init 校验）
+	if head := readHead(fullPath, 512); head != nil {
+		if err := utils.CheckUploadContent(info.FileName, head); err != nil {
+			_ = getStorageService().DeleteFile(ctx, relativePath)
+			_ = getChunkService().DeleteUpload(ctx, uploadID)
+			c.JSON(consts.StatusBadRequest, map[string]interface{}{
+				"code":    errcode.CodeFileTypeDenied,
+				"message": err.Error(),
+			})
+			return
+		}
+	}
+
 	// 计算过期时间
+	if err := utils.CheckExpireStyleAllowed(req.ExpireStyle); err != nil {
+		c.JSON(consts.StatusBadRequest, map[string]interface{}{
+			"code":    400,
+			"message": err.Error(),
+		})
+		return
+	}
 	expireTime := utils.CalculateExpireTime(int(req.ExpireValue), req.ExpireStyle)
 	expireCount := utils.CalculateExpireCount(req.ExpireStyle, int(req.ExpireValue))
 
@@ -412,8 +446,8 @@ func ChunkUploadComplete(ctx context.Context, c *app.RequestContext) {
 		}
 	}
 
-	// 获取客户端 IP
-	ownerIP := c.ClientIP()
+	// 获取客户端 IP（可信代理解析）
+	ownerIP := middleware.ClientIP(c)
 
 	// 确定上传类型
 	uploadType := "anonymous"
@@ -421,18 +455,52 @@ func ChunkUploadComplete(ctx context.Context, c *app.RequestContext) {
 		uploadType = "authenticated"
 	}
 
+	// 密码保护（修复 P0：此前 RequireAuth 透传但密码丢失，产出
+	// require_auth=true 且哈希为空的死分享——取件侧对空哈希一律拒绝，
+	// 分享永远无法取件）。密码经 form 字段传递（CompleteReq 模型无此字段）。
+	passwordHash := ""
+	if req.RequireAuth {
+		password := c.DefaultPostForm("password", "")
+		if password == "" {
+			var pwBody struct {
+				Password string `json:"password"`
+			}
+			if b := c.Request.Body(); len(b) > 0 {
+				_ = json.Unmarshal(b, &pwBody)
+				password = pwBody.Password
+			}
+		}
+		if password == "" {
+			c.JSON(consts.StatusBadRequest, map[string]interface{}{
+				"code":    400,
+				"message": "开启密码保护时必须提供密码",
+			})
+			return
+		}
+		hash, pwErr := utils.HashPassword(password)
+		if pwErr != nil {
+			c.JSON(consts.StatusInternalServerError, map[string]interface{}{
+				"code":    500,
+				"message": "密码处理失败",
+			})
+			return
+		}
+		passwordHash = hash
+	}
+
 	// 创建分享记录
 	shareReq := &shareService.ShareFileReq{
 		FilePath:     relativePath,
 		Size:         info.FileSize,
-		Text:         info.FileName,
+		Text:         utils.SanitizeFileName(info.FileName),
 		ExpiredAt:    expireTime,
 		ExpiredCount: expireCount,
 		RequireAuth:  req.RequireAuth,
+		PasswordHash: passwordHash,
 		UserID:       userID,
 		UploadType:   uploadType,
 		OwnerIP:      ownerIP,
-		FileHash:     uploadID,
+		FileHash:     fileHash,
 		IsChunked:    true,
 		UploadID:     uploadID,
 	}
@@ -453,8 +521,11 @@ func ChunkUploadComplete(ctx context.Context, c *app.RequestContext) {
 		fmt.Printf("更新上传状态失败: %v\n", err)
 	}
 
-	// 生成分享URL
+	// 生成分享URL（附下载令牌，security.download_token.enabled 时必需）
 	fullShareURL := fmt.Sprintf("%s/share/%s", defaultBaseURL, shareResult.Code)
+	if tk := security.GenerateDownloadToken(shareResult.Code); tk != "" {
+		fullShareURL += "?token=" + tk
+	}
 
 	resp := &chunkmodel.ChunkUploadCompleteResp{
 		Code:    200,
@@ -468,6 +539,21 @@ func ChunkUploadComplete(ctx context.Context, c *app.RequestContext) {
 	}
 
 	c.JSON(consts.StatusOK, resp)
+}
+
+// readHead 读取文件前 n 字节（魔数校验用）；读取失败返回 nil
+func readHead(path string, n int) []byte {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = f.Close() }()
+	buf := make([]byte, n)
+	read, err := io.ReadFull(f, buf)
+	if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
+		return nil
+	}
+	return buf[:read]
 }
 
 // ChunkUploadCancel .

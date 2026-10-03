@@ -33,11 +33,11 @@ func TestRateLimiter_Allow_IPDimension(t *testing.T) {
 
 	// 同一个 IP 在 burst 范围内允许
 	for i := 0; i < 5; i++ {
-		assert.True(t, rl.allow(nil, scopeGlobal, "1.2.3.4"), "burst 内第 %d 次", i+1)
+		assert.True(t, rl.allow(t.Context(), scopeGlobal, "1.2.3.4"), "burst 内第 %d 次", i+1)
 	}
 	// burst 用完后拒绝
-	assert.False(t, rl.allow(nil, scopeGlobal, "1.2.3.4"), "burst 满后拒绝")
-	assert.False(t, rl.allow(nil, scopeGlobal, "1.2.3.4"), "持续拒绝")
+	assert.False(t, rl.allow(t.Context(), scopeGlobal, "1.2.3.4"), "burst 满后拒绝")
+	assert.False(t, rl.allow(t.Context(), scopeGlobal, "1.2.3.4"), "持续拒绝")
 }
 
 // TestRateLimiter_Allow_ScopeDimension 不同 scope 独立计数
@@ -55,16 +55,16 @@ func TestRateLimiter_Allow_ScopeDimension(t *testing.T) {
 	ip := "1.2.3.4"
 
 	// Upload scope 用完 burst
-	assert.True(t, rl.allow(nil, scopeUpload, ip))
-	assert.True(t, rl.allow(nil, scopeUpload, ip))
-	assert.False(t, rl.allow(nil, scopeUpload, ip), "upload burst 用完")
+	assert.True(t, rl.allow(t.Context(), scopeUpload, ip))
+	assert.True(t, rl.allow(t.Context(), scopeUpload, ip))
+	assert.False(t, rl.allow(t.Context(), scopeUpload, ip), "upload burst 用完")
 
 	// Download scope 独立计数
-	assert.True(t, rl.allow(nil, scopeDownload, ip), "download scope 独立")
-	assert.True(t, rl.allow(nil, scopeDownload, ip))
+	assert.True(t, rl.allow(t.Context(), scopeDownload, ip), "download scope 独立")
+	assert.True(t, rl.allow(t.Context(), scopeDownload, ip))
 
 	// Global scope 也独立
-	assert.True(t, rl.allow(nil, scopeGlobal, ip), "global scope 独立")
+	assert.True(t, rl.allow(t.Context(), scopeGlobal, ip), "global scope 独立")
 }
 
 // TestRateLimiter_Allow_DifferentIP 不同 IP 独立
@@ -78,12 +78,12 @@ func TestRateLimiter_Allow_DifferentIP(t *testing.T) {
 	defer rl.Stop()
 
 	// IP A 用完 burst
-	assert.True(t, rl.allow(nil, scopeGlobal, "ip-A"))
-	assert.False(t, rl.allow(nil, scopeGlobal, "ip-A"))
+	assert.True(t, rl.allow(t.Context(), scopeGlobal, "ip-A"))
+	assert.False(t, rl.allow(t.Context(), scopeGlobal, "ip-A"))
 
 	// IP B 独立
-	assert.True(t, rl.allow(nil, scopeGlobal, "ip-B"))
-	assert.False(t, rl.allow(nil, scopeGlobal, "ip-B"))
+	assert.True(t, rl.allow(t.Context(), scopeGlobal, "ip-B"))
+	assert.False(t, rl.allow(t.Context(), scopeGlobal, "ip-B"))
 }
 
 // TestRateLimiter_Allow_DisabledEnabled=false 全部放行
@@ -98,7 +98,7 @@ func TestRateLimiter_Allow_Disabled(t *testing.T) {
 
 	// 任何 IP 任何 scope 都能过（无数限制）
 	for i := 0; i < 1000; i++ {
-		assert.True(t, rl.allow(nil, scopeGlobal, "1.2.3.4"))
+		assert.True(t, rl.allow(t.Context(), scopeGlobal, "1.2.3.4"))
 	}
 }
 
@@ -115,15 +115,15 @@ func TestRateLimiter_BurstCapacity(t *testing.T) {
 
 	// 一次性消耗 20 个 token
 	for i := 0; i < 20; i++ {
-		assert.True(t, rl.allow(nil, scopeGlobal, ip), "burst 第 %d 个", i+1)
+		assert.True(t, rl.allow(t.Context(), scopeGlobal, ip), "burst 第 %d 个", i+1)
 	}
 	// 21 个应该失败
-	assert.False(t, rl.allow(nil, scopeGlobal, ip))
+	assert.False(t, rl.allow(t.Context(), scopeGlobal, ip))
 
 	// 等 1 个 token 补充（QPS=10 → 100ms 一个 token）
 	time.Sleep(150 * time.Millisecond)
 	// 现在应该又有 1-2 个 token 可用
-	allowed := rl.allow(nil, scopeGlobal, ip)
+	allowed := rl.allow(t.Context(), scopeGlobal, ip)
 	assert.True(t, allowed, "等待 100ms 后 burst 应至少 1 个 token")
 }
 
@@ -139,8 +139,8 @@ func TestRateLimiter_UpdateConfig(t *testing.T) {
 	ip := "hot-reload"
 
 	// 用完 burst
-	assert.True(t, rl.allow(nil, scopeGlobal, ip))
-	assert.False(t, rl.allow(nil, scopeGlobal, ip))
+	assert.True(t, rl.allow(t.Context(), scopeGlobal, ip))
+	assert.False(t, rl.allow(t.Context(), scopeGlobal, ip))
 
 	// 热更新：提高 QPS 和 burst
 	rl.UpdateConfig(RateLimitConfig{
@@ -151,7 +151,7 @@ func TestRateLimiter_UpdateConfig(t *testing.T) {
 
 	// 现在应该又有 burst
 	for i := 0; i < 50; i++ {
-		assert.True(t, rl.allow(nil, scopeGlobal, ip), "更新后第 %d 个", i+1)
+		assert.True(t, rl.allow(t.Context(), scopeGlobal, ip), "更新后第 %d 个", i+1)
 	}
 }
 
@@ -166,9 +166,9 @@ func TestRateLimiter_LoginQPS(t *testing.T) {
 	rl := NewRateLimiter(cfg)
 	defer rl.Stop()
 
-	assert.True(t, rl.allow(nil, scopeLogin, "attacker"))
-	assert.True(t, rl.allow(nil, scopeLogin, "attacker"))
-	assert.False(t, rl.allow(nil, scopeLogin, "attacker"), "登录限速 2 QPS 触发")
+	assert.True(t, rl.allow(t.Context(), scopeLogin, "attacker"))
+	assert.True(t, rl.allow(t.Context(), scopeLogin, "attacker"))
+	assert.False(t, rl.allow(t.Context(), scopeLogin, "attacker"), "登录限速 2 QPS 触发")
 }
 
 // TestRateLimiter_ZeroQPS 边界：QPS=0 → 兜底 1
@@ -181,8 +181,8 @@ func TestRateLimiter_ZeroQPS(t *testing.T) {
 	rl := NewRateLimiter(cfg)
 	defer rl.Stop()
 
-	assert.True(t, rl.allow(nil, scopeUpload, "1.2.3.4"), "第一次应通过")
-	assert.False(t, rl.allow(nil, scopeUpload, "1.2.3.4"), "第二次应被拒（QPS=1 burst=1）")
+	assert.True(t, rl.allow(t.Context(), scopeUpload, "1.2.3.4"), "第一次应通过")
+	assert.False(t, rl.allow(t.Context(), scopeUpload, "1.2.3.4"), "第二次应被拒（QPS=1 burst=1）")
 }
 
 // TestRateLimiter_Concurrent 不同 IP 并发
@@ -205,7 +205,7 @@ func TestRateLimiter_Concurrent(t *testing.T) {
 			defer wg.Done()
 			ip := "concurrent-ip-" + string(rune('A'+workerID%26))
 			for i := 0; i < perWorker; i++ {
-				if rl.allow(nil, scopeGlobal, ip) {
+				if rl.allow(t.Context(), scopeGlobal, ip) {
 					atomic.AddInt32(&allowed, 1)
 				}
 			}
@@ -246,8 +246,8 @@ func TestRateLimiter_GC_NoError(t *testing.T) {
 	defer rl.Stop()
 
 	// 加几个 IP
-	rl.allow(nil, scopeGlobal, "ip-1")
-	rl.allow(nil, scopeGlobal, "ip-2")
+	rl.allow(t.Context(), scopeGlobal, "ip-1")
+	rl.allow(t.Context(), scopeGlobal, "ip-2")
 	require.Equal(t, 2, len(rl.clients[scopeGlobal]))
 
 	// 手动调用 gc：新鲜 entry 不会被清理（lastAccess 刚刚）

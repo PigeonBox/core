@@ -47,12 +47,14 @@ type ProgressResp struct {
 }
 
 type Service struct {
-	chunkRepo *dao.ChunkRepository
+	chunkRepo    *dao.ChunkRepository
+	fileCodeRepo *dao.FileCodeRepository
 }
 
 func NewService() *Service {
 	return &Service{
-		chunkRepo: dao.NewChunkRepository(),
+		chunkRepo:    dao.NewChunkRepository(),
+		fileCodeRepo: dao.NewFileCodeRepository(),
 	}
 }
 
@@ -74,13 +76,14 @@ func (s *Service) InitiateUpload(ctx context.Context, req *InitiateUploadReq) (*
 	}
 
 	// 创建控制记录（chunk_index = -1）
+	// ChunkHash 记录客户端提供的整文件哈希（秒传检索用；分片哈希存各分片记录）
 	chunk := &model.UploadChunk{
 		UploadID:    req.UploadID,
 		ChunkIndex:  -1, // 控制记录标识
 		TotalChunks: req.TotalChunks,
 		FileSize:    req.FileSize,
 		ChunkSize:   req.ChunkSize,
-		FileName:    req.FileName,
+		FileName:    utils.SanitizeFileName(req.FileName),
 		Status:      "pending",
 	}
 
@@ -90,7 +93,7 @@ func (s *Service) InitiateUpload(ctx context.Context, req *InitiateUploadReq) (*
 	}
 
 	return &ChunkResp{
-		ID:          chunk.Model.ID,
+		ID:          chunk.ID,
 		UploadID:    chunk.UploadID,
 		ChunkIndex:  chunk.ChunkIndex,
 		ChunkHash:   chunk.ChunkHash,
@@ -120,7 +123,7 @@ func (s *Service) UploadChunk(ctx context.Context, req *UploadChunkReq) (*ChunkR
 	existingChunk, err := s.chunkRepo.GetChunkByIndex(ctx, req.UploadID, req.ChunkIndex)
 	if err == nil && existingChunk.Completed {
 		return &ChunkResp{
-			ID:          existingChunk.Model.ID,
+			ID:          existingChunk.ID,
 			UploadID:    existingChunk.UploadID,
 			ChunkIndex:  existingChunk.ChunkIndex,
 			ChunkHash:   existingChunk.ChunkHash,
@@ -149,7 +152,7 @@ func (s *Service) UploadChunk(ctx context.Context, req *UploadChunkReq) (*ChunkR
 		if err != nil {
 			return nil, err
 		}
-		chunk.Model.ID = existingChunk.Model.ID
+		chunk.ID = existingChunk.ID
 	} else {
 		// 创建新记录
 		err = s.chunkRepo.Create(ctx, chunk)
@@ -159,7 +162,7 @@ func (s *Service) UploadChunk(ctx context.Context, req *UploadChunkReq) (*ChunkR
 	}
 
 	return &ChunkResp{
-		ID:          chunk.Model.ID,
+		ID:          chunk.ID,
 		UploadID:    chunk.UploadID,
 		ChunkIndex:  chunk.ChunkIndex,
 		ChunkHash:   chunk.ChunkHash,
@@ -228,7 +231,7 @@ func (s *Service) GetUploadList(ctx context.Context, page, pageSize int) ([]*Chu
 	resps := make([]*ChunkResp, len(chunks))
 	for i, chunk := range chunks {
 		resps[i] = &ChunkResp{
-			ID:          chunk.Model.ID,
+			ID:          chunk.ID,
 			UploadID:    chunk.UploadID,
 			ChunkIndex:  chunk.ChunkIndex,
 			ChunkHash:   chunk.ChunkHash,
@@ -259,57 +262,19 @@ func (s *Service) GetUploadInfo(ctx context.Context, uploadID string) (*model.Up
 	return s.chunkRepo.GetByUploadID(ctx, uploadID)
 }
 
-// CheckQuickUpload 检查是否可以快速上传（通过文件哈希查找已存在的上传）
-// 如果找到相同的文件哈希和文件大小，返回对应的分享代码
+// CheckQuickUpload 秒传检查（真实实现，替代原 TODO）：
+// 优先按 file_codes.file_hash + size 查既有未过期分享（跨会话秒传），
+// 命中直接返回分享码——客户端无需上传任何分片。
 func (s *Service) CheckQuickUpload(ctx context.Context, fileHash string, fileSize int64) (string, error) {
-	// 查找相同哈希和文件大小的已完成上传
-	chunk, err := s.chunkRepo.GetByHash(ctx, fileHash, fileSize)
-	if err != nil {
-		return "", err
+	if fileHash == "" || fileSize <= 0 {
+		return "", errors.New("invalid file hash")
 	}
-
-	// 检查状态是否为已完成
-	if chunk.Status != "completed" {
-		return "", errors.New("upload not completed")
+	fc, err := s.fileCodeRepo.GetByHashAndSize(ctx, fileHash, fileSize)
+	if err != nil || fc == nil {
+		return "", errors.New("share code not found")
 	}
-
-	// TODO: 查找对应的分享代码
-	// 当前实现需要关联到 FileCode 表，暂时返回空字符串
-	return "", errors.New("share code not found")
-}
-
-// CompleteUploadWithShare 完成上传并生成分享代码
-func (s *Service) CompleteUploadWithShare(ctx context.Context, uploadID string, expireValue int, expireStyle string, requireAuth bool, shareService ShareServiceInterface) (string, string, error) {
-	// 检查所有分片是否已完成
-	controlChunk, err := s.chunkRepo.GetByUploadID(ctx, uploadID)
-	if err != nil {
-		return "", "", err
+	if fc.IsExpired() {
+		return "", errors.New("share expired")
 	}
-
-	completedChunks, err := s.chunkRepo.CountCompletedChunks(ctx, uploadID)
-	if err != nil {
-		return "", "", err
-	}
-
-	if completedChunks < int64(controlChunk.TotalChunks) {
-		return "", "", errors.New("not all chunks are completed")
-	}
-
-	// 更新控制记录状态
-	err = s.chunkRepo.UpdateChunkCompleted(ctx, uploadID, -1, "")
-	if err != nil {
-		return "", "", err
-	}
-
-	// TODO: 这里需要调用 share service 来创建分享记录
-	// 暂时返回 uploadID 作为分享代码
-	shareCode := uploadID
-	shareURL := "/share/" + shareCode
-
-	return shareCode, shareURL, nil
-}
-
-// ShareServiceInterface 分享服务接口
-type ShareServiceInterface interface {
-	ShareFile(ctx context.Context, req interface{}) (interface{}, error)
+	return fc.Code, nil
 }

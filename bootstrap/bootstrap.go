@@ -7,43 +7,52 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/app/server"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/common/expfmt"
-	"github.com/spf13/viper"
-	"github.com/filescodebox/core/gen/router"
 	"github.com/filescodebox/core/conf"
+	"github.com/filescodebox/core/gen/router"
 	"github.com/filescodebox/core/pkg/auth"
 	"github.com/filescodebox/core/pkg/logger"
 	"github.com/filescodebox/core/pkg/middleware"
 	"github.com/filescodebox/core/pkg/resp"
+	securityPkg "github.com/filescodebox/core/pkg/security"
 	previewPkg "github.com/filescodebox/core/preview"
 	"github.com/filescodebox/core/repo/db"
 	"github.com/filescodebox/core/repo/db/model"
 	"github.com/filescodebox/core/repo/redis"
 	"github.com/filescodebox/core/storage"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/common/expfmt"
+	"github.com/spf13/viper"
 	"go.uber.org/zap"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 
+	adminApp "github.com/filescodebox/core/app/admin"
+	mcpApp "github.com/filescodebox/core/app/mcp"
+	notifyAppService "github.com/filescodebox/core/app/notify"
+	setupApp "github.com/filescodebox/core/app/setup"
+	shareService "github.com/filescodebox/core/app/share"
+	storageApp "github.com/filescodebox/core/app/storage"
+	userService "github.com/filescodebox/core/app/user"
+	adminHandler "github.com/filescodebox/core/gen/handler/admin"
 	notifyHandler "github.com/filescodebox/core/gen/handler/notify"
 	presignHandler "github.com/filescodebox/core/gen/handler/presign"
 	ratelimitHandler "github.com/filescodebox/core/gen/handler/ratelimit"
-	adminHandler "github.com/filescodebox/core/gen/handler/admin"
 	anonHandler "github.com/filescodebox/core/gen/handler/share_anonymous"
-	notifyAppService "github.com/filescodebox/core/app/notify"
-	shareService "github.com/filescodebox/core/app/share"
-	adminApp "github.com/filescodebox/core/app/admin"
+	storageHandler "github.com/filescodebox/core/gen/handler/storage"
+	"github.com/filescodebox/core/repo/db/dao"
 	customHandler "github.com/filescodebox/core/transport/http/handler"
 	customMw "github.com/filescodebox/core/transport/http/middleware"
 )
 
-// 使用 internal/conf 包中的统一配置类型
+// Config 与 internal/conf 包中的统一配置类型互为别名。
 type Config = conf.AppConfiguration
 
 // staticOpts 保存最近一次 Bootstrap 应用的选项(静态服务等闭包读取)。
@@ -96,8 +105,6 @@ func CORS() app.HandlerFunc {
 				// 凭证仅对允许的 origin 生效
 				c.Header("Access-Control-Allow-Credentials", "true")
 			}
-		} else if origin == "" {
-			// 无 Origin（同源请求），放行且不设 ACAO
 		}
 
 		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
@@ -192,6 +199,23 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("observability.metrics.enabled", false)
 	v.SetDefault("observability.metrics.path", "/metrics")
 	v.SetDefault("observability.tracing.enabled", false)
+	// 安全默认（安全加固项，未配置时全开）：
+	v.SetDefault("upload.enable_magic_check", true)
+	v.SetDefault("security.download_token.enabled", true)
+	v.SetDefault("security.download_token.validity_seconds", 1000)
+	v.SetDefault("security.lockout.enabled", true)
+	v.SetDefault("security.lockout.max_attempts", 10)
+	v.SetDefault("security.lockout.window_seconds", 300)
+	v.SetDefault("security.lockout.lock_seconds", 600)
+	v.SetDefault("rate_limit.enabled", true)
+	v.SetDefault("rate_limit.global_qps", 100)
+	v.SetDefault("rate_limit.upload_qps", 10)
+	v.SetDefault("rate_limit.download_qps", 50)
+	v.SetDefault("rate_limit.login_qps", 5)
+	v.SetDefault("rate_limit.burst", 20)
+	v.SetDefault("rate_limit.block_seconds", 60)
+	// MCP server 默认开启（路由挂管理员认证，无暴露风险）
+	v.SetDefault("mcp.enabled", true)
 }
 
 // envBindings 环境变量 → 配置 key 的映射。
@@ -222,7 +246,7 @@ var envBindings = map[string][]string{
 	"app.datapath":   {"FCB_DATA_PATH", "DATA_PATH"},
 	"app.production": {"FCB_PRODUCTION", "PRODUCTION"},
 	// user
-	"user.jwt_secret":             {"FCB_JWT_SECRET", "JWT_SECRET"},
+	"user.jwt_secret":              {"FCB_JWT_SECRET", "JWT_SECRET"},
 	"user.allow_user_registration": {"FCB_USER_ALLOW_REGISTRATION"},
 	// upload
 	"upload.open_upload": {"FCB_OPEN_UPLOAD", "OPEN_UPLOAD"},
@@ -230,13 +254,36 @@ var envBindings = map[string][]string{
 	// storage
 	"storage.type":         {"FCB_STORAGE_TYPE"},
 	"storage.storage_path": {"FCB_STORAGE_PATH"},
+	// download
+	"download.s3_direct_download": {"FCB_DOWNLOAD_S3_DIRECT"},
 	// observability
 	"observability.metrics.enabled": {"FCB_METRICS_ENABLED"},
 	"observability.metrics.path":    {"FCB_METRICS_PATH"},
 	"observability.tracing.enabled": {"FCB_TRACING_ENABLED"},
 	// security
-	"security.cors.allow_origins":     {"FCB_CORS_ALLOW_ORIGINS"},
-	"security.cors.enable_hsts":       {"FCB_ENABLE_HSTS"},
+	"security.cors.allow_origins":          {"FCB_CORS_ALLOW_ORIGINS"},
+	"security.cors.enable_hsts":            {"FCB_ENABLE_HSTS"},
+	"security.trusted_proxies":             {"FCB_TRUSTED_PROXIES"},
+	"security.download_token.enabled":      {"FCB_DOWNLOAD_TOKEN_ENABLED"},
+	"security.lockout.enabled":             {"FCB_LOCKOUT_ENABLED"},
+	"security.lockout.max_attempts":        {"FCB_LOCKOUT_MAX_ATTEMPTS"},
+	"security.ssrf.allow_private_networks": {"FCB_SSRF_ALLOW_PRIVATE"},
+	// notify
+	"notify.webhook_url": {"FCB_WEBHOOK_URL", "WEBHOOK_URL"},
+	// mcp
+	"mcp.enabled": {"FCB_MCP_ENABLED"},
+	// upload 安全项
+	"upload.text_max_bytes":     {"FCB_TEXT_MAX_BYTES"},
+	"upload.allowed_extensions": {"FCB_UPLOAD_ALLOWED_EXTENSIONS"},
+	"upload.enable_magic_check": {"FCB_ENABLE_MAGIC_CHECK"},
+	// rate_limit
+	"rate_limit.enabled":       {"FCB_RATE_LIMIT_ENABLED"},
+	"rate_limit.global_qps":    {"FCB_RATE_LIMIT_GLOBAL_QPS"},
+	"rate_limit.upload_qps":    {"FCB_RATE_LIMIT_UPLOAD_QPS"},
+	"rate_limit.download_qps":  {"FCB_RATE_LIMIT_DOWNLOAD_QPS"},
+	"rate_limit.login_qps":     {"FCB_RATE_LIMIT_LOGIN_QPS"},
+	"rate_limit.block_seconds": {"FCB_RATE_LIMIT_BLOCK_SECONDS"},
+	"rate_limit.use_redis":     {"FCB_RATE_LIMIT_USE_REDIS"},
 }
 
 // bindEnvironment 把环境变量绑定到 viper 配置 key。
@@ -256,12 +303,12 @@ func bindEnvironment(v *viper.Viper) {
 
 // insecureDefaultSecrets 已知的不安全默认/占位密钥（全环境禁止使用）。
 var insecureDefaultSecrets = map[string]string{
-	"FileCodeBox2025JWT":                       "user.jwt_secret",
-	"filecodebox-dev-signing-key-change-me":    "presign signing key",
-	"FileCodeBox2025SecretKey":                 "auth default secret",
-	"please-change-me":                         "placeholder secret",
-	"dev-only-change-me":                       "dev placeholder secret",
-	"dev-only-change-me-to-random-32chars":     "dev placeholder secret",
+	"FileCodeBox2025JWT":                    "user.jwt_secret",
+	"filecodebox-dev-signing-key-change-me": "presign signing key",
+	"FileCodeBox2025SecretKey":              "auth default secret",
+	"please-change-me":                      "placeholder secret",
+	"dev-only-change-me":                    "dev placeholder secret",
+	"dev-only-change-me-to-random-32chars":  "dev placeholder secret",
 }
 
 // validateSecrets 全环境校验敏感配置，避免使用默认/弱密钥启动（fail-fast）。
@@ -424,6 +471,30 @@ func BootstrapWithOptions(configPath string, opts ...Option) (*server.Hertz, err
 		return nil, fmt.Errorf("failed to init database: %w", err)
 	}
 
+	// 3.5 初始化 Redis（匿名取件码 / presign 会话 / 分布式限流依赖）。
+	// 此前 bootstrap 从不调用 redis.Init，GetClient() 恒为 nil，
+	// 导致匿名取件与预签名直传在运行期必然失败（P0）。
+	// Redis 连不上时降级启动并告警：server 主体功能仍可用，
+	// 匿名取件接口会返回"Redis 未配置"的明确错误。
+	if config.Redis.Host != "" {
+		if err := redis.Init(&config.Redis); err != nil {
+			logger.Error("Redis init failed — anonymous pickup & presign degraded",
+				zap.String("addr", config.Redis.Addr()), zap.Error(err))
+		} else {
+			logger.Info("Redis initialized", zap.String("addr", config.Redis.Addr()))
+		}
+	} else {
+		logger.Warn("Redis not configured (redis.host empty) — anonymous pickup & presign disabled")
+	}
+
+	// 3.6 安全中间件配置注入：
+	//   - 可信代理 CIDR（决定 XFF 是否被采信，防伪造绕过限流）
+	//   - 下载令牌签名密钥（复用 jwt_secret 派生，独立注入便于轮换）
+	if err := middleware.SetTrustedProxies(config.Security.TrustedProxies); err != nil {
+		return nil, fmt.Errorf("invalid security.trusted_proxies: %w", err)
+	}
+	securityPkg.SetDownloadTokenSecret("fcb-dl:" + config.User.JWTSecret)
+
 	// 4. 创建默认管理员
 	if err := CreateDefaultAdmin(database); err != nil {
 		logger.Error("Failed to create default admin", zap.Error(err))
@@ -486,7 +557,10 @@ func BootstrapWithOptions(configPath string, opts ...Option) (*server.Hertz, err
 
 	// 限流：路径感知，按接口类型选择限流维度（登录/上传/下载）。
 	// 防止暴力破解登录、取件码枚举、上传下载 DoS。
-	rl := middleware.GetDefaultRateLimiter()
+	// 配置来自 rate_limit 段（默认值见 middleware.DefaultRateLimitConfig），
+	// use_redis=true 且 Redis 可用时多实例共享计数。
+	rl := middleware.InitDefaultRateLimiter(middleware.RateLimitConfigFromConf())
+	rl.SetRedis(redis.GetClient())
 	h.Use(func(ctx context.Context, c *app.RequestContext) {
 		path := string(c.Request.URI().Path())
 		switch {
@@ -564,6 +638,123 @@ func customizedRegister(r *server.Hertz) {
 	// 前端 publicApi.getConfig() 请求 /api/config 获取站点配置（名称、上传限制等），
 	// 此前端点缺失导致前端启动报 "获取配置失败: Network Error"。此处补齐。
 	r.GET("/api/config", publicConfigHandler)
+
+	// ===== robots.txt（对标上游 SEO 可配；输出 ui.robots_text）=====
+	r.GET("/robots.txt", func(ctx context.Context, c *app.RequestContext) {
+		content := config.UI.RobotsText
+		if content == "" {
+			content = "User-agent: *\nDisallow: /\n"
+		}
+		c.Header("Content-Type", "text/plain; charset=utf-8")
+		c.String(consts.StatusOK, content)
+	})
+
+	// ===== MCP server（Model Context Protocol；AI 客户端集成，上游没有的差异化能力）=====
+	// Streamable HTTP 传输：POST /api/v1/mcp（JSON-RPC 2.0），管理员 JWT 认证。
+	// Claude Desktop 等标准客户端以 Authorization: Bearer <admin token> 接入。
+	if config.MCP.Enabled {
+		// initThriftIDLServices 未跑（如轻量测试环境）时惰性兜底：
+		// share service 缺席时 share_text 工具会明确报错，协议处理不受影响
+		if mcpService == nil {
+			mcpService = mcpApp.NewService(config.App.Version)
+		}
+		r.POST("/api/v1/mcp", middleware.AdminMiddleware(), func(ctx context.Context, c *app.RequestContext) {
+			body := c.Request.Body()
+			status, respBody := mcpService.Handle(ctx, body)
+			if status == 202 {
+				c.SetStatusCode(consts.StatusAccepted)
+				return
+			}
+			c.Header("Content-Type", "application/json")
+			c.SetStatusCode(status)
+			_, _ = c.Write(respBody)
+		})
+	}
+
+	// ===== logout 端点（补齐基准 P1 缺口：显式注销 + token 黑名单）=====
+	r.POST("/api/v1/user/logout", func(ctx context.Context, c *app.RequestContext) {
+		authHeader := string(c.GetHeader("Authorization"))
+		if !strings.HasPrefix(authHeader, "Bearer ") {
+			c.JSON(consts.StatusUnauthorized, map[string]interface{}{"code": 401, "message": "missing token"})
+			return
+		}
+		token := strings.TrimPrefix(authHeader, "Bearer ")
+		// 黑名单 TTL = token 剩余有效期（过期后自然失效，无需清理任务）
+		if claims, err := auth.ParseToken(token); err == nil {
+			remaining := time.Until(claims.ExpiresAt.Time)
+			auth.RevokeToken(ctx, token, remaining)
+		}
+		c.JSON(consts.StatusOK, map[string]interface{}{"code": 200, "message": "已退出登录"})
+	})
+
+	// ===== check-auth 端点（前端启动时校验 token 有效性并取回用户信息）=====
+	r.GET("/api/v1/user/check-auth", customMw.UserAuth(), func(ctx context.Context, c *app.RequestContext) {
+		uid, _ := c.Get("user_id")
+		username, _ := c.Get("username")
+		role, _ := c.Get("role")
+		c.JSON(consts.StatusOK, map[string]interface{}{
+			"code":    200,
+			"message": "ok",
+			"data": map[string]interface{}{
+				"id":       uid,
+				"username": username,
+				"role":     role,
+			},
+		})
+	})
+
+	// ===== 管理端操作审计日志查询（P0-C：此前审计只写不查/没写）=====
+	// + 管理端增强：用户 CRUD / 文件管理 / 富统计（AdminMiddleware 保护）
+	adminAPI := r.Group("/admin", middleware.AdminMiddleware())
+	{
+		adminAPI.GET("/activities", func(ctx context.Context, c *app.RequestContext) {
+			page, pageSize := 1, 20
+			if v, err := strconv.Atoi(c.Query("page")); err == nil && v > 0 {
+				page = v
+			}
+			if v, err := strconv.Atoi(c.Query("page_size")); err == nil && v > 0 && v <= 200 {
+				pageSize = v
+			}
+			query := model.AdminOperationLogQuery{
+				Action:   c.Query("action"),
+				Actor:    c.Query("actor"),
+				Page:     page,
+				PageSize: pageSize,
+			}
+			if s := c.Query("success"); s == "true" || s == "false" {
+				b := s == "true"
+				query.Success = &b
+			}
+			repo := dao.NewAdminOperationLogRepository()
+			logs, total, err := repo.List(ctx, query)
+			if err != nil {
+				resp.NewErrorWithMessage(c, 50001, "查询审计日志失败: "+err.Error())
+				return
+			}
+			resp.Page(c, logs, total, page, pageSize)
+		})
+
+		// 用户管理 CRUD（此前只有 list + status 切换）
+		adminAPI.POST("/users", customHandler.AdminCreateUser)
+		adminAPI.PUT("/users/:id", customHandler.AdminUpdateUser)
+		adminAPI.DELETE("/users/:id", customHandler.AdminDeleteUser)
+		adminAPI.POST("/users/:id/reset-password", customHandler.AdminResetUserPassword)
+		adminAPI.GET("/users/filter", customHandler.AdminListUsersFiltered)
+
+		// 文件管理（此前只有 list + 单删）
+		adminAPI.GET("/files/:id/download", customHandler.AdminDownloadFile)
+		adminAPI.GET("/files/:id", customHandler.AdminFileDetail)
+		adminAPI.PUT("/files/:id", customHandler.AdminUpdateFile)
+		adminAPI.POST("/files/batch-delete", customHandler.AdminBatchDeleteFiles)
+		adminAPI.POST("/files/batch-extend", customHandler.AdminBatchExtendFiles)
+
+		// Dashboard 富指标
+		adminAPI.GET("/stats/enhanced", customHandler.AdminEnhancedStats)
+		adminAPI.GET("/stats/trend", customHandler.AdminStatsTrend)
+
+		// 传输日志（此前前端调用的端点不存在、表无写入方，页面一直空数据）
+		adminAPI.GET("/logs/transfer", customHandler.AdminTransferLogs)
+	}
 
 	// ===== 前端构建产物静态资源 =====
 	// Vite 输出的 index.html 用根级绝对路径引用资源（/assets/xxx、/vite.svg），
@@ -700,8 +891,14 @@ func tryServeStatic(c *app.RequestContext, path string) bool {
 
 // publicConfigHandler 返回公开配置（前端 configStore 启动时拉取）。
 // 返回结构与前端 PublicConfig 接口对齐：
-// name / description / uploadSize / enableChunk / openUpload / expireStyle。
+// name / description / uploadSize / enableChunk / openUpload / expireStyle / initialized。
+// initialized 为真实初始化状态（按管理员用户数判断）；查询出错时保守返回 true，
+// 避免数据库抖动把正常实例的前端误导入 Setup 流程。
 func publicConfigHandler(ctx context.Context, c *app.RequestContext) {
+	initialized := true
+	if ok, err := publicSetupSvc.IsSystemInitialized(ctx); err == nil {
+		initialized = ok
+	}
 	resp.Success(c, map[string]interface{}{
 		"name":        config.App.Name,
 		"description": config.App.Description,
@@ -710,9 +907,12 @@ func publicConfigHandler(ctx context.Context, c *app.RequestContext) {
 		"openUpload":  config.Upload.OpenUpload,
 		// 前端 expireStyle 下拉选项（与 utils.CalculateExpireTime 支持的风格对齐）
 		"expireStyle": []string{"minute", "hour", "day", "week", "month", "year", "forever"},
-		"initialized": true,
+		"initialized": initialized,
 	})
 }
+
+// publicSetupSvc /api/config 查询初始化状态用（无依赖，惰性安全）
+var publicSetupSvc = setupApp.NewService()
 
 // metricsHandler 暴露 Prometheus 指标（/metrics）。
 // Hertz 与标准 net/http 接口不同，不能直接用 promhttp.Handler()，
@@ -774,7 +974,6 @@ func readinessHandler(ctx context.Context, c *app.RequestContext) {
 	})
 }
 
-
 func initPreviewService() error {
 	previewConfig := &previewPkg.Config{
 		EnablePreview:    true,
@@ -791,6 +990,9 @@ func initPreviewService() error {
 // initThriftIDLServices 初始化 thrift IDL 对应的新服务
 // 关联 internal/app/ → gen/http/handler/ 各 SetXxx 入口
 func initThriftIDLServices(database *gorm.DB) {
+	// 0. 恢复 DB 持久化的运行时存储配置（管理端在线切换的后端类型/s3/webdav）
+	restoreRuntimeStorage()
+
 	// 1. notify service（走 DAO，内部用全局 db.GetDB()）
 	notifyApp := notifyAppService.NewService()
 	notifyHandler.SetDB(database)
@@ -814,16 +1016,44 @@ func initThriftIDLServices(database *gorm.DB) {
 	// 2.1 注入 share service（Complete 时写分享表）
 	shareSvc := shareService.NewService(baseURL, getBootstrapStorageService())
 	presignHandler.SetShareService(shareSvc)
+	// 2.1.1 注入存储服务（presign 直传按当前激活后端落盘）
+	presignHandler.SetStorage(getBootstrapStorageService())
+	// 2.1.2 注入真预签名直传能力（s3 后端时 Init 签发对象存储直传 URL）
+	presignHandler.SetObjectStore(getBootstrapStorageService())
 	// 2.2 注入定制路由的 share service
 	customHandler.SetShareService(shareSvc)
 	// 2.3 注入 notify service（取件时给 owner 发通知）
 	shareSvc.SetNotifyService(notifyApp) // *Service 已实现 CreateForUserSimple
+	// 2.3.1 外部 Webhook 推送渠道（notify.created 事件；空 = 禁用）
+	notifyApp.SetWebhookURL(config.Notify.WebhookURL)
+	// 2.4 注入 user service：上传统计（此前从未接线，用户统计恒为 0）
+	// + 存储配额强制检查（user_quota / 用户级 max_storage_quota）
+	userSvc := userService.NewService()
+	shareSvc.SetUserService(userSvc)
+	shareSvc.SetQuotaChecker(userSvc)
 
 	// 3. anonymous service（需要 Redis）
 	anonHandler.SetService(redis.GetClient())
 
 	// 4. ratelimit service（直接用 default limiter）
 	ratelimitHandler.SetLimiter(middleware.GetDefaultRateLimiter())
+
+	// 4.5 失败锁定器 + JWT 注销黑名单（Redis 可用时共享，否则内存兜底）
+	middleware.InitDefaultLockout(redis.GetClient())
+	auth.SetBlacklistRedis(redis.GetClient())
+
+	// 4.6 管理端 admin service（单一实例：路由增强与存储配置持久化共用，
+	// 避免 runtime_storage 段在多实例间读写漂移——字段本身可跨实例 JSON 往返）
+	adminSvc := adminApp.NewService()
+
+	// 4.6.1 storage 管理 service（连接测试/在线切换：认证级 Probe + 热重载 + 持久化）
+	storageSvc := storageApp.NewService()
+	storageSvc.SetRuntime(getBootstrapStorageService())
+	storageSvc.SetPersister(adminSvc)
+	storageHandler.SetService(storageSvc)
+
+	// 4.7 管理端增强服务注入（用户 CRUD/文件管理/富统计）
+	customHandler.SetManageServices(adminSvc, userSvc, getBootstrapStorageService())
 
 	// 5. 自动迁移 notify 表 + file_codes viewer 字段
 	if err := database.AutoMigrate(&model.Notify{}); err != nil {
@@ -841,11 +1071,29 @@ func initThriftIDLServices(database *gorm.DB) {
 	bootstrapStorage := getBootstrapStorageService()
 	adminHandler.SetStorage(bootstrapStorage)
 
+	// 6.5 MCP server（AI 客户端集成）：统计/维护走带 storage 的 admin service，
+	//     分享创建走 share service（复用配额/审计链路）
+	if config.MCP.Enabled {
+		mcpService = mcpApp.NewService(config.App.Version)
+		mcpService.SetAdminService(cleanupSvcWithStorage(bootstrapStorage))
+		mcpService.SetShareService(shareSvc)
+	}
+
 	// 7. 启动过期文件定时清理（默认每小时，删 DB 记录 + 物理文件）
 	//    独立 admin service 实例（避免与 handler 实例竞争），注入 storage
 	cleanupSvc := adminApp.NewService()
 	cleanupSvc.SetStorage(bootstrapStorage)
 	go startExpiredFileCleanup(cleanupSvc)
+}
+
+// mcpService MCP server 实例（initThriftIDLServices 装配，customizedRegister 挂路由）
+var mcpService *mcpApp.Service
+
+// cleanupSvcWithStorage 创建带 storage 的 admin service 实例
+func cleanupSvcWithStorage(st storage.StorageInterface) *adminApp.Service {
+	svc := adminApp.NewService()
+	svc.SetStorage(st)
+	return svc
 }
 
 // startExpiredFileCleanup 定时清理过期文件（DB 记录 + 物理文件）。
@@ -866,25 +1114,66 @@ func startExpiredFileCleanup(svc *adminApp.Service) {
 	}
 }
 
-// getBootstrapStorageService bootstrap 用的 storage service
-// 后续应该从 conf 读 storage 配置（task4 后续）
+// bootstrapBaseURL 对外基础地址（server.base_url 优先，否则 host:port）
+func bootstrapBaseURL() string {
+	if config.Server.BaseURL != "" {
+		return config.Server.BaseURL
+	}
+	return fmt.Sprintf("http://%s:%d", config.Server.Host, config.Server.Port)
+}
+
+// bootstrapStorage 单例：share/chunk/presign/admin/清理共用同一实例，
+// 管理端在线切换存储（Reload）才能对全部读写链路生效。
+var (
+	bootstrapStorageOnce sync.Once
+	bootstrapStorageSvc  *storage.StorageService
+)
+
+// getBootstrapStorageService bootstrap 用的 storage 单例。
+// 配置来自 conf（DB 持久化的 runtime_storage 已由 restoreRuntimeStorage 恢复进 conf）；
+// 远端驱动构造失败时记录错误并降级 local（EffectiveType/InitError 可查真相）。
 func getBootstrapStorageService() *storage.StorageService {
-	dataPath := "./data"
-	if config != nil && config.Storage.StoragePath != "" {
-		dataPath = config.Storage.StoragePath
-	}
-	storageType := storage.StorageTypeLocal
-	if config != nil && config.Storage.Type != "" {
-		switch config.Storage.Type {
-		case "s3":
-			storageType = storage.StorageTypeS3
-		case "webdav":
-			storageType = storage.StorageTypeWebDAV
+	bootstrapStorageOnce.Do(func() {
+		cfg := storage.ConfigFromConf(&config.Storage, bootstrapBaseURL())
+		svc, err := storage.NewStorageServiceE(cfg)
+		if err != nil {
+			logger.Error("remote storage backend init failed, fallback to local",
+				zap.String("type", string(cfg.Type)), zap.Error(err))
+			svc = storage.NewStorageService(cfg)
+		} else if t := svc.EffectiveType(); t != storage.StorageTypeLocal {
+			logger.Info("remote storage backend enabled", zap.String("type", string(t)))
 		}
-	}
-	return storage.NewStorageService(&storage.StorageConfig{
-		Type:     storageType,
-		DataPath: dataPath,
-		BaseURL:  fmt.Sprintf("http://%s:%d", config.Server.Host, config.Server.Port),
+		bootstrapStorageSvc = svc
 	})
+	return bootstrapStorageSvc
+}
+
+// restoreRuntimeStorage 启动时把 system_configs.runtime_storage 恢复进全局配置。
+// 优先级：env（FCB_STORAGE_TYPE/FCB_STORAGE_PATH）> DB（管理端在线修改的意图，
+// 晚于 yaml）> yaml。DB 无记录时不动 conf（yaml/env 生效）。
+func restoreRuntimeStorage() {
+	rs := adminApp.NewService().LoadRuntimeStorage(context.Background())
+	if rs == nil {
+		return
+	}
+	if rs.Type != "" {
+		config.Storage.Type = rs.Type
+	}
+	if rs.StoragePath != "" {
+		config.Storage.StoragePath = rs.StoragePath
+	}
+	if rs.S3 != nil {
+		config.Storage.S3 = rs.S3
+	}
+	if rs.WebDAV != nil {
+		config.Storage.WebDAV = rs.WebDAV
+	}
+	// env 优先级最高：显式注入的环境变量覆盖 DB 恢复值
+	if v := os.Getenv("FCB_STORAGE_TYPE"); v != "" {
+		config.Storage.Type = v
+	}
+	if v := os.Getenv("FCB_STORAGE_PATH"); v != "" {
+		config.Storage.StoragePath = v
+	}
+	log.Println("runtime storage config restored from database, type =", config.Storage.Type)
 }

@@ -74,7 +74,7 @@ func (g *CodeGenerator) readCodeFile(filePath string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	// 限制读取大小（最大1MB）
 	limitedReader := io.LimitReader(file, 1024*1024)

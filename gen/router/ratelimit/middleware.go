@@ -4,6 +4,7 @@ package ratelimit
 
 import (
 	"github.com/cloudwego/hertz/pkg/app"
+	"github.com/filescodebox/core/pkg/middleware"
 )
 
 func rootMw() []app.HandlerFunc {
@@ -11,9 +12,12 @@ func rootMw() []app.HandlerFunc {
 	return nil
 }
 
+// _adminMw 安全修复：/admin/ratelimit/* 此前完全无认证（匿名可读写限流配置、
+// 借 /test 探测），现挂管理员中间件（AdminMiddleware 白名单 /admin/login）。
 func _adminMw() []app.HandlerFunc {
-	// your code...
-	return nil
+	return []app.HandlerFunc{
+		middleware.AdminMiddleware(),
+	}
 }
 
 func _ratelimitMw() []app.HandlerFunc {

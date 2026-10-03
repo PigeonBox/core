@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/redis/go-redis/v9"
@@ -13,7 +14,9 @@ import (
 	"github.com/filescodebox/contracts/errcode"
 	presignmodel "github.com/filescodebox/contracts/gen/presign"
 	presignapp "github.com/filescodebox/core/app/presign"
+	"github.com/filescodebox/core/pkg/middleware"
 	"github.com/filescodebox/core/pkg/resp"
+	"github.com/filescodebox/core/pkg/security"
 	"github.com/filescodebox/core/pkg/utils"
 )
 
@@ -33,6 +36,24 @@ func SetShareService(svc presignapp.ShareServiceInterface) {
 	presignSvc.SetShareService(svc)
 }
 
+// SetStorage 注入存储服务（直传按当前激活后端落盘：local/s3/webdav 一致）
+func SetStorage(st presignapp.StorageWriter) {
+	if presignSvc == nil {
+		// 容错：允许先注入 storage，再调 SetService
+		return
+	}
+	presignSvc.SetStorage(st)
+}
+
+// SetObjectStore 注入真预签名直传能力（s3 后端时 Init 签发对象存储直传 URL）
+func SetObjectStore(o presignapp.ObjectStore) {
+	if presignSvc == nil {
+		// 容错：允许先注入 object store，再调 SetService
+		return
+	}
+	presignSvc.SetObjectStore(o)
+}
+
 func getService() *presignapp.Service {
 	if presignSvc == nil {
 		presignSvc = presignapp.NewService(nil, "http://localhost:12345", "dev-signing-key")
@@ -48,6 +69,33 @@ func Init(ctx context.Context, c *app.RequestContext) {
 		resp.NewErrorWithMessage(c, errcode.CodeInvalidParam, err.Error())
 		return
 	}
+	// 兼容读取 body 中的 file_hash（InitReq thrift 模型无此字段，直读 JSON）。
+	// 客户端预计算 SHA-256 用于秒传判断。
+	fileHash := ""
+	var hashBody struct {
+		FileHash string `json:"file_hash"`
+	}
+	if b := c.Request.Body(); len(b) > 0 {
+		_ = json.Unmarshal(b, &hashBody)
+		fileHash = strings.TrimSpace(hashBody.FileHash)
+	}
+
+	// 秒传：同哈希+同大小的未过期分享已存在 → 免直传直接出码。
+	// 响应用自定义 map（InitData thrift 模型无 existed/share_code 字段）。
+	if fileHash != "" {
+		if qu, err := getService().CheckQuickUpload(ctx, fileHash, req.FileSize); err == nil && qu != nil {
+			resp.Success(c, map[string]interface{}{
+				"upload_id":      "",
+				"is_quick":       true,
+				"existed":        true,
+				"share_code":     qu.ShareCode,
+				"share_url":      qu.FullShareURL,
+				"download_token": security.GenerateDownloadToken(qu.ShareCode),
+			})
+			return
+		}
+	}
+
 	// 密码保护:require_auth 时密码必填,bcrypt 哈希后随 meta 存储
 	// (修复:此前密码未传,导致大文件分享的密码保护形同虚设)
 	passwordHash := ""
@@ -109,7 +157,7 @@ func Complete(ctx context.Context, c *app.RequestContext) {
 		resp.NewErrorWithMessage(c, errcode.CodeInvalidParam, err.Error())
 		return
 	}
-	ownerIP := clientIP(c)
+	ownerIP := middleware.ClientIP(c)
 	result, err := getService().Complete(ctx, req.UploadID, req.Token, ownerIP)
 	if err != nil {
 		// 区分 token 校验错误 vs share 写入错误
@@ -132,6 +180,12 @@ func Complete(ctx context.Context, c *app.RequestContext) {
 	if downloadURL == "" {
 		downloadURL = result.ShareURL
 	}
+	// 下载令牌：让上传者拿到带令牌的取件链接（security.download_token.enabled 时必需）
+	if result.ShareCode != "" {
+		if tk := security.GenerateDownloadToken(result.ShareCode); tk != "" {
+			downloadURL = appendQueryParam(downloadURL, "token", tk)
+		}
+	}
 	resp.Success(c, &presignmodel.CompleteData{
 		Code:        result.ShareCode,
 		URL:         result.ShareURL,
@@ -141,20 +195,16 @@ func Complete(ctx context.Context, c *app.RequestContext) {
 	})
 }
 
-// clientIP 取客户端 IP（X-Forwarded-For 优先，其次 RemoteAddr）
-func clientIP(c *app.RequestContext) string {
-	if xff := string(c.GetHeader("X-Forwarded-For")); xff != "" {
-		for i := 0; i < len(xff); i++ {
-			if xff[i] == ',' {
-				return xff[:i]
-			}
-		}
-		return xff
+// clientIP 已迁移到 pkg/middleware.ClientIP（可信代理解析，防伪造 XFF 绕过限流）
+func clientIP(c *app.RequestContext) string { return middleware.ClientIP(c) }
+
+// appendQueryParam 向 URL 追加查询参数（处理既有 ? 与 &，容错相对路径）
+func appendQueryParam(rawURL, key, val string) string {
+	sep := "?"
+	if strings.Contains(rawURL, "?") {
+		sep = "&"
 	}
-	if xri := string(c.GetHeader("X-Real-IP")); xri != "" {
-		return xri
-	}
-	return c.RemoteAddr().String()
+	return rawURL + sep + key + "=" + val
 }
 
 // Abort .

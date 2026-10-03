@@ -5,13 +5,19 @@
 package notify
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
+	"go.uber.org/zap"
 	"gorm.io/gorm"
 
+	"github.com/filescodebox/core/pkg/logger"
 	"github.com/filescodebox/core/repo/db/dao"
 	"github.com/filescodebox/core/repo/db/model"
 )
@@ -25,6 +31,7 @@ var (
 // Service 通知 service
 type Service struct {
 	notifyRepo *dao.NotifyRepository
+	webhookURL string // 外部 Webhook 推送地址（空 = 禁用）
 }
 
 // NewService 创建 service（内部自建 repo，走全局 db.GetDB()）
@@ -378,5 +385,67 @@ func (s *Service) CreateForUser(ctx context.Context, userID uint, title, content
 // CreateForUserSimple 简化版（返回 error，匹配 share.NotifyServiceInterface）
 func (s *Service) CreateForUserSimple(ctx context.Context, userID uint, title, content, notifyType, level string) error {
 	_, err := s.CreateForUser(ctx, userID, title, content, notifyType, level)
+	// 外部 Webhook 推送（fire-and-forget；对标上游缺口，双方都缺的外部通知渠道）
+	if err == nil {
+		s.dispatchWebhook(ctx, userID, title, content, notifyType, level)
+	}
 	return err
+}
+
+// ==================== Webhook 外部通知渠道 ====================
+
+// SetWebhookURL 注入 Webhook 推送地址（bootstrap 从 notify.webhook.url / FCB_WEBHOOK_URL 注入；
+// 空串 = 禁用）。推送失败只记日志，绝不影响站内信主流程。
+func (s *Service) SetWebhookURL(url string) {
+	s.webhookURL = strings.TrimSpace(url)
+}
+
+// webhookPayload Webhook POST 的 JSON 载荷
+type webhookPayload struct {
+	Event      string `json:"event"`
+	Title      string `json:"title"`
+	Content    string `json:"content"`
+	NotifyType string `json:"notify_type"`
+	Level      string `json:"level"`
+	UserID     uint   `json:"user_id"`
+	Timestamp  int64  `json:"timestamp"`
+}
+
+// dispatchWebhook 异步推送（5s 超时，失败静默记日志）
+func (s *Service) dispatchWebhook(ctx context.Context, userID uint, title, content, notifyType, level string) {
+	if s.webhookURL == "" {
+		return
+	}
+	payload := webhookPayload{
+		Event:      "notify.created",
+		Title:      title,
+		Content:    content,
+		NotifyType: notifyType,
+		Level:      level,
+		UserID:     userID,
+		Timestamp:  time.Now().Unix(),
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+	go func() {
+		defer func() { _ = recover() }()
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.webhookURL, bytes.NewReader(body))
+		if err != nil {
+			return
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-FCB-Event", "notify.created")
+		client := &http.Client{Timeout: 5 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			logger.Warn("webhook push failed", zap.String("url", s.webhookURL), zap.Error(err))
+			return
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode >= 300 {
+			logger.Warn("webhook push non-2xx", zap.String("url", s.webhookURL), zap.Int("status", resp.StatusCode))
+		}
+	}()
 }

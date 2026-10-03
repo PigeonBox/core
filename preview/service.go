@@ -45,7 +45,7 @@ func InitService(cfg *Config) error {
 func GetService() *Service {
 	if svc == nil {
 		// 使用默认配置初始化
-		InitService(nil)
+		_ = InitService(nil)
 	}
 	return svc
 }

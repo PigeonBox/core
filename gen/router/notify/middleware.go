@@ -4,6 +4,7 @@ package notify
 
 import (
 	"github.com/cloudwego/hertz/pkg/app"
+	"github.com/filescodebox/core/pkg/middleware"
 )
 
 func rootMw() []app.HandlerFunc {
@@ -11,9 +12,12 @@ func rootMw() []app.HandlerFunc {
 	return nil
 }
 
+// _adminMw 安全修复：/admin/notifies 管理 CRUD 此前完全无认证，
+// 现挂管理员中间件。公开端点 /notifies/active 不在 /admin 组，不受影响。
 func _adminMw() []app.HandlerFunc {
-	// your code...
-	return nil
+	return []app.HandlerFunc{
+		middleware.AdminMiddleware(),
+	}
 }
 
 func _notifiesMw() []app.HandlerFunc {
