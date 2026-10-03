@@ -33,6 +33,16 @@ import (
 	"github.com/google/uuid"
 )
 
+// userIDAny 读请求身份：JWT 走 c.Set（OptionalAuthMiddleware），API Key 走 ctx 值
+// （validateAPIKey newCtx）。两条注入路径并存，必须都查（回归：此前只查 ctx，
+// JWT 用户的 custom_code/配额归属全部静默失效）。
+func userIDAny(ctx context.Context, c *app.RequestContext) (uint, bool) {
+	if v, ok := middleware.UserIDFromContext(ctx); ok {
+		return v, true
+	}
+	return userIDFromCtx(c)
+}
+
 // multiChunkSvc 多文件绑定的 chunk 会话查询（chunk.Service 无状态，DAO 惰性）
 func multiChunkSvc() *chunk.Service {
 	return chunk.NewService()
@@ -135,7 +145,7 @@ func finishMultiCommon(ctx context.Context, c *app.RequestContext, expireValue i
 		}
 		p.PasswordHash = hash
 	}
-	if v, ok := middleware.UserIDFromContext(ctx); ok {
+	if v, ok := userIDAny(ctx, c); ok {
 		p.UserID = &v
 		p.UploadType = "authenticated"
 		// 自定义取件码（P3）：仅登录用户可指定（防匿名抢注）
@@ -205,7 +215,7 @@ func MultiShareDirect(ctx context.Context, c *app.RequestContext) {
 
 	// 上传闸门 + 匿名日配额（合计一次校验，先于落盘——治理回归要点）
 	var gateUserID *uint
-	if v, ok := middleware.UserIDFromContext(ctx); ok {
+	if v, ok := userIDAny(ctx, c); ok {
 		gateUserID = &v
 	}
 	if err := gate.CheckUploadAllowed(gateUserID); err != nil {
@@ -366,7 +376,7 @@ func MultiShareBind(ctx context.Context, c *app.RequestContext) {
 	_ = body.Encrypted
 
 	var gateUserID *uint
-	if v, ok := middleware.UserIDFromContext(ctx); ok {
+	if v, ok := userIDAny(ctx, c); ok {
 		gateUserID = &v
 	}
 	if err := gate.CheckUploadAllowed(gateUserID); err != nil {

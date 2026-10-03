@@ -226,9 +226,15 @@ func (s *Service) createWithCode(ctx context.Context, customCode string, build f
 	if !validCustomCode(customCode) {
 		return nil, errors.New("自定义取件码需为 3-32 位字母、数字、- 或 _")
 	}
+	// 预检占用（glebarez/sqlite 驱动的唯一冲突不映射 gorm.ErrDuplicatedKey，
+	// 直接撞唯一索引会漏出裸 SQL 错误；先查再建 + 落库兜底双保险）
+	if exists, err := s.fileCodeRepo.CheckCodeExists(ctx, customCode, 0); err == nil && exists {
+		return nil, errors.New("自定义取件码已被占用，请换一个")
+	}
 	fc := build(customCode)
 	if err := s.fileCodeRepo.Create(ctx, fc); err != nil {
-		if errors.Is(err, gorm.ErrDuplicatedKey) {
+		if errors.Is(err, gorm.ErrDuplicatedKey) ||
+			strings.Contains(err.Error(), "UNIQUE constraint failed") {
 			return nil, errors.New("自定义取件码已被占用，请换一个")
 		}
 		return nil, err
