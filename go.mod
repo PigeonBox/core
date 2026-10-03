@@ -6,10 +6,7 @@ require (
 	github.com/alicebob/miniredis/v2 v2.38.0
 	github.com/cloudwego/hertz v0.9.6
 	github.com/disintegration/imaging v1.6.2
-	// NOTE: contracts v0.2.0 新增错误码（10011/20010/20011/30011/30012）。
-	// 本地 go.work 联编使用工作区内的 contracts（含新码）；
-	// 发布 core v0.3.0 前必须先 tag contracts v0.2.0，并将下行升为 v0.2.0。
-	github.com/filescodebox/contracts v0.1.0
+	github.com/filescodebox/contracts v0.2.0
 	github.com/glebarez/sqlite v1.11.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0
