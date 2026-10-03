@@ -3,6 +3,8 @@ package utils
 import (
 	"bytes"
 	"strings"
+
+	"github.com/filescodebox/core/pkg/metrics"
 )
 
 // magicSignature 内容魔数签名（前缀匹配）。
@@ -45,12 +47,14 @@ func MatchBlockedMagic(head []byte) (string, bool) {
 // head 可为 nil（调用方拿不到内容头时只做扩展名检查）。
 func CheckUploadContent(filename string, head []byte) error {
 	if !IsAllowedExtension(filename) {
+		metrics.RecordRejected(metrics.RejectType)
 		return ErrFileTypeNotAllowed
 	}
 	if len(head) > 0 && GetEnableMagicCheck() {
 		ext := strings.ToLower(filenameExt(filename))
 		if !magicCheckSkipExts[ext] {
 			if name, hit := MatchBlockedMagic(head); hit {
+				metrics.RecordRejected(metrics.RejectType)
 				return &MagicMismatchError{Signature: name}
 			}
 		}

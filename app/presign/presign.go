@@ -327,6 +327,7 @@ func (s *Service) createShareRecord(ctx context.Context, meta *InitMeta, ownerIP
 	}
 
 	req := &share.ShareFileReq{
+		Channel: "presign",
 		FilePath:     meta.ObjectKey,
 		Size:         meta.FileSize,
 		Text:         utils.SanitizeFileName(meta.FileName),

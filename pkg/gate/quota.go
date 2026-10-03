@@ -16,6 +16,7 @@ import (
 	"github.com/filescodebox/contracts/errcode"
 	"github.com/filescodebox/core/conf"
 	"github.com/filescodebox/core/pkg/logger"
+	"github.com/filescodebox/core/pkg/metrics"
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 )
@@ -73,10 +74,12 @@ func CheckAnonymousQuota(ctx context.Context, ip string, addBytes int64) error {
 	}
 
 	if maxCount > 0 && curCount > maxCount {
+		metrics.RecordRejected(metrics.RejectAnonQuota)
 		return newGateErr(errcode.CodeAnonymousQuota,
 			"今日上传次数已达上限（%d 次/日），请明日再试或登录后使用", maxCount)
 	}
 	if maxBytes > 0 && curBytes > maxBytes {
+		metrics.RecordRejected(metrics.RejectAnonQuota)
 		return newGateErr(errcode.CodeAnonymousQuota,
 			"今日上传流量已达上限（%d 字节/日），请明日再试或登录后使用", maxBytes)
 	}

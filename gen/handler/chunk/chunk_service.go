@@ -575,6 +575,7 @@ func ChunkUploadComplete(ctx context.Context, c *app.RequestContext) {
 
 	// 创建分享记录
 	shareReq := &shareService.ShareFileReq{
+		Channel:      "chunk",
 		FilePath:     relativePath,
 		Size:         info.FileSize,
 		Text:         utils.SanitizeFileName(info.FileName),

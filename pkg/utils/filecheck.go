@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/filescodebox/core/conf"
+	"github.com/filescodebox/core/pkg/metrics"
 )
 
 // ErrFileTooLarge 文件超过允许大小
@@ -133,6 +134,7 @@ func IsBlockedExtension(filename string, blacklist []string) bool {
 // maxSize <= 0 表示不限制。
 func CheckUploadSize(fileSize, maxSize int64) error {
 	if maxSize > 0 && fileSize > maxSize {
+		metrics.RecordRejected(metrics.RejectSize)
 		return ErrFileTooLarge
 	}
 	return nil

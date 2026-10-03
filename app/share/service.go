@@ -12,6 +12,7 @@ import (
 	"github.com/filescodebox/contracts/errcode"
 	"github.com/filescodebox/core/app/moderation"
 	"github.com/filescodebox/core/pkg/logger"
+	"github.com/filescodebox/core/pkg/metrics"
 	"github.com/filescodebox/core/pkg/utils"
 	"github.com/filescodebox/core/repo/db"
 	"github.com/filescodebox/core/repo/db/dao"
@@ -33,6 +34,7 @@ type ShareTextReq struct {
 }
 
 type ShareFileReq struct {
+	Channel      string // 上传通道（direct/chunk/presign/anonymous，metrics 用；可空）
 	FilePath     string
 	Size         int64
 	Text         string
@@ -274,8 +276,11 @@ func (s *Service) ShareTextWithAuth(ctx context.Context, text string, expireValu
 	if s.moderator != nil {
 		switch s.moderator.InspectText(ctx, text) {
 		case moderation.VerdictReject:
+			metrics.RecordModerationHit("reject")
+			metrics.RecordRejected(metrics.RejectModerated)
 			return nil, &ContentRejectedError{}
 		case moderation.VerdictPending:
+			metrics.RecordModerationHit("pending")
 			pendingReview = true
 		}
 	}
@@ -345,6 +350,7 @@ func (s *Service) CreateShare(ctx context.Context, req *ShareFileReq) (*ShareRes
 
 	// 存储配额强制执行（此前字段存在但从未生效）
 	if err := s.checkQuota(ctx, req.UserID, req.Size); err != nil {
+		metrics.RecordRejected(metrics.RejectQuota)
 		return nil, err
 	}
 
@@ -380,6 +386,14 @@ func (s *Service) CreateShare(ctx context.Context, req *ShareFileReq) (*ShareRes
 		}
 	}
 
+	// 业务 metrics（治理）：channel 缺省按 upload_type 记
+	channel := req.Channel
+	if channel == "" {
+		channel = req.UploadType
+	}
+	metrics.RecordUploadBytes(channel, req.Size)
+	metrics.RecordShareCreated(req.UploadType)
+
 	return s.modelToResp(fileCode), nil
 }
 
@@ -399,6 +413,7 @@ func (s *Service) GetFileByCode(ctx context.Context, code string) (*model.FileCo
 
 	// 管控状态：blocked / pending_review 拒绝取件（typed error，handler 按业务码透传）
 	if fileCode.IsBlockedShare() {
+		metrics.RecordRejected(metrics.RejectBlocked)
 		return nil, &ShareBlockedError{Status: fileCode.Status}
 	}
 

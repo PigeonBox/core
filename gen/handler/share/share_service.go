@@ -334,6 +334,7 @@ func ShareFile(ctx context.Context, c *app.RequestContext) {
 
 	// 11. 构建分享请求
 	shareReq := &shareService.ShareFileReq{
+		Channel:      "direct",
 		FilePath:     result.FilePath,
 		Size:         result.FileSize,
 		Text:         originalFilename, // 存储原始文件名

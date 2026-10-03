@@ -13,6 +13,7 @@ import (
 
 	"github.com/filescodebox/contracts/errcode"
 	"github.com/filescodebox/core/conf"
+	"github.com/filescodebox/core/pkg/metrics"
 )
 
 // GateError 携带业务码的闸门拒绝错误，handler 侧按 ErrCode 透传给前端。
@@ -58,6 +59,7 @@ func downloadRequireLogin() bool {
 // 登录用户（userID != nil）不受该开关限制。
 func CheckUploadAllowed(userID *uint) error {
 	if userID == nil && !uploadOpen() {
+		metrics.RecordRejected(metrics.RejectDisabled)
 		return ErrUploadDisabled
 	}
 	return nil
@@ -66,6 +68,7 @@ func CheckUploadAllowed(userID *uint) error {
 // CheckUploadLogin 上传登录要求（upload.require_login）。
 func CheckUploadLogin(userID *uint) error {
 	if userID == nil && uploadRequireLogin() {
+		metrics.RecordRejected(metrics.RejectDisabled)
 		return ErrLoginRequired
 	}
 	return nil
