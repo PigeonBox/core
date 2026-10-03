@@ -43,6 +43,14 @@ func SetStorage(st storage.StorageInterface) {
 	storageSvc = st
 }
 
+// SetShareService 注入共享的 share service 实例（bootstrap 调用）。
+// 回归（治理 2026-10-03）：此前未注入，/share/text|file|select|download 走
+// getShareService() 懒加载裸实例，quotaChecker/notify/userService/moderator
+// 等注入全部缺失——直传通道的存储配额与审核钩子形同虚设。
+func SetShareService(s *shareService.Service) {
+	shareSvc = s
+}
+
 func getStorageService() storage.StorageInterface {
 	if storageSvc == nil {
 		storageSvc = storage.NewStorageService(&storage.StorageConfig{
@@ -158,10 +166,7 @@ func ShareText(ctx context.Context, c *app.RequestContext) {
 		ownerIP,
 	)
 	if err != nil {
-		c.JSON(consts.StatusInternalServerError, map[string]interface{}{
-			"code":    500,
-			"message": err.Error(),
-		})
+		resp.NewTypedError(c, err) // typed error（如审核 30013）按业务码透传
 		return
 	}
 
@@ -351,10 +356,7 @@ func ShareFile(ctx context.Context, c *app.RequestContext) {
 	// 12. 调用 service 创建分享记录
 	shareResult, err := getShareService().ShareFile(ctx, shareReq)
 	if err != nil {
-		c.JSON(consts.StatusInternalServerError, map[string]interface{}{
-			"code":    500,
-			"message": fmt.Sprintf("创建分享记录失败: %v", err),
-		})
+		resp.NewTypedError(c, err) // 配额/审核等 typed error 按业务码透传
 		return
 	}
 

@@ -54,6 +54,13 @@ func SetStorage(st storage.StorageInterface) {
 	storageSvc = st
 }
 
+// SetShareService 注入共享的 share service 实例（bootstrap 调用）。
+// 回归（治理 2026-10-03）：此前 Complete 建分享走懒加载裸实例，
+// 配额/单次上限/审核注入全部缺失。
+func SetShareService(s *shareService.Service) {
+	shareSvc = s
+}
+
 func getStorageService() storage.StorageInterface {
 	if storageSvc == nil {
 		storageSvc = storage.NewStorageService(&storage.StorageConfig{

@@ -1070,6 +1070,9 @@ func initThriftIDLServices(database *gorm.DB) {
 	// 2.1 注入 share service（Complete 时写分享表）
 	shareSvc := shareService.NewService(baseURL, getBootstrapStorageService())
 	presignHandler.SetShareService(shareSvc)
+	// IDL share/chunk 路由此前未注入，走懒加载裸实例（配额/审核等注入缺失），统一共用
+	shareHandler.SetShareService(shareSvc)
+	chunkHandler.SetShareService(shareSvc)
 	// 2.1.1 注入存储服务（presign 直传按当前激活后端落盘）
 	presignHandler.SetStorage(getBootstrapStorageService())
 	// 2.1.2 注入真预签名直传能力（s3 后端时 Init 签发对象存储直传 URL）
