@@ -66,7 +66,7 @@ func (s *Service) InitiateUpload(ctx context.Context, req *InitiateUploadReq) (*
 	if err := utils.CheckUploadSize(req.FileSize, utils.GetMaxFileSize()); err != nil {
 		return nil, fmt.Errorf("文件过大: 最大允许 %d 字节", utils.GetMaxFileSize())
 	}
-	if utils.IsBlockedExtension(req.FileName, utils.DefaultBlockedExtensions()) {
+	if !utils.IsAllowedExtension(req.FileName) {
 		return nil, fmt.Errorf("该文件类型禁止上传")
 	}
 

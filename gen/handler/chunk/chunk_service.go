@@ -20,7 +20,9 @@ import (
 	chunkmodel "github.com/filescodebox/contracts/gen/chunk"
 	chunkService "github.com/filescodebox/core/app/chunk"
 	shareService "github.com/filescodebox/core/app/share"
+	"github.com/filescodebox/core/pkg/gate"
 	"github.com/filescodebox/core/pkg/middleware"
+	"github.com/filescodebox/core/pkg/resp"
 	"github.com/filescodebox/core/pkg/security"
 	"github.com/filescodebox/core/pkg/utils"
 	"github.com/filescodebox/core/storage"
@@ -73,6 +75,16 @@ func getShareService() *shareService.Service {
 // ChunkUploadInit .
 // @router /chunk/upload/init/ [POST]
 func ChunkUploadInit(ctx context.Context, c *app.RequestContext) {
+	// 上传闸门：匿名总开关 + 登录要求（chunk 为纯匿名通道，服务端 enforce）
+	if err := gate.CheckUploadAllowed(nil); err != nil {
+		resp.NewTypedError(c, err)
+		return
+	}
+	if err := gate.CheckUploadLogin(nil); err != nil {
+		resp.NewTypedError(c, err)
+		return
+	}
+
 	var err error
 	var req chunkmodel.ChunkUploadInitReq
 	err = c.BindAndValidate(&req)
@@ -419,7 +431,9 @@ func ChunkUploadComplete(ctx context.Context, c *app.RequestContext) {
 	// → file_hash 恒空 → 分片通道秒传永不命中。
 	var head []byte
 	fileHash := ""
-	if rc, _, rerr := getStorageService().GetFileReader(ctx, relativePath); rerr == nil {
+	var actualSize int64
+	if rc, fsize, rerr := getStorageService().GetFileReader(ctx, relativePath); rerr == nil {
+		actualSize = fsize
 		// 先读 512 字节做魔数复检，再以 MultiReader 把头部拼回流算整文件哈希
 		//（ReadCloser 不保证可 Seek，不能回卷）
 		head = readHeadFrom(rc, 512)
@@ -439,6 +453,29 @@ func ChunkUploadComplete(ctx context.Context, c *app.RequestContext) {
 			c.JSON(consts.StatusBadRequest, map[string]interface{}{
 				"code":    errcode.CodeFileTypeDenied,
 				"message": err.Error(),
+			})
+			return
+		}
+	}
+
+	// 完整性复查：合并后实际大小 vs 上限/申报（修复：init 自报 FileSize 从未被复核，
+	// 可申报 1KB 实传任意大文件绕过 max_file_size；申报不符说明分片丢失或被篡改）
+	if actualSize > 0 {
+		if maxFile := utils.GetMaxFileSize(); maxFile > 0 && actualSize > maxFile {
+			_ = getStorageService().DeleteFile(ctx, relativePath)
+			_ = getChunkService().DeleteUpload(ctx, uploadID)
+			c.JSON(consts.StatusBadRequest, map[string]interface{}{
+				"code":    errcode.CodeTooLarge,
+				"message": fmt.Sprintf("合并后文件大小 %d 字节超过上限 %d 字节", actualSize, maxFile),
+			})
+			return
+		}
+		if info.FileSize > 0 && actualSize != info.FileSize {
+			_ = getStorageService().DeleteFile(ctx, relativePath)
+			_ = getChunkService().DeleteUpload(ctx, uploadID)
+			c.JSON(consts.StatusBadRequest, map[string]interface{}{
+				"code":    errcode.CodeChunkInvalid,
+				"message": fmt.Sprintf("合并后文件大小 %d 与申报大小 %d 不符", actualSize, info.FileSize),
 			})
 			return
 		}

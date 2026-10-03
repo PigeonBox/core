@@ -86,6 +86,8 @@ type NotifyServiceInterface interface {
 // UserServiceInterface 定义用户服务接口，避免循环依赖
 type UserServiceInterface interface {
 	UpdateUserStats(userID uint, statsType string, value int64) error
+	// GetUploadSizeCap 生效的单次上传大小上限（管理员可为单用户降限；0=不限）
+	GetUploadSizeCap(ctx context.Context, userID uint) int64
 }
 
 // QuotaChecker 存储配额检查接口（bootstrap 注入 user service 实现）
@@ -255,9 +257,18 @@ func (s *Service) ShareFile(ctx context.Context, req *ShareFileReq) (*ShareResp,
 }
 
 // CreateShare 创建分享记录（ShareFile 的语义化别名，便于其他 service 调用）
-// 行为：配额检查 → 生成 code → 写 file_codes 表 → 返回 share_code / url
+// 行为：单用户上传上限检查 → 存储配额检查 → 生成 code → 写 file_codes 表 → 返回 share_code / url
 func (s *Service) CreateShare(ctx context.Context, req *ShareFileReq) (*ShareResp, error) {
 	s.ensureRepository()
+
+	// 单用户单次上传上限（users.max_upload_size 接线，0=不限；匿名无此约束）
+	if req.UserID != nil && s.userService != nil {
+		if capSize := s.userService.GetUploadSizeCap(ctx, *req.UserID); capSize > 0 {
+			if err := utils.CheckUploadSize(req.Size, capSize); err != nil {
+				return nil, fmt.Errorf("单次上传大小超过限制（上限 %d 字节）", capSize)
+			}
+		}
+	}
 
 	// 存储配额强制执行（此前字段存在但从未生效）
 	if err := s.checkQuota(ctx, req.UserID, req.Size); err != nil {

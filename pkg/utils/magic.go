@@ -37,20 +37,17 @@ func MatchBlockedMagic(head []byte) (string, bool) {
 	return "", false
 }
 
-// CheckUploadContent 组合校验：扩展名（黑名单/白名单）+ 魔数。
-//   - 白名单非空时：扩展名必须在白名单内（白名单优先，对标上游）
-//   - 黑名单命中：拒绝
-//   - 魔数命中且扩展名不在 skip 列表：拒绝（防"jpg.exe 改名 cat.jpg"）
+// CheckUploadContent 组合校验：扩展名准入（白/黑名单）+ 魔数。
+//   - IsAllowedExtension（白名单未命中 / 黑名单命中）→ 拒绝
+//   - 魔数命中（开关 upload.enable_magic_check 开、head 非空、扩展名不在 skip 列表）→ 拒绝
+//     防"jpg.exe 改名 cat.jpg"
 //
 // head 可为 nil（调用方拿不到内容头时只做扩展名检查）。
 func CheckUploadContent(filename string, head []byte) error {
-	if IsAllowedExtension(filename) {
-		return nil
-	}
-	if IsBlockedExtension(filename, DefaultBlockedExtensions()) {
+	if !IsAllowedExtension(filename) {
 		return ErrFileTypeNotAllowed
 	}
-	if len(head) > 0 {
+	if len(head) > 0 && GetEnableMagicCheck() {
 		ext := strings.ToLower(filenameExt(filename))
 		if !magicCheckSkipExts[ext] {
 			if name, hit := MatchBlockedMagic(head); hit {

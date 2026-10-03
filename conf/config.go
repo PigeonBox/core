@@ -129,6 +129,9 @@ type UploadConfig struct {
 	// AllowedExtensions 扩展名白名单（如 [".jpg",".png",".pdf"]）。
 	// 非空时白名单优先：未命中的扩展名直接拒绝；空 = 黑名单模式。
 	AllowedExtensions []string `mapstructure:"allowed_extensions"`
+	// BlockedExtensions 扩展名黑名单（如 [".exe",".bat"]）。
+	// 非空时覆盖内置默认黑名单；空 = 使用内置默认（可执行文件类）。
+	BlockedExtensions []string `mapstructure:"blocked_extensions"`
 	// EnableMagicCheck 是否启用魔数校验（默认 true）。
 	EnableMagicCheck bool `mapstructure:"enable_magic_check"`
 	// AllowedExpireStyles 允许用户选择的过期样式（minute/hour/day/week/month/year/forever）。

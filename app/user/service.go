@@ -340,6 +340,25 @@ func (s *Service) SetUploadSize(ctx context.Context, userID uint, size int64) (*
 	return user.ToResp(), nil
 }
 
+// GetUploadSizeCap 生效的单次上传大小上限（接线：此前 users.max_upload_size
+// 字段存在但上传链路从不读取，管理员给用户降限无实际效果）。
+// 优先级：用户级 MaxUploadSize > 系统默认 user.user_upload_size；0 = 不限。
+// 用户不存在/查询失败返回 0（不阻断，配额类是运营约束）。
+func (s *Service) GetUploadSizeCap(ctx context.Context, userID uint) int64 {
+	s.ensureRepository()
+	user, err := s.repo.GetByID(ctx, userID)
+	if err != nil {
+		return 0
+	}
+	if user.MaxUploadSize > 0 {
+		return user.MaxUploadSize
+	}
+	if cfg := conf.GetGlobalConfig(); cfg != nil {
+		return cfg.User.UserUploadSize
+	}
+	return 0
+}
+
 // GetStats 获取用户统计信息
 func (s *Service) GetStats(ctx context.Context, userID uint) (*model.UserStats, error) {
 	s.ensureRepository()

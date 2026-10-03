@@ -275,9 +275,11 @@ var envBindings = map[string][]string{
 	// mcp
 	"mcp.enabled": {"FCB_MCP_ENABLED"},
 	// upload 安全项
-	"upload.text_max_bytes":     {"FCB_TEXT_MAX_BYTES"},
-	"upload.allowed_extensions": {"FCB_UPLOAD_ALLOWED_EXTENSIONS"},
-	"upload.enable_magic_check": {"FCB_ENABLE_MAGIC_CHECK"},
+	"upload.text_max_bytes":       {"FCB_TEXT_MAX_BYTES"},
+	"upload.allowed_extensions":   {"FCB_UPLOAD_ALLOWED_EXTENSIONS"},
+	"upload.blocked_extensions":   {"FCB_UPLOAD_BLOCKED_EXTENSIONS"},
+	"upload.enable_magic_check":   {"FCB_ENABLE_MAGIC_CHECK"},
+	"upload.max_save_seconds_cap": {"FCB_UPLOAD_MAX_SAVE_SECONDS_CAP"},
 	// rate_limit
 	"rate_limit.enabled":       {"FCB_RATE_LIMIT_ENABLED"},
 	"rate_limit.global_qps":    {"FCB_RATE_LIMIT_GLOBAL_QPS"},
@@ -288,6 +290,29 @@ var envBindings = map[string][]string{
 	"rate_limit.use_redis":     {"FCB_RATE_LIMIT_USE_REDIS"},
 }
 
+// listValuedKeys 值为列表（[]string）的配置 key：env 只能传字符串，
+// 需按逗号拆分后写入（viper Unmarshal 的 WeaklyTypedInput 不拆分逗号，
+// 会把 ".jpg,.png" 整串当单个元素——此前 allowed_extensions env 一直有此问题）。
+var listValuedKeys = map[string]bool{
+	"upload.allowed_extensions":    true,
+	"upload.blocked_extensions":    true,
+	"upload.allowed_expire_styles": true,
+	"security.trusted_proxies":     true,
+	"security.cors.allow_origins":  true,
+}
+
+// splitCSV 逗号分隔字符串 → 去空白去空的切片。
+func splitCSV(s string) []string {
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 // bindEnvironment 把环境变量绑定到 viper 配置 key。
 // 列表中靠前的 env 名优先（viper BindEnv 只绑定第一个非空）。
 func bindEnvironment(v *viper.Viper) {
@@ -296,7 +321,11 @@ func bindEnvironment(v *viper.Viper) {
 		// 因此我们逐个检查并显式设置，确保优先级正确。
 		for _, env := range envs {
 			if val, ok := os.LookupEnv(env); ok {
-				v.Set(key, val)
+				if listValuedKeys[key] {
+					v.Set(key, splitCSV(val))
+				} else {
+					v.Set(key, val)
+				}
 				break
 			}
 		}

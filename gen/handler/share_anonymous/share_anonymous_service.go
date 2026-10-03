@@ -15,6 +15,7 @@ import (
 	anonmodel "github.com/filescodebox/contracts/gen/share_anonymous"
 	anonapp "github.com/filescodebox/core/app/anonymous"
 	"github.com/filescodebox/contracts/errcode"
+	"github.com/filescodebox/core/pkg/gate"
 	"github.com/filescodebox/core/pkg/middleware"
 	"github.com/filescodebox/core/pkg/resp"
 	"github.com/filescodebox/core/pkg/security"
@@ -38,6 +39,16 @@ func getService() *anonapp.Service {
 // GenerateCode 上传文件时生成 6 位取件码（端到端：建 file_codes + 取件码映射）。
 // @router /anonymous/generate [POST]
 func GenerateCode(ctx context.Context, c *app.RequestContext) {
+	// 上传闸门：匿名总开关 + 登录要求（匿名取件码通道，服务端 enforce）
+	if err := gate.CheckUploadAllowed(nil); err != nil {
+		resp.NewTypedError(c, err)
+		return
+	}
+	if err := gate.CheckUploadLogin(nil); err != nil {
+		resp.NewTypedError(c, err)
+		return
+	}
+
 	var req anonmodel.GenerateCodeReq
 	if err := c.BindAndValidate(&req); err != nil {
 		resp.NewErrorWithMessage(c, errcode.CodeInvalidParam, err.Error())
@@ -48,13 +59,8 @@ func GenerateCode(ctx context.Context, c *app.RequestContext) {
 		resp.NewErrorWithMessage(c, errcode.CodeInvalidParam, "文件过大")
 		return
 	}
-	if utils.IsBlockedExtension(req.FileName, utils.DefaultBlockedExtensions()) {
+	if !utils.IsAllowedExtension(req.FileName) {
 		resp.NewErrorWithMessage(c, errcode.CodeInvalidParam, "该文件类型禁止上传")
-		return
-	}
-	// 白名单优先 + 文件名消毒（展示名入库前统一清洗）
-	if len(utils.GetAllowedExtensions()) > 0 && !utils.IsAllowedExtension(req.FileName) {
-		resp.NewErrorWithMessage(c, errcode.CodeInvalidParam, "该文件类型不在允许列表内")
 		return
 	}
 	safeName := utils.SanitizeFileName(req.FileName)
@@ -105,6 +111,12 @@ func GenerateCode(ctx context.Context, c *app.RequestContext) {
 // Retrieve 按取件码取件（校验密码 + 扣减次数，DB 为准）。
 // @router /anonymous/retrieve [POST]
 func Retrieve(ctx context.Context, c *app.RequestContext) {
+	// 下载闸门：download.require_login（服务端 enforce）
+	if err := gate.CheckDownloadLogin(nil); err != nil {
+		resp.NewTypedError(c, err)
+		return
+	}
+
 	var req anonmodel.RetrieveReq
 	if err := c.BindAndValidate(&req); err != nil {
 		resp.NewErrorWithMessage(c, errcode.CodeInvalidParam, err.Error())
@@ -168,6 +180,11 @@ func Download(ctx context.Context, c *app.RequestContext) {
 	code := c.Param("code")
 	if code == "" {
 		resp.NewErrorWithMessage(c, errcode.CodeInvalidParam, "code required")
+		return
+	}
+	// 下载闸门：download.require_login（服务端 enforce）
+	if err := gate.CheckDownloadLogin(nil); err != nil {
+		resp.NewTypedError(c, err)
 		return
 	}
 	// 复用 share 服务的下载逻辑；服务端签发下载令牌随重定向携带

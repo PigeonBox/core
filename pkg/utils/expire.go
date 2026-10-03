@@ -70,7 +70,18 @@ func ParseExpireParams(expireValueStr, expireStyle, requireAuthStr string) (*Exp
 	}, nil
 }
 
-// CalculateExpireTime 计算过期时间
+// GetMaxSaveSecondsCap 全局过期时间上限（秒），upload.max_save_seconds_cap，0 = 不限。
+func GetMaxSaveSecondsCap() int64 {
+	cfg := conf.GetGlobalConfig()
+	if cfg == nil {
+		return 0
+	}
+	return cfg.Upload.MaxSaveSecondsCap
+}
+
+// CalculateExpireTime 计算过期时间。
+// 全局上限钳制：upload.max_save_seconds_cap > 0 且时长超过上限时钳到上限
+// （此前该配置定义了但无任何调用方，形同虚设）。
 func CalculateExpireTime(expireValue int, expireStyle string) *time.Time {
 	if expireStyle == "forever" {
 		return nil
@@ -101,6 +112,10 @@ func CalculateExpireTime(expireValue int, expireStyle string) *time.Time {
 		duration = time.Duration(expireValue) * 365 * 24 * time.Hour
 	default:
 		duration = time.Duration(expireValue) * 24 * time.Hour
+	}
+
+	if cap := GetMaxSaveSecondsCap(); cap > 0 && duration > time.Duration(cap)*time.Second {
+		duration = time.Duration(cap) * time.Second
 	}
 
 	expireTime := time.Now().Add(duration)

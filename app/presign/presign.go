@@ -151,16 +151,12 @@ func (s *Service) Init(ctx context.Context, meta InitMeta) (*InitResult, error) 
 	if err := utils.CheckUploadSize(meta.FileSize, utils.GetMaxFileSize()); err != nil {
 		return nil, fmt.Errorf("文件过大: 最大允许 %d 字节", utils.GetMaxFileSize())
 	}
-	if utils.IsBlockedExtension(meta.FileName, utils.DefaultBlockedExtensions()) {
+	if !utils.IsAllowedExtension(meta.FileName) {
 		return nil, fmt.Errorf("该文件类型禁止上传")
 	}
 	// 过期样式白名单
 	if err := utils.CheckExpireStyleAllowed(meta.ExpireStyle); err != nil {
 		return nil, err
-	}
-	// 白名单优先（配置非空时生效）
-	if len(utils.GetAllowedExtensions()) > 0 && !utils.IsAllowedExtension(meta.FileName) {
-		return nil, fmt.Errorf("该文件类型不在允许列表内")
 	}
 	// 文件名消毒（展示/落库用原始名；磁盘路径与 ObjectKey 均服务端生成）
 	meta.FileName = utils.SanitizeFileName(meta.FileName)

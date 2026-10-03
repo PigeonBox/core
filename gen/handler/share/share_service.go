@@ -18,6 +18,7 @@ import (
 	sharemodel "github.com/filescodebox/contracts/gen/share"
 	shareService "github.com/filescodebox/core/app/share"
 	"github.com/filescodebox/core/conf"
+	"github.com/filescodebox/core/pkg/gate"
 	"github.com/filescodebox/core/pkg/middleware"
 	"github.com/filescodebox/core/pkg/resp"
 	"github.com/filescodebox/core/pkg/security"
@@ -32,9 +33,8 @@ var storageSvc storage.StorageInterface
 
 // 配置常量（应从配置读取，这里使用默认值）
 const (
-	defaultMaxUploadSize = 10485760 // 10MB
-	defaultStoragePath   = "./data/uploads"
-	defaultBaseURL       = "http://localhost:12345"
+	defaultStoragePath = "./data/uploads"
+	defaultBaseURL     = "http://localhost:12345"
 )
 
 // SetStorage 注入统一存储实例（bootstrap 调用；消除与 chunk 单例的路径基分歧）
@@ -107,6 +107,16 @@ func ShareText(ctx context.Context, c *app.RequestContext) {
 		if uidUint, ok := uid.(uint); ok {
 			userID = &uidUint
 		}
+	}
+
+	// 上传闸门：匿名总开关 + 登录要求（服务端 enforce，此前两开关只透传前端不校验）
+	if err := gate.CheckUploadAllowed(userID); err != nil {
+		resp.NewTypedError(c, err)
+		return
+	}
+	if err := gate.CheckUploadLogin(userID); err != nil {
+		resp.NewTypedError(c, err)
+		return
 	}
 
 	// 获取客户端 IP（可信代理解析）
@@ -207,11 +217,12 @@ func ShareFile(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
-	// 3. 检查文件大小
-	if file.Size > defaultMaxUploadSize {
+	// 3. 检查文件大小（upload.upload_size 单请求体上限，0=不限；
+	// 修复：此前硬编码 10MB 不读配置，调大 upload_size 对直传通道无效）
+	if maxSize := utils.GetMaxUploadSize(); maxSize > 0 && file.Size > maxSize {
 		c.JSON(consts.StatusBadRequest, map[string]interface{}{
-			"code":    400,
-			"message": fmt.Sprintf("文件大小超过限制（最大 %d MB）", defaultMaxUploadSize/1024/1024),
+			"code":    errcode.CodeTooLarge,
+			"message": fmt.Sprintf("文件大小超过限制（最大 %d MB）", maxSize/1024/1024),
 		})
 		return
 	}
@@ -271,6 +282,16 @@ func ShareFile(ctx context.Context, c *app.RequestContext) {
 		if uidUint, ok := uid.(uint); ok {
 			userID = &uidUint
 		}
+	}
+
+	// 8.5 上传闸门：匿名总开关 + 登录要求（服务端 enforce）
+	if err := gate.CheckUploadAllowed(userID); err != nil {
+		resp.NewTypedError(c, err)
+		return
+	}
+	if err := gate.CheckUploadLogin(userID); err != nil {
+		resp.NewTypedError(c, err)
+		return
 	}
 
 	// 9. 获取客户端 IP（可信代理解析）
@@ -496,6 +517,16 @@ func GetShare(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
+	// 下载闸门：download.require_login（服务端 enforce，此前只透传前端）
+	var pickupUserID *uint
+	if v, ok := middleware.UserIDFromContext(ctx); ok {
+		pickupUserID = &v
+	}
+	if err := gate.CheckDownloadLogin(pickupUserID); err != nil {
+		resp.NewTypedError(c, err)
+		return
+	}
+
 	// 失败锁定检查（防取件码/密码爆破）
 	lock := middleware.GetDefaultLockout()
 	lockKey := middleware.FormatLockKey("pickup", middleware.ClientIP(c), code)
@@ -601,6 +632,16 @@ func DownloadFile(ctx context.Context, c *app.RequestContext) {
 			"code":    400,
 			"message": "请提供分享码",
 		})
+		return
+	}
+
+	// 下载闸门：download.require_login（服务端 enforce）
+	var dlUserID *uint
+	if v, ok := middleware.UserIDFromContext(ctx); ok {
+		dlUserID = &v
+	}
+	if err := gate.CheckDownloadLogin(dlUserID); err != nil {
+		resp.NewTypedError(c, err)
 		return
 	}
 

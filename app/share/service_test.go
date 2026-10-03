@@ -99,6 +99,7 @@ func (m *mockStorage) CleanChunks(_ context.Context, _ string) error { return ni
 type mockUserService struct {
 	uploadsCalls int64
 	storageDelta int64
+	uploadCap    int64
 }
 
 func newMockUserService() *mockUserService { return &mockUserService{} }
@@ -111,6 +112,10 @@ func (m *mockUserService) UpdateUserStats(_ uint, statsType string, value int64)
 		m.storageDelta += value
 	}
 	return nil
+}
+
+func (m *mockUserService) GetUploadSizeCap(_ context.Context, _ uint) int64 {
+	return m.uploadCap
 }
 
 // ===== mock: NotifyServiceInterface =====
@@ -369,4 +374,47 @@ func TestIsTextShare(t *testing.T) {
 	assert.False(t, IsTextShare(legacyFile))
 
 	assert.False(t, IsTextShare(nil))
+}
+
+// ---- 治理重构（2026-10-03）：单用户单次上传上限接线 ----
+
+func TestCreateShare_UserUploadSizeCap(t *testing.T) {
+	uid := uint(7)
+
+	t.Run("超上限拒绝", func(t *testing.T) {
+		svc, _, usr, _ := newTestService(t)
+		usr.uploadCap = 100
+		_, err := svc.CreateShare(context.Background(), &ShareFileReq{
+			FilePath: "a/b", Size: 200, ExpiredCount: -1, UserID: &uid,
+		})
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "单次上传大小超过限制")
+	})
+	t.Run("未超上限放行", func(t *testing.T) {
+		svc, _, usr, _ := newTestService(t)
+		usr.uploadCap = 100
+		resp, err := svc.CreateShare(context.Background(), &ShareFileReq{
+			FilePath: "a/b", Size: 50, ExpiredCount: -1, UserID: &uid,
+		})
+		assert.NoError(t, err)
+		assert.NotEmpty(t, resp.Code)
+	})
+	t.Run("匿名不受限", func(t *testing.T) {
+		svc, _, usr, _ := newTestService(t)
+		usr.uploadCap = 1
+		resp, err := svc.CreateShare(context.Background(), &ShareFileReq{
+			FilePath: "a/b", Size: 999, ExpiredCount: -1,
+		})
+		assert.NoError(t, err)
+		assert.NotEmpty(t, resp.Code)
+	})
+	t.Run("上限0不限", func(t *testing.T) {
+		svc, _, usr, _ := newTestService(t)
+		usr.uploadCap = 0
+		resp, err := svc.CreateShare(context.Background(), &ShareFileReq{
+			FilePath: "a/b", Size: 999999, ExpiredCount: -1, UserID: &uid,
+		})
+		assert.NoError(t, err)
+		assert.NotEmpty(t, resp.Code)
+	})
 }

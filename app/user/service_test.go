@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/filescodebox/core/conf"
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -153,4 +154,31 @@ func TestDelete(t *testing.T) {
 	require.NoError(t, svc.Delete(context.Background(), created.ID))
 	_, err = svc.GetByID(context.Background(), created.ID)
 	assert.Error(t, err)
+}
+
+// ---- 治理重构（2026-10-03）：GetUploadSizeCap 单用户单次上传上限 ----
+
+func TestGetUploadSizeCap(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+
+	t.Run("用户未设置回退系统默认", func(t *testing.T) {
+		old := conf.GetGlobalConfig()
+		conf.SetGlobalConfig(&conf.AppConfiguration{User: conf.UserConfig{UserUploadSize: 52428800}})
+		t.Cleanup(func() { conf.SetGlobalConfig(old) })
+		u, err := svc.Create(ctx, &CreateUserReq{Username: "cap1", Email: "cap1@example.com", Password: "x"})
+		require.NoError(t, err)
+		cap1 := svc.GetUploadSizeCap(ctx, u.ID)
+		assert.Equal(t, int64(52428800), cap1)
+	})
+	t.Run("用户级覆盖", func(t *testing.T) {
+		u, err := svc.Create(ctx, &CreateUserReq{Username: "cap2", Email: "cap2@example.com", Password: "x"})
+		require.NoError(t, err)
+		_, err = svc.SetUploadSize(ctx, u.ID, 1024)
+		require.NoError(t, err)
+		assert.Equal(t, int64(1024), svc.GetUploadSizeCap(ctx, u.ID))
+	})
+	t.Run("用户不存在返回0", func(t *testing.T) {
+		assert.Equal(t, int64(0), svc.GetUploadSizeCap(ctx, 99999))
+	})
 }

@@ -1,11 +1,13 @@
 package resp
 
 import (
+	stderrors "errors"
+
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
-	"github.com/google/uuid"
 	"github.com/filescodebox/contracts/errcode"
 	"github.com/filescodebox/core/pkg/errors"
+	"github.com/google/uuid"
 )
 
 // Response 全站统一响应 envelope
@@ -140,8 +142,13 @@ func httpStatusForCode(code int) int {
 		return consts.StatusForbidden
 	case code == errcode.CodeNotFound, code == errcode.CodeShareNotFound, code == errcode.CodeFileNotFound, code == errcode.CodePickupCodeNotFound, code == errcode.CodeUserNotFound:
 		return consts.StatusNotFound
-	case code == errcode.CodeRateLimit, code == errcode.CodeTooManyAttempts:
+	case code == errcode.CodeRateLimit, code == errcode.CodeTooManyAttempts, code == errcode.CodeAnonymousQuota:
 		return consts.StatusTooManyRequests
+	case code == errcode.CodeShareBlocked, code == errcode.CodeSharePendingReview,
+		code == errcode.CodeUploadDisabled, code == errcode.CodeIPBlocked:
+		return consts.StatusForbidden
+	case code == errcode.CodeContentRejected:
+		return consts.StatusBadRequest
 	case code == errcode.CodeDownloadToken, code == errcode.CodeSharePasswordWrong, code == errcode.CodePasswordWrong:
 		return consts.StatusUnauthorized
 	case code == errcode.CodeMethodNotAllowed:
@@ -159,6 +166,17 @@ func httpStatusForCode(code int) int {
 	default:
 		return consts.StatusOK
 	}
+}
+
+// NewTypedError 把实现 ErrCode() int 的 typed error（gate/moderation 等）写成
+// 业务错误响应；未实现该接口的错误按内部错误处理。
+func NewTypedError(c *app.RequestContext, err error) {
+	var coder interface{ ErrCode() int }
+	if stderrors.As(err, &coder) {
+		NewErrorWithMessage(c, coder.ErrCode(), err.Error())
+		return
+	}
+	NewErrorWithMessage(c, errcode.CodeInternal, err.Error())
 }
 
 func Page(c *app.RequestContext, list interface{}, total int64, page, pageSize int) {

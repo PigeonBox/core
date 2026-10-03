@@ -14,6 +14,7 @@ import (
 	"github.com/filescodebox/contracts/errcode"
 	presignmodel "github.com/filescodebox/contracts/gen/presign"
 	presignapp "github.com/filescodebox/core/app/presign"
+	"github.com/filescodebox/core/pkg/gate"
 	"github.com/filescodebox/core/pkg/middleware"
 	"github.com/filescodebox/core/pkg/resp"
 	"github.com/filescodebox/core/pkg/security"
@@ -64,6 +65,16 @@ func getService() *presignapp.Service {
 // Init .
 // @router /api/v1/presign/upload [POST]
 func Init(ctx context.Context, c *app.RequestContext) {
+	// 上传闸门：匿名总开关 + 登录要求（presign 为纯匿名通道，服务端 enforce）
+	if err := gate.CheckUploadAllowed(nil); err != nil {
+		resp.NewTypedError(c, err)
+		return
+	}
+	if err := gate.CheckUploadLogin(nil); err != nil {
+		resp.NewTypedError(c, err)
+		return
+	}
+
 	var req presignmodel.InitReq
 	if err := c.BindAndValidate(&req); err != nil {
 		resp.NewErrorWithMessage(c, errcode.CodeInvalidParam, err.Error())

@@ -58,12 +58,28 @@ func GetAllowedExtensions() []string {
 	return cfg.Upload.AllowedExtensions
 }
 
-// IsAllowedExtension 白名单校验（大小写不敏感）。
-// 白名单为空表示未启用，直接放行（退回黑名单模式）。
+// GetEnableMagicCheck 魔数校验开关（upload.enable_magic_check）。
+// 配置未初始化（测试/启动早期）按开处理，保持历史安全行为。
+func GetEnableMagicCheck() bool {
+	cfg := conf.GetGlobalConfig()
+	if cfg == nil {
+		return true
+	}
+	return cfg.Upload.EnableMagicCheck
+}
+
+// IsAllowedExtension 扩展名准入判定（大小写不敏感），组合白/黑名单：
+//   - 白名单非空：扩展名必须命中白名单，否则拒绝（无扩展名视同未命中）
+//   - 黑名单（可配置，空则用内置默认）永远生效，命中即拒绝——白名单命中也不能豁免
+//
+// 魔数检查不在此函数内，由 CheckUploadContent 编排。
 func IsAllowedExtension(filename string) bool {
+	if IsBlockedExtension(filename, GetBlockedExtensions()) {
+		return false
+	}
 	allowed := GetAllowedExtensions()
 	if len(allowed) == 0 {
-		return false
+		return true // 白名单未启用：不在黑名单即放行
 	}
 	ext := strings.ToLower(filepath.Ext(filename))
 	for _, a := range allowed {
@@ -71,7 +87,7 @@ func IsAllowedExtension(filename string) bool {
 			return true
 		}
 	}
-	return true // 有白名单但文件无扩展名：按未命中处理视为放行交给黑名单/魔数
+	return false
 }
 
 // defaultBlockedExtensions 默认拒绝的可执行文件扩展名
@@ -81,11 +97,21 @@ var defaultBlockedExtensions = []string{
 	".dll", ".so", ".dylib", ".app",
 }
 
-// DefaultBlockedExtensions 返回默认黑名单扩展名（返回副本，调用方可追加）
+// DefaultBlockedExtensions 返回内置默认黑名单扩展名（返回副本，调用方可追加）
 func DefaultBlockedExtensions() []string {
 	cp := make([]string, len(defaultBlockedExtensions))
 	copy(cp, defaultBlockedExtensions)
 	return cp
+}
+
+// GetBlockedExtensions 生效的黑名单扩展名：upload.blocked_extensions 非空时用配置，
+// 否则回退内置默认。黑名单永远参与校验（白名单命中也不能豁免）。
+func GetBlockedExtensions() []string {
+	cfg := conf.GetGlobalConfig()
+	if cfg != nil && len(cfg.Upload.BlockedExtensions) > 0 {
+		return cfg.Upload.BlockedExtensions
+	}
+	return DefaultBlockedExtensions()
 }
 
 // IsBlockedExtension 判断文件扩展名是否在黑名单（大小写不敏感）。
