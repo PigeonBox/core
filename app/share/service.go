@@ -310,13 +310,19 @@ func (s *Service) ShareTextWithAuth(ctx context.Context, text string, expireValu
 		return nil, err
 	}
 
-	// pending 策略：建分享成功后置 pending_review（取件路径拒绝），并推 share.flagged
+	// pending 策略：建分享成功后置 pending_review（取件路径拒绝），并推 share.flagged。
+	// fail-closed：置待审失败时回退为 blocked——审核拦截宁可误禁也不可静默放行。
 	if pendingReview {
-		if _, err := s.SetShareStatus(ctx, []uint{resp.ID}, model.StatusPendingReview); err != nil {
-			logger.Warn("set pending_review failed", zap.String("code", resp.Code), zap.Error(err))
-		} else {
-			resp.Status = model.StatusPendingReview // resp 是写库前快照，回填给调用方
+		target := model.StatusPendingReview
+		if _, err := s.SetShareStatus(ctx, []uint{resp.ID}, target); err != nil {
+			logger.Warn("set pending_review failed, fallback to blocked", zap.String("code", resp.Code), zap.Error(err))
+			target = model.StatusBlocked
+			if _, berr := s.SetShareStatus(ctx, []uint{resp.ID}, target); berr != nil {
+				logger.Error("pending fallback blocked failed, removing share", zap.String("code", resp.Code), zap.Error(berr))
+				_ = s.fileCodeRepo.Delete(ctx, resp.ID) // 文本分享无物理文件，直接删记录
+			}
 		}
+		resp.Status = target // resp 是写库前快照，回填给调用方
 		if s.flagEmitter != nil {
 			s.flagEmitter.EmitShareFlagged(resp.Code, "text sensitive word", ownerIP)
 		}
@@ -354,6 +360,29 @@ func (s *Service) CreateShare(ctx context.Context, req *ShareFileReq) (*ShareRes
 		return nil, err
 	}
 
+	// 文件审核钩子（治理）：直传/分片/秒传三通道共用本入口。
+	// reject 建分享前拦截；pending 建分享后置待审并推事件（与文本通道同策略）。
+	filePending := false
+	if s.moderator != nil {
+		meta := moderation.UploadMeta{
+			FileName:  req.Text, // 直传/分片把原始文件名存 Text
+			Size:      req.Size,
+			OwnerIP:   req.OwnerIP,
+			UserID:    req.UserID,
+			UploadID:  req.UploadID,
+			Channel:   req.Channel,
+		}
+		switch s.moderator.InspectFile(ctx, meta) {
+		case moderation.VerdictReject:
+			metrics.RecordModerationHit("reject")
+			metrics.RecordRejected(metrics.RejectModerated)
+			return nil, &ContentRejectedError{}
+		case moderation.VerdictPending:
+			metrics.RecordModerationHit("pending")
+			filePending = true
+		}
+	}
+
 	fileCode, err := s.createWithRetry(ctx, func(code string) *model.FileCode {
 		return &model.FileCode{
 			Code:         code,
@@ -383,6 +412,22 @@ func (s *Service) CreateShare(ctx context.Context, req *ShareFileReq) (*ShareRes
 		}
 		if err := s.userService.UpdateUserStats(*req.UserID, "storage", req.Size); err != nil {
 			logger.Warn("update user storage stat failed", zap.Error(err), zap.Uint("user_id", *req.UserID))
+		}
+	}
+
+	// 文件 pending 策略（fail-closed 同文本通道）
+	if filePending {
+		target := model.StatusPendingReview
+		if _, err := s.SetShareStatus(ctx, []uint{fileCode.ID}, target); err != nil {
+			target = model.StatusBlocked
+			if _, berr := s.SetShareStatus(ctx, []uint{fileCode.ID}, target); berr != nil {
+				logger.Error("file pending fallback blocked failed, removing share", zap.String("code", fileCode.Code), zap.Error(berr))
+				_ = s.fileCodeRepo.Delete(ctx, fileCode.ID)
+				return nil, &ContentRejectedError{}
+			}
+		}
+		if s.flagEmitter != nil {
+			s.flagEmitter.EmitShareFlagged(fileCode.Code, "file flagged by moderator", req.OwnerIP)
 		}
 	}
 
@@ -639,6 +684,7 @@ type UserShareListItem struct {
 	ViewerCount  int        `json:"viewer_count"`
 	IsExpired    bool       `json:"is_expired"`
 	IsTextShare  bool       `json:"is_text_share"`
+	Status       string     `json:"status"` // 管控状态：owner 有权知道自己被禁用/待审
 }
 
 // deletedAtToPtr gorm.DeletedAt → *time.Time（nil 表示未删除）
@@ -719,6 +765,7 @@ func toUserShareListItem(f *model.FileCode) *UserShareListItem {
 		ViewerAt:     f.ViewerAt,
 		ViewerCount:  f.ViewerCount,
 		IsExpired:    f.IsExpired(),
+		Status:       f.Status,
 		IsTextShare:  f.Text != "",
 	}
 	// 提取文件名

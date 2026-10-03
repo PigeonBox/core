@@ -65,7 +65,7 @@ func TestGenerateCode_Concurrent(t *testing.T) {
 	svc, _, _ := newTestService(t)
 	ctx := context.Background()
 	exp := time.Now().Add(time.Hour)
-	require.NoError(t, svc.fileCodeRepo.Create(ctx, &model.FileCode{Code: "SHARE_C", ExpiredCount: -1}))
+	require.NoError(t, svc.fileCodeRepo.Create(ctx, &model.FileCode{Code: "SHARE_C", FilePath: "uploads/x/SHARE_C.bin", ExpiredCount: -1}))
 
 	var wg sync.WaitGroup
 	codes := make(chan string, 50)
@@ -93,7 +93,7 @@ func TestGenerateCode_Concurrent(t *testing.T) {
 func TestRetrieve_HappyPath(t *testing.T) {
 	svc, _, _ := newTestService(t)
 	ctx := context.Background()
-	require.NoError(t, svc.fileCodeRepo.Create(ctx, &model.FileCode{Code: "SHARE1", ExpiredCount: 3}))
+	require.NoError(t, svc.fileCodeRepo.Create(ctx, &model.FileCode{Code: "SHARE1", FilePath: "uploads/x/SHARE1.bin", ExpiredCount: 3}))
 
 	code, err := svc.GenerateCode(ctx, CodeMeta{
 		ShareCode: "SHARE1", FileName: "f.txt", FileSize: 100, ContentType: "text/plain",
@@ -137,7 +137,7 @@ func TestRetrieve_Expired(t *testing.T) {
 func TestRetrieve_Exhausted(t *testing.T) {
 	svc, _, _ := newTestService(t)
 	ctx := context.Background()
-	require.NoError(t, svc.fileCodeRepo.Create(ctx, &model.FileCode{Code: "SHARE_EXH", ExpiredCount: 1}))
+	require.NoError(t, svc.fileCodeRepo.Create(ctx, &model.FileCode{Code: "SHARE_EXH", FilePath: "uploads/x/SHARE_EXH.bin", ExpiredCount: 1}))
 	code, err := svc.GenerateCode(ctx, CodeMeta{ShareCode: "SHARE_EXH"}, time.Now().Add(time.Hour))
 	require.NoError(t, err)
 
@@ -155,7 +155,7 @@ func TestRetrieve_PasswordWrong(t *testing.T) {
 	ctx := context.Background()
 	hash, err := utils.HashPassword("right")
 	require.NoError(t, err)
-	require.NoError(t, svc.fileCodeRepo.Create(ctx, &model.FileCode{Code: "SHARE_PW", ExpiredCount: -1, RequireAuth: true, PasswordHash: hash}))
+	require.NoError(t, svc.fileCodeRepo.Create(ctx, &model.FileCode{Code: "SHARE_PW", FilePath: "uploads/x/SHARE_PW.bin", ExpiredCount: -1, RequireAuth: true, PasswordHash: hash}))
 	code, err := svc.GenerateCode(ctx, CodeMeta{ShareCode: "SHARE_PW", RequireAuth: true}, time.Now().Add(time.Hour))
 	require.NoError(t, err)
 
@@ -174,7 +174,7 @@ func TestRetrieve_NoPasswordButRequired(t *testing.T) {
 	svc, _, _ := newTestService(t)
 	ctx := context.Background()
 	hash, _ := utils.HashPassword("secret")
-	require.NoError(t, svc.fileCodeRepo.Create(ctx, &model.FileCode{Code: "SHARE_NP", ExpiredCount: -1, RequireAuth: true, PasswordHash: hash}))
+	require.NoError(t, svc.fileCodeRepo.Create(ctx, &model.FileCode{Code: "SHARE_NP", FilePath: "uploads/x/SHARE_NP.bin", ExpiredCount: -1, RequireAuth: true, PasswordHash: hash}))
 	code, _ := svc.GenerateCode(ctx, CodeMeta{ShareCode: "SHARE_NP", RequireAuth: true}, time.Now().Add(time.Hour))
 
 	// 空密码 → CheckPassword("", "") 对 bcrypt hash 返回 false
@@ -186,7 +186,7 @@ func TestRetrieve_NoPasswordButRequired(t *testing.T) {
 func TestRetrieve_Unlimited(t *testing.T) {
 	svc, _, _ := newTestService(t)
 	ctx := context.Background()
-	require.NoError(t, svc.fileCodeRepo.Create(ctx, &model.FileCode{Code: "SHARE_INF", ExpiredCount: -1}))
+	require.NoError(t, svc.fileCodeRepo.Create(ctx, &model.FileCode{Code: "SHARE_INF", FilePath: "uploads/x/SHARE_INF.bin", ExpiredCount: -1}))
 	code, _ := svc.GenerateCode(ctx, CodeMeta{ShareCode: "SHARE_INF"}, time.Now().Add(time.Hour))
 
 	for i := 0; i < 5; i++ {
@@ -202,7 +202,7 @@ func TestRetrieve_Unlimited(t *testing.T) {
 func TestCancel(t *testing.T) {
 	svc, _, _ := newTestService(t)
 	ctx := context.Background()
-	require.NoError(t, svc.fileCodeRepo.Create(ctx, &model.FileCode{Code: "SHARE_CAN", ExpiredCount: -1}))
+	require.NoError(t, svc.fileCodeRepo.Create(ctx, &model.FileCode{Code: "SHARE_CAN", FilePath: "uploads/x/SHARE_CAN.bin", ExpiredCount: -1}))
 	code, _ := svc.GenerateCode(ctx, CodeMeta{ShareCode: "SHARE_CAN"}, time.Now().Add(time.Hour))
 
 	require.NoError(t, svc.Cancel(ctx, code))

@@ -609,7 +609,7 @@ func GetShare(ctx context.Context, c *app.RequestContext) {
 		"text":         fileCode.Text,
 		"file_name":    fileCode.UUIDFileName,
 		"file_size":    fmt.Sprintf("%d", fileCode.Size),
-		"url":          fmt.Sprintf("/download/%s", fileCode.Code),
+		"url":          downloadURL, // 修复：原 /download/:code 无对应路由，落到 SPA fallback
 		"download_url": downloadURL,
 		"has_password": fileCode.RequireAuth,
 	}

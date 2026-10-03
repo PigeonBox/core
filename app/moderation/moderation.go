@@ -40,6 +40,8 @@ type UploadMeta struct {
 	Size        int64
 	OwnerIP     string
 	UserID      *uint
+	UploadID    string // 分片会话 ID（分片/秒传通道）
+	Channel     string // 上传通道：direct/chunk/presign
 }
 
 // Moderator 内容审核接口（业务入口唯一依赖）。

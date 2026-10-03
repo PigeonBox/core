@@ -22,6 +22,7 @@ import (
 	"github.com/filescodebox/contracts/errcode"
 	"github.com/redis/go-redis/v9"
 	"github.com/filescodebox/core/pkg/logger"
+	shareApp "github.com/filescodebox/core/app/share"
 	"github.com/filescodebox/core/pkg/utils"
 	"github.com/filescodebox/core/repo/db/dao"
 	"github.com/filescodebox/core/repo/db/model"
@@ -44,6 +45,7 @@ var (
 	ErrCodeExpired   = errors.New("pickup code expired")
 	ErrCodeExhausted = errors.New("pickup code exhausted")
 	ErrPasswordWrong = errors.New("password wrong")
+	ErrNotReady      = errors.New("share upload incomplete") // 登记占位未回填物理文件
 )
 
 // BlockedError 分享处于管控拒绝态（治理状态机）。
@@ -153,6 +155,11 @@ func (s *Service) Retrieve(ctx context.Context, code, password string) (*CodeMet
 	// 4.5 管控状态：blocked / pending_review 拒绝取件
 	if fc.IsBlockedShare() {
 		return nil, &BlockedError{Status: fc.Status}
+	}
+
+	// 4.6 未完成登记（FilePath 空且非文本）：此前会先扣次数再在下载时 500
+	if !shareApp.IsTextShare(fc) && fc.GetFilePath() == "" {
+		return nil, ErrNotReady
 	}
 
 	// 5. 校验密码（bcrypt，DB 为准）

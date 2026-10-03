@@ -4,6 +4,7 @@ package qrcode
 
 import (
 	"context"
+	"sync"
 	"fmt"
 
 	"github.com/cloudwego/hertz/pkg/app"
@@ -12,8 +13,35 @@ import (
 	qrcodeservice "github.com/filescodebox/core/app/qrcode"
 )
 
-// QRCodeStore 存储生成的二维码（内存存储）
-var QRCodeStore = make(map[string]*StoredQRCode)
+// QRCodeStore 存储生成的二维码（内存存储）。
+// 并发安全 + 容量上限：此前裸 map 无锁，两个并发 generate 即
+// concurrent map writes fatal 整个进程（未认证可达 = 远程 DoS）。
+var (
+	qrcodeMu     sync.RWMutex
+	QRCodeStore  = make(map[string]*StoredQRCode)
+	qrcodeMaxCap = 10000
+)
+
+// qrcodePut 并发安全写入；超限时丢弃最早写入的条目（近似 LRU，防内存无界）
+func qrcodePut(id string, qr *StoredQRCode) {
+	qrcodeMu.Lock()
+	defer qrcodeMu.Unlock()
+	if len(QRCodeStore) >= qrcodeMaxCap {
+		for k := range QRCodeStore {
+			delete(QRCodeStore, k)
+			break
+		}
+	}
+	QRCodeStore[id] = qr
+}
+
+// qrcodeGet 并发安全读取
+func qrcodeGet(id string) (*StoredQRCode, bool) {
+	qrcodeMu.RLock()
+	defer qrcodeMu.RUnlock()
+	qr, ok := QRCodeStore[id]
+	return qr, ok
+}
 
 // StoredQRCode 存储的二维码数据
 type StoredQRCode struct {
@@ -75,12 +103,12 @@ func GenerateQRCode(ctx context.Context, c *app.RequestContext) {
 	id := qrcodeservice.GenerateQRCodeID()
 
 	// 存储二维码数据
-	QRCodeStore[id] = &StoredQRCode{
+	qrcodePut(id, &StoredQRCode{
 		ID:      id,
 		Data:    pngData,
 		DataStr: req.Data,
 		Size:    size,
-	}
+	})
 
 	// 构建响应
 	resp := &qrcode.GenerateQRCodeResp{
@@ -124,7 +152,7 @@ func GetQRCode(ctx context.Context, c *app.RequestContext) {
 	}
 
 	// 检查二维码是否存在
-	storedQR, exists := QRCodeStore[req.ID]
+	storedQR, exists := qrcodeGet(req.ID)
 	if !exists {
 		c.JSON(consts.StatusNotFound, map[string]interface{}{
 			"code":    404,

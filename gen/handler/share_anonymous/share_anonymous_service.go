@@ -157,6 +157,8 @@ func Retrieve(ctx context.Context, c *app.RequestContext) {
 			return
 		}
 		switch err {
+		case anonapp.ErrNotReady:
+			resp.NewErrorWithMessage(c, errcode.CodeShareNotFound, "分享未完成上传，暂时无法取件")
 		case anonapp.ErrCodeNotFound:
 			_, _ = lock.RecordFailure(ctx, lockKey)
 			resp.NewErrorByCode(c, errcode.CodePickupCodeNotFound)
@@ -247,6 +249,11 @@ func SearchByCode(ctx context.Context, c *app.RequestContext) {
 	code := c.Param("code")
 	if code == "" {
 		resp.NewErrorWithMessage(c, errcode.CodeInvalidParam, "code required")
+		return
+	}
+	// 下载闸门（治理）：download.require_login 时元数据（文件名/大小/统计）不向匿名暴露
+	if err := gate.CheckDownloadLogin(nil); err != nil {
+		resp.NewTypedError(c, err)
 		return
 	}
 	meta, fc, err := getService().Peek(ctx, code)

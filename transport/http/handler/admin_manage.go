@@ -576,8 +576,8 @@ func fileGovernanceItem(f *model.FileCode) map[string]interface{} {
 	}
 	if isText {
 		preview := f.Text
-		if len(preview) > 120 {
-			preview = preview[:120] + "..."
+		if runes := []rune(preview); len(runes) > 120 {
+			preview = string(runes[:120]) + "..." // 按 rune 截断，防切碎 UTF-8
 		}
 		item["text_preview"] = preview
 	}
