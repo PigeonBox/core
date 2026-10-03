@@ -315,7 +315,7 @@ func actorFromCtx(ctx context.Context) (*uint, string, string) {
 // defaultSystemConfig 站点配置默认值。
 func defaultSystemConfig() *SystemConfig {
 	cfg := &SystemConfig{}
-	cfg.Base.Name = "FileCodeBox"
+	cfg.Base.Name = "FilesCodeBox"
 	cfg.Base.Description = "文件分享平台"
 	cfg.Base.Port = 8888
 	cfg.Storage.Type = "local"
