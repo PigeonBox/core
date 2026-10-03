@@ -622,12 +622,15 @@ func BootstrapWithOptions(configPath string, opts ...Option) (*server.Hertz, err
 		path := string(c.Request.URI().Path())
 		switch {
 		case strings.HasPrefix(path, "/admin/login"),
-			strings.HasPrefix(path, "/api/v1/user/login"):
+			strings.HasPrefix(path, "/api/v1/user/login"),
+			strings.HasPrefix(path, "/user/login"):
 			rl.LoginMiddleware()(ctx, c)
 		case strings.HasPrefix(path, "/anonymous/generate"),
 			strings.HasPrefix(path, "/anonymous/retrieve"),
 			strings.HasPrefix(path, "/api/v1/presign"),
-			strings.HasPrefix(path, "/api/v1/chunk"):
+			strings.HasPrefix(path, "/api/v1/chunk"),
+			strings.HasPrefix(path, "/share/text"),
+			strings.HasPrefix(path, "/share/file"):
 			rl.UploadMiddleware()(ctx, c)
 		case strings.Contains(path, "/download"):
 			rl.DownloadMiddleware()(ctx, c)
