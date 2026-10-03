@@ -23,11 +23,9 @@ func _v1Mw() []app.HandlerFunc {
 	return nil
 }
 
-// _presignMw 可选认证：注入 user_id 供上传闸门区分匿名/登录（治理 2026-10-03）
+// _presignMw 可选身份：JWT 或 API Key（Key fail-closed）；注入 user_id 供上传闸门区分匿名/登录（治理 2026-10-03）
 func _presignMw() []app.HandlerFunc {
-	return []app.HandlerFunc{
-		middleware.OptionalAuthMiddleware(),
-	}
+	return middleware.OptionalIdentity()
 }
 
 func _abortMw() []app.HandlerFunc {

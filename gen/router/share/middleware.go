@@ -23,15 +23,12 @@ func _fileMw() []app.HandlerFunc {
 }
 
 func _sharefileMw() []app.HandlerFunc {
-	return []app.HandlerFunc{
-		middleware.OptionalAuthMiddleware(),
-	}
+	// 可选身份：JWT 或 API Key（Key fail-closed）；注入 user_id 供闸门/配额/归属
+	return middleware.OptionalIdentity()
 }
 
 func _selectMw() []app.HandlerFunc {
-	return []app.HandlerFunc{
-		middleware.OptionalAuthMiddleware(),
-	}
+	return middleware.OptionalIdentity()
 }
 
 func _getshareMw() []app.HandlerFunc {
@@ -45,9 +42,7 @@ func _textMw() []app.HandlerFunc {
 }
 
 func _sharetextMw() []app.HandlerFunc {
-	return []app.HandlerFunc{
-		middleware.OptionalAuthMiddleware(),
-	}
+	return middleware.OptionalIdentity()
 }
 
 func _usersharesMw() []app.HandlerFunc {

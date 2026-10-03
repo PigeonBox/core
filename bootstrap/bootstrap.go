@@ -863,8 +863,10 @@ func customizedRegister(r *server.Hertz) {
 	// （IDL 生成的 /ready 为轻量 stub，此处用 /readyz 做深度检查以避免路由冲突）
 	r.GET("/readyz", readinessHandler)
 
-	// ===== 自定义 REST API（需用户 JWT 认证）=====
-	apiV1 := r.Group("/api/v1", customMw.UserAuth())
+	// ===== 自定义 REST API（用户 JWT 或 API Key 认证）=====
+	// UserOrAPIKey：浏览器走 JWT（含黑名单），第三方脚本走 X-API-Key / Bearer fcb_sk_。
+	// 覆盖我的分享管理与站内通知；Key 永不进入 /admin 与 /user/api-keys（Key 不能管 Key）。
+	apiV1 := r.Group("/api/v1", middleware.UserOrAPIKey())
 	{
 		// 我的分享管理（批量删除 / 批量延期 / 恢复 / 永久删除）
 		userShares := apiV1.Group("/user/shares")
