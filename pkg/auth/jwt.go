@@ -31,6 +31,23 @@ type Claims struct {
 	jwt.RegisteredClaims
 }
 
+// sessionExpiry 会话时长，默认 7 天。
+// 管理后台"用户配置→会话过期时间"通过 SetSessionExpiry 在线调整
+//（此前硬编码 168h，配置项形同虚设）。
+var sessionExpiry = 7 * 24 * time.Hour
+
+// SetSessionExpiry 设置会话时长；<=0 视为非法，保留原值。
+// 仅影响新签发的 token，已签发会话到自然过期。
+func SetSessionExpiry(d time.Duration) {
+	if d <= 0 {
+		return
+	}
+	sessionExpiry = d
+}
+
+// SessionExpiry 当前会话时长（测试/诊断用）。
+func SessionExpiry() time.Duration { return sessionExpiry }
+
 // GenerateToken 生成 JWT token
 func GenerateToken(userID uint, username, role string) (string, error) {
 	claims := &Claims{
@@ -38,7 +55,7 @@ func GenerateToken(userID uint, username, role string) (string, error) {
 		Username: username,
 		Role:     role,
 		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(24 * time.Hour * 7)),
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(sessionExpiry)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
 			Issuer:    "FileCodeBox",
 		},

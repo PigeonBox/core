@@ -13,7 +13,7 @@ import (
 	usermodel "github.com/filescodebox/contracts/gen/user"
 	"github.com/filescodebox/contracts/errcode"
 	"github.com/filescodebox/core/pkg/auth"
-	"github.com/filescodebox/core/conf"
+	admin "github.com/filescodebox/core/app/admin"
 	"github.com/filescodebox/core/repo/db/dao"
 	"github.com/filescodebox/core/repo/db/model"
 	"golang.org/x/crypto/bcrypt"
@@ -294,9 +294,8 @@ func (s *Service) CheckQuota(ctx context.Context, userID uint, addBytes int64) e
 	}
 	limit := user.MaxStorageQuota
 	if limit <= 0 {
-		if cfg := conf.GetGlobalConfig(); cfg != nil {
-			limit = cfg.User.UserStorageQuota
-		}
+		// 系统默认取管理后台"用户配置"持久化值（无记录回退 yaml）
+		limit = admin.EffectiveUserSettings(ctx).UserStorageQuota
 	}
 	if limit <= 0 {
 		return nil
@@ -353,10 +352,7 @@ func (s *Service) GetUploadSizeCap(ctx context.Context, userID uint) int64 {
 	if user.MaxUploadSize > 0 {
 		return user.MaxUploadSize
 	}
-	if cfg := conf.GetGlobalConfig(); cfg != nil {
-		return cfg.User.UserUploadSize
-	}
-	return 0
+	return admin.EffectiveUserSettings(ctx).UserUploadSize
 }
 
 // GetStats 获取用户统计信息

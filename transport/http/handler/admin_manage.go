@@ -248,6 +248,29 @@ func AdminFileDetail(ctx context.Context, c *app.RequestContext) {
 	resp.Success(c, fc)
 }
 
+// AdminGetUserSettings 获取"用户配置"段（生效值：持久化优先，回退 yaml）。
+// GET /admin/config/user
+func AdminGetUserSettings(ctx context.Context, c *app.RequestContext) {
+	u := adminapp.EffectiveUserSettings(ctx)
+	resp.Success(c, &u)
+}
+
+// AdminUpdateUserSettings 在线更新"用户配置"段：写穿 DB 并即时生效
+// （注册开关/配额默认/会话时长）。
+// PUT /admin/config/user
+func AdminUpdateUserSettings(ctx context.Context, c *app.RequestContext) {
+	var req adminapp.UserSettings
+	if err := c.BindAndValidate(&req); err != nil {
+		resp.NewErrorWithMessage(c, 10001, err.Error())
+		return
+	}
+	if err := adminapp.Default().UpdateUserSettings(ctx, req); err != nil {
+		resp.NewErrorWithMessage(c, 10008, "更新失败: "+err.Error())
+		return
+	}
+	resp.Success(c, map[string]interface{}{"affected": 1})
+}
+
 // AdminUpdateFile 编辑文件（延期 / 改剩余次数）
 // PUT /admin/files/:id  {expire_value, expire_style, expired_count}
 func AdminUpdateFile(ctx context.Context, c *app.RequestContext) {

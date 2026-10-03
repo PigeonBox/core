@@ -18,7 +18,8 @@ import (
 var adminService *adminsvc.Service
 
 func init() {
-	adminService = adminsvc.NewService()
+	// 全站共享单例：多实例内存副本会互相覆盖 system_configs 单行 JSON
+	adminService = adminsvc.Default()
 }
 
 // SetStorage 注入存储服务（bootstrap 调用，用于过期清理删物理文件）

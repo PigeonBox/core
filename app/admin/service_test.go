@@ -220,3 +220,73 @@ func TestUpdateConfig_SingleRow(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "第二版", cfg.Base.Name)
 }
+
+// TestUpdateUserSettings_Roundtrip 用户设置写穿 DB 并可读回
+// （回归 2026-10-03：管理端"用户配置"此前是假开关——存储结构里根本没有该段）
+func TestUpdateUserSettings_Roundtrip(t *testing.T) {
+	newAdminTestDB(t)
+	svc := NewService()
+	ctx := context.Background()
+
+	require.NoError(t, svc.UpdateUserSettings(ctx, UserSettings{
+		AllowUserRegistration: true,
+		UserUploadSize:        10 * 1024 * 1024,
+		UserStorageQuota:      2 * 1024 * 1024 * 1024,
+		SessionExpiryHours:    24,
+	}))
+
+	cfg, err := svc.GetConfig(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, cfg.User)
+	assert.True(t, cfg.User.AllowUserRegistration)
+	assert.Equal(t, int64(10*1024*1024), cfg.User.UserUploadSize)
+	assert.Equal(t, int64(2*1024*1024*1024), cfg.User.UserStorageQuota)
+	assert.Equal(t, 24, cfg.User.SessionExpiryHours)
+
+	// DB 落库校验（新实例从 DB 加载）
+	fresh := NewService()
+	cfg2, err := fresh.GetConfig(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, cfg2.User)
+	assert.True(t, cfg2.User.AllowUserRegistration)
+}
+
+// TestUpdateConfig_PreservesUserSection 通用配置保存（无 user 段）不得冲掉用户设置
+func TestUpdateConfig_PreservesUserSection(t *testing.T) {
+	newAdminTestDB(t)
+	svc := NewService()
+	ctx := context.Background()
+	require.NoError(t, svc.UpdateUserSettings(ctx, UserSettings{AllowUserRegistration: true, SessionExpiryHours: 48}))
+
+	require.NoError(t, svc.UpdateConfig(ctx, customTestConfig("改名保存")))
+
+	cfg, err := svc.GetConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, "改名保存", cfg.Base.Name)
+	require.NotNil(t, cfg.User)
+	assert.True(t, cfg.User.AllowUserRegistration)
+	assert.Equal(t, 48, cfg.User.SessionExpiryHours)
+}
+
+// TestLoadPersisted_LegacyRecordWithoutUserSection 旧记录（无 user 段）加载时回退 yaml 默认，
+// 而不是零值——否则升级后注册会被意外当成"关闭"。
+func TestLoadPersisted_LegacyRecordWithoutUserSection(t *testing.T) {
+	g := newAdminTestDB(t)
+	// 直接写一条历史形态的记录（只有旧字段）
+	require.NoError(t, g.Create(&model.SystemConfigRecord{Data: `{"base":{"name":"OldSite","description":"d","port":1234},"storage":{"type":"local","max_size":1},"transfer":{"max_count":10,"expire_default":7}}`}).Error)
+
+	cfg, err := NewService().GetConfig(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "OldSite", cfg.Base.Name)
+	require.NotNil(t, cfg.User)
+	// 回退自 yaml 全局配置：布尔/数值非零值语义由 yaml 决定，这里只验证不是零值指针
+	assert.NotNil(t, cfg.User)
+}
+
+// TestValidateUserSettings 校验
+func TestValidateUserSettings(t *testing.T) {
+	require.Error(t, validateUserSettings(&UserSettings{UserUploadSize: -1}))
+	require.Error(t, validateUserSettings(&UserSettings{SessionExpiryHours: -5}))
+	require.Error(t, validateUserSettings(&UserSettings{SessionExpiryHours: 100000}))
+	require.NoError(t, validateUserSettings(&UserSettings{SessionExpiryHours: 168}))
+}

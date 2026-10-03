@@ -12,8 +12,8 @@ import (
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
 	"github.com/filescodebox/contracts/errcode"
 	usermodel "github.com/filescodebox/contracts/gen/user"
+	admin "github.com/filescodebox/core/app/admin"
 	userservice "github.com/filescodebox/core/app/user"
-	"github.com/filescodebox/core/conf"
 	"github.com/filescodebox/core/pkg/middleware"
 )
 
@@ -22,9 +22,9 @@ var userService = userservice.NewService()
 // Register .
 // @router /user/register [POST]
 func Register(ctx context.Context, c *app.RequestContext) {
-	// 检查是否允许用户注册
-	cfg := conf.GetGlobalConfig()
-	if cfg != nil && !cfg.User.AllowUserRegistration {
+	// 检查是否允许用户注册：管理后台"用户配置"持久化值优先，
+	// 无记录回退 yaml（EffectiveUserSettings，修复管理端开关不生效）
+	if !admin.EffectiveUserSettings(ctx).AllowUserRegistration {
 		c.JSON(consts.StatusForbidden, map[string]interface{}{
 			"code":    403,
 			"message": "用户注册已关闭",
@@ -313,9 +313,7 @@ func UserStats(ctx context.Context, c *app.RequestContext) {
 	// 配额：用户级覆盖 > 系统默认（0 = 不限）
 	quotaUsed := stats.TotalStorage
 	quotaLimit := int64(0)
-	if cfg := conf.GetGlobalConfig(); cfg != nil {
-		quotaLimit = cfg.User.UserStorageQuota
-	}
+	quotaLimit = admin.EffectiveUserSettings(ctx).UserStorageQuota
 	if u, err := userService.GetByID(ctx, userID); err == nil && u != nil && u.MaxStorageQuota > 0 {
 		quotaLimit = u.MaxStorageQuota
 	}

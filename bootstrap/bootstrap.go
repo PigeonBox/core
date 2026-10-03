@@ -808,6 +808,11 @@ func customizedRegister(r *server.Hertz) {
 		// 分享治理（2026-10-03）：组合过滤列表（含 owner_ip/status/upload_type）
 		// + 管控状态机（单个/批量禁用、恢复）
 		adminAPI.GET("/files/filter", customHandler.AdminListFilesFiltered)
+		// 用户配置（注册开关/配额默认/会话时长）：读写 system_configs 的
+		// user 段并即时生效（2026-10-03 假开关接线；IDL 契约不含该段，
+		// 手写端点模式同 /users CRUD，重生成 IDL 后需同步）
+		adminAPI.GET("/config/user", customHandler.AdminGetUserSettings)
+		adminAPI.PUT("/config/user", customHandler.AdminUpdateUserSettings)
 		adminAPI.PUT("/files/:id/status", customHandler.AdminSetFileStatus)
 		adminAPI.POST("/files/batch-status", customHandler.AdminBatchSetFilesStatus)
 
@@ -968,9 +973,9 @@ func publicConfigHandler(ctx context.Context, c *app.RequestContext) {
 		"uploadSize":  config.Upload.UploadSize,
 		"enableChunk": config.Upload.EnableChunk,
 		"openUpload":  config.Upload.OpenUpload,
-		// 注册开关以 user.allow_user_registration（yaml/env）为准——
-		// 与 /user/register 的判定同源，前端据此隐藏注册入口
-		"registerEnabled": config.User.AllowUserRegistration,
+		// 注册开关走生效值：管理后台"用户配置"持久化段优先，
+		// 无记录回退 yaml（与 /user/register 判定同源）
+		"registerEnabled": adminApp.EffectiveUserSettings(ctx).AllowUserRegistration,
 		// 前端 expireStyle 下拉选项（与 utils.CalculateExpireTime 支持的风格对齐）
 		"expireStyle": []string{"minute", "hour", "day", "week", "month", "year", "forever"},
 		"initialized": initialized,

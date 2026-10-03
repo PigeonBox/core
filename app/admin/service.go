@@ -51,6 +51,38 @@ type SystemConfig struct {
 	// RuntimeStorage 运行时存储配置（存储域经 RuntimePersister 接口读写，
 	// 本域只负责持久化不解释其内容；nil 表示管理端从未在线改过存储后端）。
 	RuntimeStorage *conf.StorageConfig `json:"runtime_storage,omitempty"`
+
+	// User 用户设置（注册开关/上传限制/存储配额/会话时长）。
+	// nil 表示从未在线保存过 → 运行时回退 yaml 全局配置（EffectiveUserSettings）。
+	// JSON 键沿用前端 configForm.user 的既有键名，读写端点直传免转换。
+	User *UserSettings `json:"user,omitempty"`
+}
+
+// UserSettings 管理后台"用户配置"标签页的在线设置。
+// 语义：作为对应运行时消费点的系统级默认值（用户级覆盖仍然优先）。
+type UserSettings struct {
+	// AllowUserRegistration 是否开放注册（/user/register 与 /api/config 同源读取）
+	AllowUserRegistration bool `json:"allowuserregistration"`
+	// UserUploadSize 用户单次上传大小默认上限（字节，0 = 不限）
+	UserUploadSize int64 `json:"useruploadsize"`
+	// UserStorageQuota 用户存储配额默认值（字节，0 = 不限）
+	UserStorageQuota int64 `json:"userstoragequota"`
+	// SessionExpiryHours 会话时长（小时，0 = auth 包默认 7 天）
+	SessionExpiryHours int `json:"sessionexpiryhours"`
+}
+
+// userSettingsFromYAML 无持久化记录时回退 yaml 全局配置（与历史行为一致）。
+func userSettingsFromYAML() *UserSettings {
+	u := &UserSettings{SessionExpiryHours: 168}
+	if cfg := conf.GetGlobalConfig(); cfg != nil {
+		u.AllowUserRegistration = cfg.User.AllowUserRegistration
+		u.UserUploadSize = cfg.User.UserUploadSize
+		u.UserStorageQuota = cfg.User.UserStorageQuota
+		if cfg.User.SessionExpiryHours > 0 {
+			u.SessionExpiryHours = cfg.User.SessionExpiryHours
+		}
+	}
+	return u
 }
 
 type Service struct {
@@ -322,6 +354,7 @@ func defaultSystemConfig() *SystemConfig {
 	cfg.Storage.MaxSize = 1024 * 1024 * 1024 // 1GB
 	cfg.Transfer.MaxCount = 100
 	cfg.Transfer.ExpireDefault = 7 // 7天
+	cfg.User = userSettingsFromYAML()
 	return cfg
 }
 
@@ -345,6 +378,11 @@ func (s *Service) loadPersistedConfig(ctx context.Context) (*SystemConfig, error
 			zap.String("data", rec.Data), zap.Error(err))
 		return nil, err
 	}
+	// 历史记录没有 user 段：unmarshal 后是 nil/零值，回退 yaml，
+	// 否则升级后会意外把注册当成"关闭"（2026-10-03 假开关接线时补）
+	if cfg.User == nil {
+		cfg.User = userSettingsFromYAML()
+	}
 	return cfg, nil
 }
 
@@ -367,6 +405,18 @@ func (s *Service) ensureConfigLoaded(ctx context.Context) {
 		s.config = persisted
 		logger.Info("system config loaded from database",
 			zap.String("site_name", persisted.Base.Name))
+	}
+	s.applyUserSideEffects(s.config.User)
+}
+
+// applyUserSideEffects 用户设置中需要"生效"而非仅存储的部分：
+// 会话时长写入 auth 包（新签发 token 即刻采用）。
+func (s *Service) applyUserSideEffects(u *UserSettings) {
+	if u == nil {
+		return
+	}
+	if u.SessionExpiryHours > 0 {
+		auth.SetSessionExpiry(time.Duration(u.SessionExpiryHours) * time.Hour)
 	}
 }
 
@@ -395,6 +445,9 @@ func validateSystemConfig(cfg *SystemConfig) error {
 	if cfg.Transfer.ExpireDefault < 0 {
 		return errors.New("transfer.expire_default must be >= 0")
 	}
+	if err := validateUserSettings(cfg.User); cfg.User != nil && err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -410,6 +463,10 @@ func (s *Service) UpdateConfig(ctx context.Context, newConfig *SystemConfig) err
 	if newConfig.RuntimeStorage == nil && s.config != nil {
 		newConfig.RuntimeStorage = s.config.RuntimeStorage
 	}
+	// 通用配置保存（thrift 通道）不带 user 段，保留旧值避免被冲掉
+	if newConfig.User == nil && s.config != nil {
+		newConfig.User = s.config.User
+	}
 	s.configMu.RUnlock()
 	data, err := json.Marshal(newConfig)
 	if err != nil {
@@ -424,6 +481,7 @@ func (s *Service) UpdateConfig(ctx context.Context, newConfig *SystemConfig) err
 			return err
 		}
 	}
+	s.applyUserSideEffects(newConfig.User)
 	s.configMu.Lock()
 	defer s.configMu.Unlock()
 	s.config = newConfig
@@ -431,6 +489,78 @@ func (s *Service) UpdateConfig(ctx context.Context, newConfig *SystemConfig) err
 	s.logAdminOperation(ctx, "config.update", "system config persisted to database", true)
 	return nil
 }
+
+// UpdateUserSettings 在线更新"用户配置"段：读改写当前配置，仅替换 User，
+// 其余段保持不变；写穿 DB 并即时应用副作用（会话时长）。
+func (s *Service) UpdateUserSettings(ctx context.Context, u UserSettings) error {
+	if err := validateUserSettings(&u); err != nil {
+		return err
+	}
+	s.ensureConfigLoaded(ctx)
+	s.configMu.RLock()
+	current := s.config
+	s.configMu.RUnlock()
+	if current == nil {
+		current = defaultSystemConfig()
+	}
+	// 深拷贝当前配置，只替换 User 段
+	data, err := json.Marshal(current)
+	if err != nil {
+		return err
+	}
+	next := defaultSystemConfig()
+	if err := json.Unmarshal(data, next); err != nil {
+		return err
+	}
+	if next.User == nil {
+		next.User = &UserSettings{}
+	}
+	*next.User = u
+	return s.UpdateConfig(ctx, next)
+}
+
+// validateUserSettings 用户设置合法性（负数一律拒绝；0 语义为"不限/默认"）。
+func validateUserSettings(u *UserSettings) error {
+	if u == nil {
+		return errors.New("user settings is nil")
+	}
+	if u.UserUploadSize < 0 || u.UserStorageQuota < 0 {
+		return errors.New("user upload size / storage quota must be >= 0")
+	}
+	if u.SessionExpiryHours < 0 || u.SessionExpiryHours > 24*365 {
+		return errors.New("session expiry hours out of range (0-8760)")
+	}
+	return nil
+}
+
+// EffectiveUserSettings 生效的用户设置：优先管理后台持久化值，
+// 无记录时回退 yaml 全局配置。注册开关、配额默认值、会话时长的
+// 运行时消费点统一走这里（修复管理端开关不生效）。
+func EffectiveUserSettings(ctx context.Context) UserSettings {
+	cfg, err := defaultAdminService().GetConfig(ctx)
+	if err != nil || cfg == nil || cfg.User == nil {
+		return *userSettingsFromYAML()
+	}
+	return *cfg.User
+}
+
+// defaultAdminService 包级惰性单例（EffectiveUserSettings 等包级入口用；
+// DB 未初始化时内部按"回退默认值"降级，不会 panic）。
+var (
+	defaultSvcOnce sync.Once
+	defaultSvc     *Service
+)
+
+func defaultAdminService() *Service {
+	defaultSvcOnce.Do(func() { defaultSvc = NewService() })
+	return defaultSvc
+}
+
+// Default 全站共享的 admin Service 实例。
+// system_configs 是"单行 JSON 读改写"语义，必须全站单实例：
+// 多实例各自缓存内存副本会互相覆盖（用户设置写入后公共配置读旧值的
+// 2026-10-03 事故即由此而来）。
+func Default() *Service { return defaultAdminService() }
 
 // LoadRuntimeStorage 读取持久化的运行时存储配置（storage.RuntimePersister 实现）。
 // 无记录/未设置返回 nil；DB 不可用返回 nil（与配置加载的降级策略一致）。
