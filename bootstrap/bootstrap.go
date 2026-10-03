@@ -203,7 +203,6 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("database.driver", "sqlite")
 	v.SetDefault("database.db_name", "./data/filecodebox.db")
 	v.SetDefault("user.allow_user_registration", true)
-	v.SetDefault("user.require_email_verify", false)
 	v.SetDefault("observability.metrics.enabled", false)
 	v.SetDefault("observability.metrics.path", "/metrics")
 	// 安全默认（安全加固项，未配置时全开）：

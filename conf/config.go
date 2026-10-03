@@ -147,7 +147,6 @@ type AppConfig struct {
 // UserConfig 用户配置
 type UserConfig struct {
 	AllowUserRegistration bool   `mapstructure:"allow_user_registration"`
-	RequireEmailVerify    bool   `mapstructure:"require_email_verify"`
 	UserUploadSize        int64  `mapstructure:"user_upload_size"`
 	UserStorageQuota      int64  `mapstructure:"user_storage_quota"`
 	SessionExpiryHours    int    `mapstructure:"session_expiry_hours"`
@@ -253,16 +252,11 @@ type WebDAVConfig struct {
 	Password string `mapstructure:"password"`
 }
 
-// UIConfig 前端 UI 相关配置（透传给前端展示）
+// UIConfig 前端 UI 相关配置。
+// 仅保留实际消费的 robots_text；主题/背景/透明度等旧单体遗留键已随假开关清理移除
+// （theme 系统未迁移，待实装时按新形状回归）。
 type UIConfig struct {
-	Theme         string  `mapstructure:"theme"`
-	Background    string  `mapstructure:"background"`
-	PageExplain   string  `mapstructure:"page_explain"`
-	RobotsText    string  `mapstructure:"robots_text"`
-	ShowAdminAddr bool    `mapstructure:"show_admin_addr"`
-	Opacity       float64 `mapstructure:"opacity"`
-	NotifyTitle   string  `mapstructure:"notify_title"`
-	NotifyContent string  `mapstructure:"notify_content"`
+	RobotsText string `mapstructure:"robots_text"`
 }
 
 // ObservabilityConfig 可观测性配置（metrics；分布式追踪见路线图，未实现前不暴露配置）
