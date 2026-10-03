@@ -3,15 +3,31 @@ package preview
 import (
 	"context"
 	"fmt"
-	"path/filepath"
+	"io"
+	"os"
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
+	"github.com/filescodebox/contracts/errcode"
+	"github.com/filescodebox/core/pkg/gate"
+	"github.com/filescodebox/core/pkg/middleware"
+	"github.com/filescodebox/core/pkg/resp"
+	"github.com/filescodebox/core/pkg/utils"
 	previewService "github.com/filescodebox/core/preview"
 	"github.com/filescodebox/core/repo/db/dao"
 	dao_preview "github.com/filescodebox/core/repo/db/dao_preview"
 	"github.com/filescodebox/core/repo/db/model"
+	"github.com/filescodebox/core/storage"
 )
+
+// storageSvc 统一存储实例（bootstrap 注入；nil 时预览生成不可用）
+var storageSvc storage.StorageInterface
+
+// SetStorage 注入统一存储实例（bootstrap 调用）。
+// 回归（2026-10-03）：此前硬编码 data/uploads 路径基，与统一存储不一致。
+func SetStorage(st storage.StorageInterface) {
+	storageSvc = st
+}
 
 // GetPreview 获取文件预览信息
 // @router /preview/:code [GET]
@@ -25,6 +41,17 @@ func GetPreview(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
+	// 下载闸门 + 分享管控（回归 P0：此前裸查 DB，blocked/待审/过期/密码/登录闸门
+	// 全部旁路，违规内容可被匿名预览提取全文）
+	var previewUserID *uint
+	if v, ok := middleware.UserIDFromContext(ctx); ok {
+		previewUserID = &v
+	}
+	if err := gate.CheckDownloadLogin(previewUserID); err != nil {
+		resp.NewTypedError(c, err)
+		return
+	}
+
 	// 获取文件信息
 	fileCodeRepo := dao.NewFileCodeRepository()
 	fileCode, err := fileCodeRepo.GetByCode(ctx, code)
@@ -34,6 +61,41 @@ func GetPreview(ctx context.Context, c *app.RequestContext) {
 			"message": "分享不存在",
 		})
 		return
+	}
+	if fileCode.IsExpired() {
+		c.JSON(consts.StatusNotFound, map[string]interface{}{
+			"code":    404,
+			"message": "分享不存在或已过期",
+		})
+		return
+	}
+	if fileCode.IsBlockedShare() {
+		resp.NewErrorByCode(c, errcode.CodeShareBlocked)
+		return
+	}
+
+	// 密码保护分享：预览必须携带正确密码（防爆破锁定与取件查询同规格）
+	if fileCode.RequireAuth {
+		lock := middleware.GetDefaultLockout()
+		lockKey := middleware.FormatLockKey("preview", middleware.ClientIP(c), code)
+		if remain, locked := lock.CheckLocked(ctx, lockKey); locked {
+			c.JSON(consts.StatusTooManyRequests, map[string]interface{}{
+				"code":    errcode.CodeTooManyAttempts,
+				"message": fmt.Sprintf("尝试过于频繁，已临时锁定，请 %d 秒后重试", remain),
+			})
+			return
+		}
+		password := c.Query("password")
+		if password == "" || fileCode.PasswordHash == "" || !utils.CheckPassword(fileCode.PasswordHash, password) {
+			_, _ = lock.RecordFailure(ctx, lockKey)
+			c.JSON(consts.StatusUnauthorized, map[string]interface{}{
+				"code":    errcode.CodeSharePasswordWrong,
+				"message": "需要密码",
+				"data":    map[string]interface{}{"has_password": true},
+			})
+			return
+		}
+		lock.Reset(ctx, lockKey)
 	}
 
 	// 获取预览信息
@@ -58,8 +120,38 @@ func GetPreview(ctx context.Context, c *app.RequestContext) {
 	})
 }
 
-// generatePreview 生成预览
+// generatePreview 生成预览。经统一存储实例读取文件（回归：此前硬编码
+// data/uploads 路径基且未拼 UUIDFileName，与存储布局不符）。
 func generatePreview(ctx context.Context, fileCode *model.FileCode) (*model.FilePreview, error) {
+	if storageSvc == nil {
+		return nil, fmt.Errorf("storage not available")
+	}
+	filePath := fileCode.GetFilePath()
+	if filePath == "" {
+		return nil, fmt.Errorf("file path is empty")
+	}
+	rc, _, err := storageSvc.GetFileReader(ctx, filePath)
+	if err != nil {
+		return nil, fmt.Errorf("open file from storage: %w", err)
+	}
+	// GeneratePreview 以磁盘路径为输入，落临时文件后清理
+	tmp, err := os.CreateTemp("", "fcb-preview-*")
+	if err != nil {
+		_ = rc.Close()
+		return nil, fmt.Errorf("create temp file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
+	_, copyErr := io.Copy(tmp, rc)
+	_ = rc.Close()
+	_ = tmp.Close()
+	if copyErr != nil {
+		return nil, fmt.Errorf("stage file: %w", copyErr)
+	}
+	return generatePreviewFromPath(ctx, fileCode, tmpPath)
+}
+
+func generatePreviewFromPath(ctx context.Context, fileCode *model.FileCode, filePath string) (*model.FilePreview, error) {
 	// 判断文件类型
 	ext := fileCode.Suffix
 	if ext == "" {
@@ -89,11 +181,7 @@ func generatePreview(ctx context.Context, fileCode *model.FileCode) (*model.File
 		return nil, fmt.Errorf("preview service not available")
 	}
 
-	// 构建文件完整路径
-	// 注意：storage服务保存的文件在 data/uploads/uploads/ 目录下
-	filePath := filepath.Join("data", "uploads", fileCode.FilePath)
-
-	// 生成预览
+	// 生成预览（filePath 由调用方经统一存储暂存提供）
 	previewData, err := svc.GeneratePreview(ctx, filePath, ext)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate preview: %w", err)

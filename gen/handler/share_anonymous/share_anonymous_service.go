@@ -13,9 +13,9 @@ import (
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
 	"github.com/redis/go-redis/v9"
 
+	"github.com/filescodebox/contracts/errcode"
 	anonmodel "github.com/filescodebox/contracts/gen/share_anonymous"
 	anonapp "github.com/filescodebox/core/app/anonymous"
-	"github.com/filescodebox/contracts/errcode"
 	"github.com/filescodebox/core/pkg/gate"
 	"github.com/filescodebox/core/pkg/middleware"
 	"github.com/filescodebox/core/pkg/resp"
@@ -198,9 +198,39 @@ func Download(ctx context.Context, c *app.RequestContext) {
 		resp.NewTypedError(c, err)
 		return
 	}
-	// 复用 share 服务的下载逻辑；服务端签发下载令牌随重定向携带
-	target := "/share/download?code=" + code
-	if tk := security.GenerateDownloadToken(code); tk != "" {
+	// 安全修复（P0，2026-10-03）：此前的实现是对任意 code 无条件签发下载令牌
+	// 后 302——而 /share/download 对持有效令牌的请求跳过密码校验，等于密码保护
+	// 形同虚设（令牌签发 oracle）。现在仅对"存在/未过期/未管控/无密码"的分享
+	// 签发令牌；密码保护分享一律拒绝并引导走取件页。
+	// Peek 已内置 blocked/待审校验（BlockedError）
+	_, fc, err := getService().Peek(ctx, code)
+	if err != nil {
+		var blocked *anonapp.BlockedError
+		if errors.As(err, &blocked) {
+			resp.NewTypedError(c, blocked)
+			return
+		}
+		resp.NewErrorByCode(c, errcode.CodePickupCodeNotFound)
+		return
+	}
+	if fc.IsExpired() {
+		resp.NewErrorByCode(c, errcode.CodePickupCodeExpired)
+		return
+	}
+	if fc.IsBlockedShare() {
+		resp.NewTypedError(c, &anonapp.BlockedError{Status: fc.Status})
+		return
+	}
+	if fc.RequireAuth {
+		c.JSON(consts.StatusUnauthorized, map[string]interface{}{
+			"code":    errcode.CodeSharePasswordWrong,
+			"message": "该分享受密码保护，请通过取件页输入密码后下载",
+			"data":    map[string]interface{}{"has_password": true},
+		})
+		return
+	}
+	target := "/share/download?code=" + fc.Code
+	if tk := security.GenerateDownloadToken(fc.Code); tk != "" {
 		target += "&token=" + tk
 	}
 	c.Redirect(consts.StatusFound, []byte(target))

@@ -45,6 +45,7 @@ import (
 	userService "github.com/filescodebox/core/app/user"
 	adminHandler "github.com/filescodebox/core/gen/handler/admin"
 	chunkHandler "github.com/filescodebox/core/gen/handler/chunk"
+	previewHandler "github.com/filescodebox/core/gen/handler/preview"
 	notifyHandler "github.com/filescodebox/core/gen/handler/notify"
 	presignHandler "github.com/filescodebox/core/gen/handler/presign"
 	ratelimitHandler "github.com/filescodebox/core/gen/handler/ratelimit"
@@ -1138,6 +1139,7 @@ func initThriftIDLServices(database *gorm.DB) {
 	// 分片合并写入 data/uploads/<rel>，下载却找 data/uploads/uploads/<rel>）
 	chunkHandler.SetStorage(bootstrapStorage)
 	shareHandler.SetStorage(bootstrapStorage)
+	previewHandler.SetStorage(bootstrapStorage)
 
 	// 6.5 MCP server（AI 客户端集成）：统计/维护走带 storage 的 admin service，
 	//     分享创建走 share service（复用配额/审计链路）
