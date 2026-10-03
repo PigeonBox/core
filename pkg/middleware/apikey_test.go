@@ -1,0 +1,304 @@
+package middleware
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/cloudwego/hertz/pkg/app"
+	"github.com/cloudwego/hertz/pkg/app/server"
+	"github.com/cloudwego/hertz/pkg/common/ut"
+	"github.com/filescodebox/core/pkg/auth"
+	"github.com/filescodebox/core/repo/db"
+	"github.com/filescodebox/core/repo/db/dao"
+	"github.com/filescodebox/core/repo/db/model"
+	"github.com/glebarez/sqlite"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
+)
+
+// =====================================================================
+// API Key 中间件单测。
+// sqlite :memory: 多连接各见独立库，必须钉死单连接（upload-governance 教训）。
+// =====================================================================
+
+func newAPIKeyTestEnv(t *testing.T) {
+	t.Helper()
+	g, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, g.AutoMigrate(&model.User{}, &model.UserAPIKey{}))
+	sqlDB, err := g.DB()
+	require.NoError(t, err)
+	sqlDB.SetMaxOpenConns(1)
+	db.SetDatabaseInstance(g)
+	t.Cleanup(func() { db.SetDatabaseInstance(nil) })
+	// 重置全局锁定器为纯内存实例 + 清空触碰节流表，测试间隔离（同包直取）
+	InitDefaultLockout(nil)
+	t.Cleanup(func() { InitDefaultLockout(nil) })
+	touchThrottle = sync.Map{}
+}
+
+func newFixtureUser(t *testing.T, status string) *model.User {
+	t.Helper()
+	u := &model.User{
+		Username:     fmt.Sprintf("u_%d", time.Now().UnixNano()),
+		Email:        fmt.Sprintf("u_%d@test.local", time.Now().UnixNano()),
+		PasswordHash: "x",
+		Status:       status,
+		Role:         "user",
+	}
+	require.NoError(t, dao.NewUserRepository().Create(context.Background(), u))
+	return u
+}
+
+func newFixtureKey(t *testing.T, userID uint, mutate func(*model.UserAPIKey)) (string, *model.UserAPIKey) {
+	t.Helper()
+	plain := apiKeyPlainPrefix + fmt.Sprintf("%032x", time.Now().UnixNano())
+	rec := &model.UserAPIKey{UserID: userID, Name: "test", Prefix: plain[:12], KeyHash: sha256Hex(plain)}
+	if mutate != nil {
+		mutate(rec)
+	}
+	require.NoError(t, dao.NewUserAPIKeyRepository().Create(context.Background(), rec))
+	return plain, rec
+}
+
+// performProbe 起 hertz 测试引擎挂中间件链，返回 (状态码, 响应体, 注入的身份, handler 收到的 ctx)。
+func performProbe(t *testing.T, mws []app.HandlerFunc, url string, headers ...ut.Header) (int, string, map[string]interface{}, context.Context) {
+	t.Helper()
+	h := server.New(server.WithHostPorts("127.0.0.1:0"))
+	var captured context.Context
+	var identity map[string]interface{}
+	handler := func(ctx context.Context, c *app.RequestContext) {
+		captured = ctx
+		identity = map[string]interface{}{}
+		for _, k := range []string{"user_id", "username", "role", "api_key_id", "auth_type"} {
+			if v, ok := c.Get(k); ok {
+				identity[k] = v
+			}
+		}
+		c.JSON(http.StatusOK, map[string]string{"ok": "1"})
+	}
+	args := append([]app.HandlerFunc{}, mws...)
+	args = append(args, handler)
+	h.GET("/probe", args...)
+	w := ut.PerformRequest(h.Engine, "GET", url, nil, headers...)
+	return w.Code, w.Body.String(), identity, captured
+}
+
+func hdr(k, v string) ut.Header { return ut.Header{Key: k, Value: v} }
+
+// --- 提取规则 ---
+
+func TestOptionalAPIKey_NoKey_Anonymous(t *testing.T) {
+	newAPIKeyTestEnv(t)
+	u := newFixtureUser(t, "active")
+	newFixtureKey(t, u.ID, nil)
+	code, body, identity, _ := performProbe(t, []app.HandlerFunc{OptionalAPIKey()}, "/probe")
+	assert.Equal(t, 200, code, body)
+	assert.Empty(t, identity, "未携带 Key 必须匿名放行，不注入身份")
+}
+
+func TestOptionalAPIKey_QueryParamIgnored(t *testing.T) {
+	newAPIKeyTestEnv(t)
+	u := newFixtureUser(t, "active")
+	plain, _ := newFixtureKey(t, u.ID, nil)
+	// query 传 Key 必须被无视（防日志/Referer 泄露），按匿名处理
+	code, body, identity, _ := performProbe(t, []app.HandlerFunc{OptionalAPIKey()}, "/probe?api_key="+plain)
+	assert.Equal(t, 200, code, body)
+	assert.Empty(t, identity)
+}
+
+func TestOptionalAPIKey_ValidKey_InjectsIdentity(t *testing.T) {
+	newAPIKeyTestEnv(t)
+	u := newFixtureUser(t, "active")
+	plain, rec := newFixtureKey(t, u.ID, nil)
+
+	code, body, identity, ctx := performProbe(t, []app.HandlerFunc{OptionalAPIKey()}, "/probe",
+		hdr("X-API-Key", plain))
+	assert.Equal(t, 200, code, body)
+	assert.Equal(t, u.ID, identity["user_id"])
+	assert.Equal(t, u.Username, identity["username"])
+	assert.Equal(t, "user", identity["role"])
+	assert.Equal(t, rec.ID, identity["api_key_id"])
+	assert.Equal(t, "api_key", identity["auth_type"])
+	// ctx 方言（service 层审计提取）
+	gotID, ok := UserIDFromContext(ctx)
+	assert.True(t, ok, "API Key 认证必须注入 ctx 身份供 service 层审计")
+	assert.Equal(t, u.ID, gotID)
+}
+
+func TestOptionalAPIKey_BearerFcbSkPrefix(t *testing.T) {
+	newAPIKeyTestEnv(t)
+	u := newFixtureUser(t, "active")
+	plain, _ := newFixtureKey(t, u.ID, nil)
+	code, body, identity, _ := performProbe(t, []app.HandlerFunc{OptionalAPIKey()}, "/probe",
+		hdr("Authorization", "Bearer "+plain))
+	assert.Equal(t, 200, code, body)
+	assert.Equal(t, u.ID, identity["user_id"])
+}
+
+func TestOptionalAPIKey_ApiKeyScheme(t *testing.T) {
+	newAPIKeyTestEnv(t)
+	u := newFixtureUser(t, "active")
+	plain, _ := newFixtureKey(t, u.ID, nil)
+	code, body, identity, _ := performProbe(t, []app.HandlerFunc{OptionalAPIKey()}, "/probe",
+		hdr("Authorization", "ApiKey "+plain))
+	assert.Equal(t, 200, code, body)
+	assert.Equal(t, u.ID, identity["user_id"])
+}
+
+// --- fail-closed：携带即校验 ---
+
+func TestOptionalAPIKey_InvalidKey_401(t *testing.T) {
+	newAPIKeyTestEnv(t)
+	u := newFixtureUser(t, "active")
+	newFixtureKey(t, u.ID, nil)
+	code, body, identity, _ := performProbe(t, []app.HandlerFunc{OptionalAPIKey()}, "/probe",
+		hdr("X-API-Key", apiKeyPlainPrefix+"wrongwrong"))
+	assert.Equal(t, 401, code)
+	assert.Empty(t, identity, "无效 Key 不得放行到 handler")
+	assert.Contains(t, body, "Invalid API Key")
+}
+
+func TestOptionalAPIKey_ExpiredKey_401(t *testing.T) {
+	newAPIKeyTestEnv(t)
+	u := newFixtureUser(t, "active")
+	plain, _ := newFixtureKey(t, u.ID, func(k *model.UserAPIKey) {
+		past := time.Now().Add(-time.Hour)
+		k.ExpiresAt = &past
+	})
+	code, _, _, _ := performProbe(t, []app.HandlerFunc{OptionalAPIKey()}, "/probe", hdr("X-API-Key", plain))
+	assert.Equal(t, 401, code)
+}
+
+func TestOptionalAPIKey_RevokedKey_401(t *testing.T) {
+	newAPIKeyTestEnv(t)
+	u := newFixtureUser(t, "active")
+	plain, _ := newFixtureKey(t, u.ID, func(k *model.UserAPIKey) { k.Revoked = true })
+	code, _, _, _ := performProbe(t, []app.HandlerFunc{OptionalAPIKey()}, "/probe", hdr("X-API-Key", plain))
+	assert.Equal(t, 401, code)
+}
+
+func TestOptionalAPIKey_BannedUser_401(t *testing.T) {
+	newAPIKeyTestEnv(t)
+	u := newFixtureUser(t, "banned")
+	plain, _ := newFixtureKey(t, u.ID, nil)
+	code, _, _, _ := performProbe(t, []app.HandlerFunc{OptionalAPIKey()}, "/probe", hdr("X-API-Key", plain))
+	assert.Equal(t, 401, code, "封禁用户的 Key 必须失效")
+}
+
+// --- lockout 防爆破 ---
+
+func TestOptionalAPIKey_LockoutAfterMaxFailures(t *testing.T) {
+	newAPIKeyTestEnv(t)
+	u := newFixtureUser(t, "active")
+	plain, _ := newFixtureKey(t, u.ID, nil)
+	bad := apiKeyPlainPrefix + "notarealkey000"
+	// 默认 MaxAttempts=10：前 10 次 401，第 11 次起 429（连有效 Key 也拦）
+	for i := 0; i < 10; i++ {
+		code, _, _, _ := performProbe(t, []app.HandlerFunc{OptionalAPIKey()}, "/probe", hdr("X-API-Key", bad))
+		assert.Equal(t, 401, code, "第 %d 次失败应仍为 401", i+1)
+	}
+	code, body, _, _ := performProbe(t, []app.HandlerFunc{OptionalAPIKey()}, "/probe", hdr("X-API-Key", bad))
+	assert.Equal(t, 429, code, body)
+	assert.Contains(t, body, "锁定")
+	// 锁定期间有效 Key 也被拦（CheckLocked 前置）
+	code, _, _, _ = performProbe(t, []app.HandlerFunc{OptionalAPIKey()}, "/probe", hdr("X-API-Key", plain))
+	assert.Equal(t, 429, code)
+}
+
+// --- TouchLastUsed 节流 ---
+
+func TestShouldTouchLastUsed_Throttle(t *testing.T) {
+	now := time.Now()
+	assert.True(t, shouldTouchLastUsed(1, now), "首次必须写")
+	assert.False(t, shouldTouchLastUsed(1, now.Add(30*time.Second)), "60s 内不重复写")
+	assert.True(t, shouldTouchLastUsed(1, now.Add(61*time.Second)), "超 60s 再写")
+	assert.True(t, shouldTouchLastUsed(2, now), "不同 Key 互不影响")
+}
+
+func TestOptionalAPIKey_TouchLastUsedThrottled(t *testing.T) {
+	newAPIKeyTestEnv(t)
+	u := newFixtureUser(t, "active")
+	plain, rec := newFixtureKey(t, u.ID, nil)
+	repo := dao.NewUserAPIKeyRepository()
+	ctx := context.Background()
+
+	_, _, _, _ = performProbe(t, []app.HandlerFunc{OptionalAPIKey()}, "/probe", hdr("X-API-Key", plain))
+	after1, err := repo.GetByID(ctx, rec.ID)
+	require.NoError(t, err)
+	require.NotNil(t, after1.LastUsedAt, "首次使用必须写 last_used_at")
+
+	_, _, _, _ = performProbe(t, []app.HandlerFunc{OptionalAPIKey()}, "/probe", hdr("X-API-Key", plain))
+	after2, err := repo.GetByID(ctx, rec.ID)
+	require.NoError(t, err)
+	assert.Equal(t, after1.LastUsedAt.Unix(), after2.LastUsedAt.Unix(), "60s 内第二次使用不得再写库")
+}
+
+// --- UserOrAPIKey ---
+
+func TestUserOrAPIKey_ValidJWT(t *testing.T) {
+	newAPIKeyTestEnv(t)
+	auth.SetJWTSecret("test-secret-for-apikey")
+	t.Cleanup(func() { auth.SetJWTSecret("") })
+	u := newFixtureUser(t, "active")
+	token, err := auth.GenerateToken(u.ID, u.Username, u.Role)
+	require.NoError(t, err)
+	code, body, identity, _ := performProbe(t, []app.HandlerFunc{UserOrAPIKey()}, "/probe",
+		hdr("Authorization", "Bearer "+token))
+	assert.Equal(t, 200, code, body)
+	assert.Equal(t, u.ID, identity["user_id"])
+}
+
+func TestUserOrAPIKey_ValidKey(t *testing.T) {
+	newAPIKeyTestEnv(t)
+	u := newFixtureUser(t, "active")
+	plain, _ := newFixtureKey(t, u.ID, nil)
+	code, body, identity, _ := performProbe(t, []app.HandlerFunc{UserOrAPIKey()}, "/probe", hdr("X-API-Key", plain))
+	assert.Equal(t, 200, code, body)
+	assert.Equal(t, u.ID, identity["user_id"])
+	assert.Equal(t, "api_key", identity["auth_type"])
+}
+
+func TestUserOrAPIKey_NoCredentials_401(t *testing.T) {
+	newAPIKeyTestEnv(t)
+	code, _, identity, _ := performProbe(t, []app.HandlerFunc{UserOrAPIKey()}, "/probe")
+	assert.Equal(t, 401, code)
+	assert.Empty(t, identity)
+}
+
+func TestUserOrAPIKey_InvalidJWT_401(t *testing.T) {
+	newAPIKeyTestEnv(t)
+	auth.SetJWTSecret("test-secret-for-apikey")
+	t.Cleanup(func() { auth.SetJWTSecret("") })
+	code, _, _, _ := performProbe(t, []app.HandlerFunc{UserOrAPIKey()}, "/probe",
+		hdr("Authorization", "Bearer not.a.jwt"))
+	assert.Equal(t, 401, code)
+}
+
+// --- OptionalIdentity（JWT 路为既有语义：无效 JWT 降级匿名） ---
+
+func TestOptionalIdentity_MixedCredentials(t *testing.T) {
+	newAPIKeyTestEnv(t)
+	u := newFixtureUser(t, "active")
+	plain, _ := newFixtureKey(t, u.ID, nil)
+
+	// 有效 Key → 身份注入
+	code, _, identity, _ := performProbe(t, OptionalIdentity(), "/probe", hdr("X-API-Key", plain))
+	assert.Equal(t, 200, code)
+	assert.Equal(t, u.ID, identity["user_id"])
+
+	// 无效 JWT → 匿名放行（既有 OptionalAuth 语义，不 401）
+	code, _, identity, _ = performProbe(t, OptionalIdentity(), "/probe", hdr("Authorization", "Bearer junk.token.here"))
+	assert.Equal(t, 200, code)
+	assert.Empty(t, identity)
+
+	// 无凭证 → 匿名
+	code, _, identity, _ = performProbe(t, OptionalIdentity(), "/probe")
+	assert.Equal(t, 200, code)
+	assert.Empty(t, identity)
+}
