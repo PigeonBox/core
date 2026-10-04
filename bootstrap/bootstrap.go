@@ -269,6 +269,14 @@ var envBindings = map[string][]string{
 	"storage.type":         {"FCB_STORAGE_TYPE"},
 	"storage.storage_path": {"FCB_STORAGE_PATH"},
 	"storage.quota":        {"FCB_STORAGE_QUOTA"},
+	// storage.s3(config.example.yaml 注明"生产请用 env 注入",此前映射缺失,现补齐)
+	"storage.s3.access_key": {"FCB_STORAGE_S3_ACCESS_KEY"},
+	"storage.s3.secret_key": {"FCB_STORAGE_S3_SECRET_KEY"},
+	"storage.s3.endpoint":   {"FCB_STORAGE_S3_ENDPOINT"},
+	"storage.s3.region":     {"FCB_STORAGE_S3_REGION"},
+	"storage.s3.bucket":     {"FCB_STORAGE_S3_BUCKET"},
+	"storage.s3.use_ssl":    {"FCB_STORAGE_S3_USE_SSL"},
+	"storage.s3.path_style": {"FCB_STORAGE_S3_PATH_STYLE"},
 	// download
 	"download.s3_direct_download": {"FCB_DOWNLOAD_S3_DIRECT"},
 	// observability
