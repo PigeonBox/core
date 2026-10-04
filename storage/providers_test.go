@@ -55,8 +55,16 @@ func TestResolveCloudProvider_Validation(t *testing.T) {
 	assert.Error(t, err)
 	_, err = ResolveCloudProvider(StorageTypeOSS, "cn-hangzhou", "", "ak", "sk", "", nil, nil)
 	assert.Error(t, err)
-	_, err = ResolveCloudProvider("gcs", "x", "bk", "ak", "sk", "", nil, nil)
+	_, err = ResolveCloudProvider(StorageType("not-a-provider"), "x", "bk", "ak", "sk", "", nil, nil)
 	assert.Error(t, err)
+}
+
+func TestResolveCloudProvider_GCS(t *testing.T) {
+	// GCS：S3 兼容预设，固定端点（region 无关）
+	opts, err := ResolveCloudProvider(StorageTypeGCS, "", "bk", "ak", "sk", "", nil, nil)
+	require.NoError(t, err)
+	assert.Equal(t, "storage.googleapis.com", opts["endpoint"])
+	assert.Equal(t, "bk", opts["bucket"])
 }
 
 func TestBuildOperator_CloudProviders(t *testing.T) {
