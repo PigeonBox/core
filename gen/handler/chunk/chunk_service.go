@@ -8,6 +8,7 @@ import (
 	"crypto/hmac"
 	"crypto/md5"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/cloudwego/hertz/pkg/app"
@@ -288,6 +290,30 @@ func ChunkUpload(ctx context.Context, c *app.RequestContext) {
 	hash := md5.Sum(data)
 	chunkHash := hex.EncodeToString(hash[:])
 
+	// 分片期望哈希强校验（对齐上游逐片验证；可选参数 hash：32 位=MD5 / 64 位=SHA-256）。
+	// 客户端携带时做恒时比对，不符即拒收该分片（422 retryable）——传输损坏/代理改写
+	// 被限定在单片内，客户端重传该分片即可；未携带时保持旧行为（仅记录服务端 MD5）。
+	if expected := expectedChunkHash(c); expected != "" {
+		digest := chunkHash
+		switch len(expected) {
+		case 64:
+			s := sha256.Sum256(data)
+			digest = hex.EncodeToString(s[:])
+		case 32:
+			// chunkHash 已是 MD5
+		default:
+			expected = "" // 未知长度不校验（可选项不破坏上传）
+		}
+		if expected != "" && subtle.ConstantTimeCompare([]byte(digest), []byte(expected)) != 1 {
+			c.JSON(consts.StatusUnprocessableEntity, map[string]interface{}{
+				"code":    422,
+				"message": "分片哈希校验失败，请重试该分片",
+				"data":    map[string]interface{}{"chunk_index": chunkIndex, "retryable": true},
+			})
+			return
+		}
+	}
+
 	// 保存分片到存储
 	err = getStorageService().SaveChunk(ctx, uploadID, chunkIndex, data)
 	if err != nil {
@@ -433,9 +459,17 @@ func verifyChunkToken(uploadID, token string) bool {
 }
 
 // ownedByCaller 归属校验（治理）：控制记录记有 OwnerIP 时，要求 IP 一致、
+// expectedChunkHash 读取客户端期望的分片哈希：query 优先、multipart form 兜底。
+// 空串表示未携带（跳过校验，保持旧行为）。
+func expectedChunkHash(c *app.RequestContext) string {
+	if h := strings.ToLower(c.Query("hash")); h != "" {
+		return h
+	}
+	return strings.ToLower(string(c.FormValue("hash")))
+}
+
 // 同一登录用户或持有效会话令牌。老数据（OwnerIP 为空）跳过保持兼容。
-func ownedByCaller(info *model.UploadChunk, c *app.RequestContext) bool {
-	if info.OwnerIP == "" {
+func ownedByCaller(info *model.UploadChunk, c *app.RequestContext) bool {	if info.OwnerIP == "" {
 		return true
 	}
 	if info.OwnerIP == middleware.ClientIP(c) {

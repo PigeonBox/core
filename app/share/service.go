@@ -2,19 +2,17 @@ package share
 
 import (
 	"context"
-	"crypto/rand"
 	"errors"
 	"fmt"
-	"math/big"
 	"strings"
 	"time"
 
 	"github.com/filescodebox/contracts/errcode"
 	"github.com/filescodebox/core/app/moderation"
+	"github.com/filescodebox/core/conf"
 	"github.com/filescodebox/core/pkg/logger"
 	"github.com/filescodebox/core/pkg/metrics"
 	"github.com/filescodebox/core/pkg/utils"
-	"github.com/filescodebox/core/repo/db"
 	"github.com/filescodebox/core/repo/db/dao"
 	"github.com/filescodebox/core/repo/db/model"
 	"github.com/filescodebox/core/storage"
@@ -152,13 +150,10 @@ func (s *Service) SetShareStatus(ctx context.Context, ids []uint, status string)
 	return s.fileCodeRepo.UpdateStatusByIDs(ctx, ids, status)
 }
 
-// IsTextShare 判定是否纯文本分享：Text 非空且无文件路径。
-//
-// 回归要点（P0）：ShareFile 会把原始文件名存进 Text 字段，因此仅凭
-// Text != "" 判定会把文件分享误判为文本——文件下载曾被文本分支拦截，
-// 返回文件名字符串而非文件内容（smoke 只测文本分享所以长期未暴露）。
+// IsTextShare 判定是否纯文本分享（领域事实已下沉 model.FileCode.IsTextShare；
+// 本包装保留给既有调用方，逐步迁移后可删）。
 func IsTextShare(fc *model.FileCode) bool {
-	return fc != nil && fc.Text != "" && fc.FilePath == ""
+	return fc.IsTextShare()
 }
 
 func NewService(baseURL string, storageService storage.StorageInterface) *Service {
@@ -242,21 +237,10 @@ func (s *Service) createWithCode(ctx context.Context, customCode string, build f
 	return fc, nil
 }
 
-// GenerateCode 生成分享代码（crypto/rand，8 位字母数字）。
+// GenerateCode 生成分享代码（8 位字母数字，crypto/rand 经 utils 统一收口）。
 func (s *Service) GenerateCode() string {
 	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-	const length = 8
-	max := big.NewInt(int64(len(charset)))
-	b := make([]byte, length)
-	for i := range b {
-		n, err := rand.Int(rand.Reader, max)
-		if err != nil {
-			// 极端回退（crypto/rand 几乎不会失败）
-			n = big.NewInt(int64(time.Now().UnixNano()) % int64(len(charset)))
-		}
-		b[i] = charset[n.Int64()]
-	}
-	return string(b)
+	return utils.RandomString(charset, 8)
 }
 
 // createWithRetry 通用写库重试（code 唯一冲突时换码重试，最多 5 次）。
@@ -296,12 +280,8 @@ func (s *Service) ShareText(ctx context.Context, req *ShareTextReq) (*ShareResp,
 		return nil, err
 	}
 
-	// 更新用户统计
-	if s.userService != nil && req.UserID != nil {
-		if err := s.userService.UpdateUserStats(*req.UserID, "uploads", 1); err != nil {
-			logger.Warn("update user uploads stat failed", zap.Error(err), zap.Uint("user_id", *req.UserID))
-		}
-	}
+	// 更新用户统计（次数 +1；文本分享无存储占用）
+	s.bumpUserStats(req.UserID, 0)
 
 	return s.modelToResp(fileCode), nil
 }
@@ -323,15 +303,11 @@ func (s *Service) ShareTextWithAuth(ctx context.Context, text string, expireValu
 	// E2E 密文分享跳过（服务端零知识，无明文可审）。
 	pendingReview := false
 	if !encrypted && s.moderator != nil {
-		switch s.moderator.InspectText(ctx, text) {
-		case moderation.VerdictReject:
-			metrics.RecordModerationHit("reject")
-			metrics.RecordRejected(metrics.RejectModerated)
-			return nil, &ContentRejectedError{}
-		case moderation.VerdictPending:
-			metrics.RecordModerationHit("pending")
-			pendingReview = true
+		p, err := s.inspectText(ctx, text)
+		if err != nil {
+			return nil, err
 		}
+		pendingReview = p
 	}
 
 	// 计算过期时间
@@ -364,19 +340,11 @@ func (s *Service) ShareTextWithAuth(ctx context.Context, text string, expireValu
 	// pending 策略：建分享成功后置 pending_review（取件路径拒绝），并推 share.flagged。
 	// fail-closed：置待审失败时回退为 blocked——审核拦截宁可误禁也不可静默放行。
 	if pendingReview {
-		target := model.StatusPendingReview
-		if _, err := s.SetShareStatus(ctx, []uint{resp.ID}, target); err != nil {
-			logger.Warn("set pending_review failed, fallback to blocked", zap.String("code", resp.Code), zap.Error(err))
-			target = model.StatusBlocked
-			if _, berr := s.SetShareStatus(ctx, []uint{resp.ID}, target); berr != nil {
-				logger.Error("pending fallback blocked failed, removing share", zap.String("code", resp.Code), zap.Error(berr))
-				_ = s.fileCodeRepo.Delete(ctx, resp.ID) // 文本分享无物理文件，直接删记录
-			}
+		status, err := s.applyPending(ctx, resp.ID, resp.Code, "text sensitive word", ownerIP)
+		if err != nil {
+			return nil, err
 		}
-		resp.Status = target // resp 是写库前快照，回填给调用方
-		if s.flagEmitter != nil {
-			s.flagEmitter.EmitShareFlagged(resp.Code, "text sensitive word", ownerIP)
-		}
+		resp.Status = status // resp 是写库前快照，回填给调用方
 	}
 
 	// 生成分享 URL
@@ -384,6 +352,117 @@ func (s *Service) ShareTextWithAuth(ctx context.Context, text string, expireValu
 	resp.FullShareURL = fmt.Sprintf("%s/share/%s", s.baseURL, resp.Code)
 
 	return resp, nil
+}
+
+// ============ 三通道共用私有逻辑（文本 / 单文件 / 多文件） ============
+
+// checkUploadCaps 单用户单次上传上限（users.max_upload_size，0=不限；匿名无此
+// 约束）+ 站点级全局存储配额 + 存储配额强制执行。超限返回带具体上限文案的错误。
+func (s *Service) checkUploadCaps(ctx context.Context, userID *uint, totalSize int64) error {
+	// 站点级全局存储配额（storage.quota，0=不限）：全通道统一闸口
+	// （直传/分片完成/预签名完成/本地导入/多文件均经此处）。统计口径=存活
+	// file_codes 尺寸合计（软删除不计；未完成分片会话暂不计入）。统计故障时
+	// fail-open（配额是治理项而非安全项，不因统计异常拒绝所有上传）。
+	if cfg := conf.GetGlobalConfig(); cfg != nil && cfg.Storage.Quota > 0 {
+		quota := cfg.Storage.Quota
+		s.ensureRepository()
+		if used, err := s.fileCodeRepo.GetTotalSize(ctx); err == nil {
+			if used+totalSize > quota {
+				metrics.RecordRejected(metrics.RejectQuota)
+				return &GlobalQuotaExceededError{Used: used, Quota: quota}
+			}
+		} else {
+			logger.Warn("全局存储配额统计失败，本次跳过配额检查", zap.Error(err))
+		}
+	}
+	if userID != nil && s.userService != nil {
+		if capSize := s.userService.GetUploadSizeCap(ctx, *userID); capSize > 0 {
+			if err := utils.CheckUploadSize(totalSize, capSize); err != nil {
+				return fmt.Errorf("上传总大小超过限制（上限 %d 字节）", capSize)
+			}
+		}
+	}
+	if err := s.checkQuota(ctx, userID, totalSize); err != nil {
+		metrics.RecordRejected(metrics.RejectQuota)
+		return err
+	}
+	return nil
+}
+
+// GlobalQuotaExceededError 站点级存储配额超限（handler 侧按业务码透传 CodeStorageQuota）。
+type GlobalQuotaExceededError struct {
+	Used  int64
+	Quota int64
+}
+
+func (e *GlobalQuotaExceededError) Error() string {
+	return fmt.Sprintf("站点存储空间已满（已用 %d / 上限 %d 字节），请联系管理员清理过期分享或调整配额", e.Used, e.Quota)
+}
+
+func (e *GlobalQuotaExceededError) ErrCode() int { return errcode.CodeStorageQuota }
+
+// bumpUserStats 用户统计双写：次数 +1；size>0 时加存储。best-effort（失败只记日志）。
+func (s *Service) bumpUserStats(userID *uint, size int64) {
+	if s.userService == nil || userID == nil {
+		return
+	}
+	if err := s.userService.UpdateUserStats(*userID, "uploads", 1); err != nil {
+		logger.Warn("update user uploads stat failed", zap.Error(err), zap.Uint("user_id", *userID))
+	}
+	if size != 0 {
+		if err := s.userService.UpdateUserStats(*userID, "storage", size); err != nil {
+			logger.Warn("update user storage stat failed", zap.Error(err), zap.Uint("user_id", *userID))
+		}
+	}
+}
+
+// inspectText 文本审核判定：reject → ContentRejectedError；pending → true。
+func (s *Service) inspectText(ctx context.Context, text string) (bool, error) {
+	switch s.moderator.InspectText(ctx, text) {
+	case moderation.VerdictReject:
+		metrics.RecordModerationHit("reject")
+		metrics.RecordRejected(metrics.RejectModerated)
+		return false, &ContentRejectedError{}
+	case moderation.VerdictPending:
+		metrics.RecordModerationHit("pending")
+		return true, nil
+	}
+	return false, nil
+}
+
+// inspectFile 单文件审核判定（语义同 inspectText；meta 由各通道自组）。
+func (s *Service) inspectFile(ctx context.Context, meta moderation.UploadMeta) (bool, error) {
+	switch s.moderator.InspectFile(ctx, meta) {
+	case moderation.VerdictReject:
+		metrics.RecordModerationHit("reject")
+		metrics.RecordRejected(metrics.RejectModerated)
+		return false, &ContentRejectedError{}
+	case moderation.VerdictPending:
+		metrics.RecordModerationHit("pending")
+		return true, nil
+	}
+	return false, nil
+}
+
+// applyPending pending 处置（fail-closed，三通道共用）：置 pending_review 失败
+// 回退 blocked；回退也失败删记录并拒绝——审核拦截宁可误禁也不可静默放行。
+// 成功返回最终 status（供调用方回填响应快照）。
+func (s *Service) applyPending(ctx context.Context, id uint, code, reason, ownerIP string) (string, error) {
+	target := model.StatusPendingReview
+	if _, err := s.SetShareStatus(ctx, []uint{id}, target); err != nil {
+		logger.Warn("set pending_review failed, fallback to blocked", zap.String("code", code), zap.Error(err))
+		target = model.StatusBlocked
+		if _, berr := s.SetShareStatus(ctx, []uint{id}, target); berr != nil {
+			logger.Error("pending fallback blocked failed, removing share", zap.String("code", code), zap.Error(berr))
+			_ = s.fileRepo().SoftDeleteByFileCodeIDs(ctx, []uint{id}) // 文本分享无子行，no-op
+			_ = s.fileCodeRepo.Delete(ctx, id)
+			return "", &ContentRejectedError{}
+		}
+	}
+	if s.flagEmitter != nil {
+		s.flagEmitter.EmitShareFlagged(code, reason, ownerIP)
+	}
+	return target, nil
 }
 
 // ShareFile 分享文件
@@ -396,18 +475,8 @@ func (s *Service) ShareFile(ctx context.Context, req *ShareFileReq) (*ShareResp,
 func (s *Service) CreateShare(ctx context.Context, req *ShareFileReq) (*ShareResp, error) {
 	s.ensureRepository()
 
-	// 单用户单次上传上限（users.max_upload_size 接线，0=不限；匿名无此约束）
-	if req.UserID != nil && s.userService != nil {
-		if capSize := s.userService.GetUploadSizeCap(ctx, *req.UserID); capSize > 0 {
-			if err := utils.CheckUploadSize(req.Size, capSize); err != nil {
-				return nil, fmt.Errorf("单次上传大小超过限制（上限 %d 字节）", capSize)
-			}
-		}
-	}
-
-	// 存储配额强制执行（此前字段存在但从未生效）
-	if err := s.checkQuota(ctx, req.UserID, req.Size); err != nil {
-		metrics.RecordRejected(metrics.RejectQuota)
+	// 单用户单次上传上限 + 存储配额强制执行
+	if err := s.checkUploadCaps(ctx, req.UserID, req.Size); err != nil {
 		return nil, err
 	}
 
@@ -424,15 +493,11 @@ func (s *Service) CreateShare(ctx context.Context, req *ShareFileReq) (*ShareRes
 			Channel:     req.Channel,
 			StoragePath: req.FilePath, // 文件内容扫描（ClamAV）读取路径
 		}
-		switch s.moderator.InspectFile(ctx, meta) {
-		case moderation.VerdictReject:
-			metrics.RecordModerationHit("reject")
-			metrics.RecordRejected(metrics.RejectModerated)
-			return nil, &ContentRejectedError{}
-		case moderation.VerdictPending:
-			metrics.RecordModerationHit("pending")
-			filePending = true
+		p, err := s.inspectFile(ctx, meta)
+		if err != nil {
+			return nil, err
 		}
+		filePending = p
 	}
 
 	fileCode, err := s.createWithCode(ctx, req.CustomCode, func(code string) *model.FileCode {
@@ -476,29 +541,13 @@ func (s *Service) CreateShare(ctx context.Context, req *ShareFileReq) (*ShareRes
 		}
 	}
 
-	// 更新用户统计
-	if s.userService != nil && req.UserID != nil {
-		if err := s.userService.UpdateUserStats(*req.UserID, "uploads", 1); err != nil {
-			logger.Warn("update user uploads stat failed", zap.Error(err), zap.Uint("user_id", *req.UserID))
-		}
-		if err := s.userService.UpdateUserStats(*req.UserID, "storage", req.Size); err != nil {
-			logger.Warn("update user storage stat failed", zap.Error(err), zap.Uint("user_id", *req.UserID))
-		}
-	}
+	// 更新用户统计（次数 +1，存储按文件大小）
+	s.bumpUserStats(req.UserID, req.Size)
 
 	// 文件 pending 策略（fail-closed 同文本通道）
 	if filePending {
-		target := model.StatusPendingReview
-		if _, err := s.SetShareStatus(ctx, []uint{fileCode.ID}, target); err != nil {
-			target = model.StatusBlocked
-			if _, berr := s.SetShareStatus(ctx, []uint{fileCode.ID}, target); berr != nil {
-				logger.Error("file pending fallback blocked failed, removing share", zap.String("code", fileCode.Code), zap.Error(berr))
-				_ = s.fileCodeRepo.Delete(ctx, fileCode.ID)
-				return nil, &ContentRejectedError{}
-			}
-		}
-		if s.flagEmitter != nil {
-			s.flagEmitter.EmitShareFlagged(fileCode.Code, "file flagged by moderator", req.OwnerIP)
+		if _, err := s.applyPending(ctx, fileCode.ID, fileCode.Code, "file flagged by moderator", req.OwnerIP); err != nil {
+			return nil, err
 		}
 	}
 
@@ -588,9 +637,7 @@ func (s *Service) DeleteFileByCode(ctx context.Context, code string, userID uint
 	}
 
 	// 3. 删除数据库记录（事务）
-	if err := db.GetDB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		return tx.Delete(&model.FileCode{}, file.ID).Error
-	}); err != nil {
+	if err := s.fileCodeRepo.DeleteByIDTx(ctx, file.ID); err != nil {
 		return fmt.Errorf("删除分享记录失败: %w", err)
 	}
 
@@ -619,11 +666,8 @@ func (s *Service) DeleteFileByCode(ctx context.Context, code string, userID uint
 	return nil
 }
 
-// GetFileList 获取文件列表
-func (s *Service) GetFileList(ctx context.Context, page, pageSize int, search string) ([]*model.FileCode, int64, error) {
-	s.ensureRepository()
-	return s.fileCodeRepo.List(ctx, page, pageSize, search)
-}
+// GetFileList 已删除：全库无调用方的 List 薄包装（管理端列表走 admin.GetFiles，
+// 用户列表走 ListUserShares）。
 
 // UpdateFileUsage 原子扣减剩余次数（DB 为准，防并发超卖）。
 // 返回 ok=true 表示扣减成功（可下载）；ok=false 表示已耗尽。
@@ -772,10 +816,17 @@ func deletedAtToPtr(d gorm.DeletedAt) *time.Time {
 	return nil
 }
 
-// ListUserShares 获取用户的分享列表（带筛选）
-func (s *Service) ListUserShares(ctx context.Context, userID uint, filter dao.UserShareFilter) ([]*UserShareListItem, int64, error) {
+// ListUserShares 获取用户的分享列表（带筛选）。
+// status 取值：all/active/expired/text/file/deleted；search 模糊匹配 code/文件名。
+// 筛选条件收散参由本域转换，transport 无需感知 dao.UserShareFilter。
+func (s *Service) ListUserShares(ctx context.Context, userID uint, status, search string, page, pageSize int) ([]*UserShareListItem, int64, error) {
 	s.ensureRepository()
-	files, total, err := s.fileCodeRepo.GetUserSharesWithFilter(ctx, userID, filter)
+	files, total, err := s.fileCodeRepo.GetUserSharesWithFilter(ctx, userID, dao.UserShareFilter{
+		Status:   status,
+		Search:   search,
+		Page:     page,
+		PageSize: pageSize,
+	})
 	if err != nil {
 		return nil, 0, err
 	}

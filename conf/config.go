@@ -227,8 +227,11 @@ type DownloadConfig struct {
 // ks3(金山云) / obs(华为云) / webdav。云厂商均走 S3 兼容协议（endpoint 可由
 // region 自动推导），各自配置段字段同 CloudStorageConfig。
 type StorageConfig struct {
-	Type        string              `mapstructure:"type"` // local, s3, oss, cos, bos, ks3, obs, webdav
-	StoragePath string              `mapstructure:"storage_path"`
+	Type        string `mapstructure:"type"` // local, s3, oss, cos, bos, ks3, obs, webdav
+	StoragePath string `mapstructure:"storage_path"`
+	// Quota 站点级全局存储配额（字节，0=不限）。统计口径=存活 file_codes 尺寸合计；
+	// 全通道统一闸口（直传/分片完成/预签名完成/本地导入/多文件）。env: FCB_STORAGE_QUOTA
+	Quota       int64               `mapstructure:"quota"`
 	S3          *S3Config           `mapstructure:"s3"`
 	WebDAV      *WebDAVConfig       `mapstructure:"webdav"`
 	OSS         *CloudStorageConfig `mapstructure:"oss"`
@@ -269,10 +272,11 @@ type WebDAVConfig struct {
 }
 
 // UIConfig 前端 UI 相关配置。
-// 仅保留实际消费的 robots_text；主题/背景/透明度等旧单体遗留键已随假开关清理移除
-// （theme 系统未迁移，待实装时按新形状回归）。
+// showAdminAddr：公开页脚是否展示管理后台入口（默认隐藏；/admin 始终可直达，
+// 此键仅控制入口可见性）。其余 theme/background 等键待主题系统实装时按新形状回归。
 type UIConfig struct {
-	RobotsText string `mapstructure:"robots_text"`
+	RobotsText    string `mapstructure:"robots_text"`
+	ShowAdminAddr bool   `mapstructure:"show_admin_addr"`
 }
 
 // ObservabilityConfig 可观测性配置（metrics；分布式追踪见路线图，未实现前不暴露配置）

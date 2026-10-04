@@ -23,6 +23,7 @@ import (
 	"github.com/filescodebox/core/pkg/middleware"
 	"github.com/filescodebox/core/pkg/resp"
 	securityPkg "github.com/filescodebox/core/pkg/security"
+	"github.com/filescodebox/core/pkg/transfer"
 	previewPkg "github.com/filescodebox/core/preview"
 	"github.com/filescodebox/core/repo/db"
 	"github.com/filescodebox/core/repo/db/model"
@@ -267,6 +268,7 @@ var envBindings = map[string][]string{
 	// storage
 	"storage.type":         {"FCB_STORAGE_TYPE"},
 	"storage.storage_path": {"FCB_STORAGE_PATH"},
+	"storage.quota":        {"FCB_STORAGE_QUOTA"},
 	// download
 	"download.s3_direct_download": {"FCB_DOWNLOAD_S3_DIRECT"},
 	// observability
@@ -542,6 +544,11 @@ func BootstrapWithOptions(configPath string, opts ...Option) (*server.Hertz, err
 	if err != nil {
 		return nil, fmt.Errorf("failed to init database: %w", err)
 	}
+
+	// pkg 层持久化能力注入（pkg/middleware、pkg/transfer 不依赖 repo 层，
+	// 由 composition root 以 dao 桥接；须先于任何服务流量）
+	middleware.SetAPIKeyStore(daoAPIKeyStore{})
+	transfer.SetSink(daoTransferSink{})
 
 	// 3.5 初始化 Redis（匿名取件码 / presign 会话 / 分布式限流依赖）。
 	// 此前 bootstrap 从不调用 redis.Init，GetClient() 恒为 nil，
@@ -1075,6 +1082,8 @@ func publicConfigHandler(ctx context.Context, c *app.RequestContext) {
 		"initialized": initialized,
 		// OIDC 登录按钮开关（P2 SSO；security.oidc.enabled）
 		"oidcEnabled": conf.GetGlobalConfig().Security.OIDC.Enabled,
+		// 管理入口可见性（ui.show_admin_addr；/admin 路由始终可达，仅控制页脚入口展示）
+		"showAdminAddr": config.UI.ShowAdminAddr,
 	})
 }
 
@@ -1246,9 +1255,10 @@ func initThriftIDLServices(database *gorm.DB) {
 	middleware.InitDefaultLockout(redis.GetClient())
 	auth.SetBlacklistRedis(redis.GetClient())
 
-	// 4.6 管理端 admin service（单一实例：路由增强与存储配置持久化共用，
-	// 避免 runtime_storage 段在多实例间读写漂移——字段本身可跨实例 JSON 往返）
-	adminSvc := adminApp.NewService()
+	// 4.6 管理端 admin service（全站唯一实例 Default()：system_configs 为单行
+	// JSON 读改写语义，多实例各自缓存内存副本会互相覆盖——2026-10-03 事故；
+	// 路由增强/存储配置持久化/MCP/定时清理与 gen admin handler 共用同一实例）
+	adminSvc := adminApp.Default()
 
 	// 4.6.1 storage 管理 service（连接测试/在线切换：认证级 Probe + 热重载 + 持久化）
 	storageSvc := storageApp.NewService()
@@ -1289,19 +1299,18 @@ func initThriftIDLServices(database *gorm.DB) {
 	shareHandler.SetStorage(bootstrapStorage)
 	previewHandler.SetStorage(bootstrapStorage)
 
-	// 6.5 MCP server（AI 客户端集成）：统计/维护走带 storage 的 admin service，
+	// 6.5 MCP server（AI 客户端集成）：统计/维护走全站唯一 admin 实例，
 	//     分享创建走 share service（复用配额/审计链路）
 	if config.MCP.Enabled {
 		mcpService = mcpApp.NewService(config.App.Version)
-		mcpService.SetAdminService(cleanupSvcWithStorage(bootstrapStorage))
+		mcpService.SetAdminService(adminSvc)
 		mcpService.SetShareService(shareSvc)
 	}
 
-	// 7. 启动过期文件定时清理（默认每小时，删 DB 记录 + 物理文件）
-	//    独立 admin service 实例（避免与 handler 实例竞争），注入 storage
-	cleanupSvc := adminApp.NewService()
-	cleanupSvc.SetStorage(bootstrapStorage)
-	go startExpiredFileCleanup(cleanupSvc)
+	// 7. 启动过期文件定时清理（默认每小时，删 DB 记录 + 物理文件），
+	//    复用全站唯一 admin 实例（storage 注入幂等）
+	adminSvc.SetStorage(bootstrapStorage)
+	go startExpiredFileCleanup(adminSvc)
 	// API Key 临期站内通知（波次3）：6h 周期，提前 7 天提醒属主
 	go startAPIKeyExpiryNotify()
 	// 存储对账 + 日志保留（治理 2026-10-03）：24h 周期，启动 10 分钟后首跑
@@ -1313,13 +1322,6 @@ var mcpService *mcpApp.Service
 
 // requestSvcInstance 寄件码服务实例（initThriftIDLServices 装配）
 var requestSvcInstance *requestApp.Service
-
-// cleanupSvcWithStorage 创建带 storage 的 admin service 实例
-func cleanupSvcWithStorage(st storage.StorageInterface) *adminApp.Service {
-	svc := adminApp.NewService()
-	svc.SetStorage(st)
-	return svc
-}
 
 // startExpiredFileCleanup 定时清理过期文件（DB 记录 + 物理文件）。
 // 默认每 1 小时执行一次；懒清理由取件路径覆盖（GetFileByCode 发现过期即返回错误）。
@@ -1408,11 +1410,46 @@ func getBootstrapStorageService() *storage.StorageService {
 	return bootstrapStorageSvc
 }
 
+// ===== pkg 层持久化桥 =====
+// pkg/middleware、pkg/transfer 不直接依赖 repo 层（底层包方向纯净），
+// 持久化能力由 composition root 在此以 dao 实现注入。
+
+// daoAPIKeyStore pkg/middleware.APIKeyStore 的 dao 桥。
+type daoAPIKeyStore struct{}
+
+func (daoAPIKeyStore) FindActiveByHash(ctx context.Context, hash string) (*middleware.APIKeyPrincipal, error) {
+	key, err := dao.NewUserAPIKeyRepository().GetActiveByHash(ctx, hash)
+	if err != nil {
+		return nil, err
+	}
+	user, err := dao.NewUserRepository().GetByID(ctx, key.UserID)
+	if err != nil || user.Status != "active" {
+		// 封禁/停用用户的 Key 视为无效 Key（调用方计入防爆破，防枚举）
+		return nil, fmt.Errorf("api key invalid")
+	}
+	return &middleware.APIKeyPrincipal{KeyID: key.ID, UserID: user.ID, Username: user.Username, Role: user.Role}, nil
+}
+
+func (daoAPIKeyStore) TouchLastUsed(ctx context.Context, keyID uint, ip string) error {
+	return dao.NewUserAPIKeyRepository().TouchLastUsed(ctx, keyID, ip)
+}
+
+// daoTransferSink pkg/transfer.Sink 的 dao 桥。
+type daoTransferSink struct{}
+
+func (daoTransferSink) Create(ctx context.Context, e transfer.Entry) error {
+	return dao.NewTransferLogRepository().Create(ctx, &model.TransferLog{
+		Operation: e.Operation, FileCodeID: e.FileCodeID, FileCode: e.Code,
+		FileName: e.FileName, FileSize: e.FileSize, UserID: e.UserID,
+		APIKeyID: e.APIKeyID, Username: e.Username, IP: e.IP, DurationMs: e.DurationMs,
+	})
+}
+
 // restoreRuntimeStorage 启动时把 system_configs.runtime_storage 恢复进全局配置。
 // 优先级：env（FCB_STORAGE_TYPE/FCB_STORAGE_PATH）> DB（管理端在线修改的意图，
 // 晚于 yaml）> yaml。DB 无记录时不动 conf（yaml/env 生效）。
 func restoreRuntimeStorage() {
-	rs := adminApp.NewService().LoadRuntimeStorage(context.Background())
+	rs := adminApp.Default().LoadRuntimeStorage(context.Background()) // DB 已于 InitDatabase 就绪
 	if rs == nil {
 		return
 	}
