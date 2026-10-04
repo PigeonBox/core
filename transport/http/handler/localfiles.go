@@ -90,18 +90,9 @@ func AdminImportLocalFile(ctx context.Context, c *app.RequestContext) {
 		c.JSON(consts.StatusBadRequest, map[string]interface{}{"code": 400, "message": err.Error()})
 		return
 	}
-	passwordHash := ""
-	if body.RequireAuth {
-		if body.Password == "" {
-			c.JSON(consts.StatusBadRequest, map[string]interface{}{"code": 400, "message": "开启密码保护时必须提供密码"})
-			return
-		}
-		hash, err := utils.HashPassword(body.Password)
-		if err != nil {
-			c.JSON(consts.StatusInternalServerError, map[string]interface{}{"code": 500, "message": "密码处理失败"})
-			return
-		}
-		passwordHash = hash
+	passwordHash, ok := resolveSharePassword(c, body.RequireAuth, body.Password)
+	if !ok {
+		return
 	}
 	absPath, err := shareService.LocalImportAbsPath(body.Root, body.Path)
 	if err != nil {

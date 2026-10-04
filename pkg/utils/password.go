@@ -1,6 +1,26 @@
 package utils
 
-import "golang.org/x/crypto/bcrypt"
+import (
+	"errors"
+
+	"golang.org/x/crypto/bcrypt"
+)
+
+// ErrPasswordRequired 开启密码保护但未提供密码（调用方映射为 400）。
+var ErrPasswordRequired = errors.New("password required")
+
+// ResolveSharePassword 分享密码守卫的统一收口：
+// requireAuth=false 返回空哈希；requireAuth=true 时密码为空返回
+// ErrPasswordRequired，否则返回 bcrypt 哈希（哈希失败返回底层错误）。
+func ResolveSharePassword(requireAuth bool, password string) (string, error) {
+	if !requireAuth {
+		return "", nil
+	}
+	if password == "" {
+		return "", ErrPasswordRequired
+	}
+	return HashPassword(password)
+}
 
 // HashPassword 用 bcrypt(cost=10) 哈希密码。
 // 空密码返回空字符串（表示"无密码"），不哈希。

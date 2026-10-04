@@ -21,9 +21,15 @@ import (
 	"go.uber.org/zap"
 )
 
+// redisPipelineSrc 配额计数所需的最小 Redis 能力（*redis.Client 天然满足；
+// 字段收窄为方法集以便注入 mock，注入函数仍收具体客户端）。
+type redisPipelineSrc interface {
+	TxPipeline() redis.Pipeliner
+}
+
 // dailyQuota 匿名日配额计数器。
 type dailyQuota struct {
-	rdb     *redis.Client
+	rdb     redisPipelineSrc
 	mu      sync.Mutex
 	mem     map[string]*quotaEntry // key: ip -> 当日计数
 	memDate string
@@ -37,7 +43,14 @@ type quotaEntry struct {
 var quota = &dailyQuota{mem: map[string]*quotaEntry{}}
 
 // SetQuotaRedis 注入 Redis（bootstrap 调用；nil = 内存模式）。
-func SetQuotaRedis(rdb *redis.Client) { quota.rdb = rdb }
+// nil 归一化：typed-nil 接口会骗过内存模式守卫（!= nil 判真）。
+func SetQuotaRedis(rdb *redis.Client) {
+	if rdb == nil {
+		quota.rdb = nil
+		return
+	}
+	quota.rdb = rdb
+}
 
 // QuotaLimits 当前生效的匿名日配额（0 = 不限）。
 func QuotaLimits() (count int64, bytes int64) {

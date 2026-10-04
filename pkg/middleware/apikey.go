@@ -14,7 +14,6 @@ import (
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/filescodebox/contracts/errcode"
 	"github.com/filescodebox/core/conf"
-	"github.com/filescodebox/core/repo/db/dao"
 	"golang.org/x/time/rate"
 )
 
@@ -138,6 +137,30 @@ func allowPerKey(keyID uint, qps, burst int) bool {
 	return e.limiter.Allow()
 }
 
+// ===== 持久化能力（注入式：pkg 不依赖 repo/db/dao，composition root 装配）=====
+
+// APIKeyPrincipal 认证所需的最小身份事实（user_api_keys × users 两表提炼，
+// pkg 不直接引用 repo 模型类型）。
+type APIKeyPrincipal struct {
+	KeyID    uint
+	UserID   uint
+	Username string
+	Role     string
+}
+
+// APIKeyStore API Key 认证所需持久化能力（bootstrap 注入 dao 桥实现）。
+// 语义约定：Key 不存在/已吊销/已过期/属主非 active 状态统一返回 error，
+// 调用方不区分原因（防枚举）。
+type APIKeyStore interface {
+	FindActiveByHash(ctx context.Context, keyHash string) (*APIKeyPrincipal, error)
+	TouchLastUsed(ctx context.Context, keyID uint, ip string) error
+}
+
+var apiKeyStore APIKeyStore // nil = 未装配，validateAPIKey fail-closed
+
+// SetAPIKeyStore 注入持久化实现（bootstrap 装配调用）。
+func SetAPIKeyStore(s APIKeyStore) { apiKeyStore = s }
+
 // ===== 校验与身份注入 =====
 
 // validateAPIKey 校验明文 Key 并注入身份（与 JWT 中间件双写方言一致：
@@ -157,40 +180,39 @@ func validateAPIKey(ctx context.Context, c *app.RequestContext, plainKey string)
 		return ctx, &LockedError{RemainingSeconds: remain}
 	}
 
-	keyRepo := dao.NewUserAPIKeyRepository()
-	key, err := keyRepo.GetActiveByHash(ctx, sha256Hex(plainKey))
-	if err != nil {
+	if apiKeyStore == nil {
+		// 持久化未装配（bootstrap 未桥接/单测未注入）：fail-closed，
+		// 与无效 Key 同路径计入防爆破，不泄露装配缺失细节
 		_, _ = lock.RecordFailure(ctx, lockKey)
 		return ctx, errInvalidAPIKey
 	}
-
-	user, err := dao.NewUserRepository().GetByID(ctx, key.UserID)
-	if err != nil || user.Status != "active" {
-		// 封禁/停用用户的 Key 视为无效 Key（同样计入防爆破）
+	principal, err := apiKeyStore.FindActiveByHash(ctx, sha256Hex(plainKey))
+	if err != nil {
+		// Key 不存在/已吊销/已过期/属主非 active 统一按无效 Key 处理（防枚举）
 		_, _ = lock.RecordFailure(ctx, lockKey)
 		return ctx, errInvalidAPIKey
 	}
 	lock.Reset(ctx, lockKey)
 
 	// 单 Key 独立限流（先于 Touch：被限流的请求不计入使用统计）
-	if qps, burst := perKeyQPS(); !allowPerKey(key.ID, qps, burst) {
+	if qps, burst := perKeyQPS(); !allowPerKey(principal.KeyID, qps, burst) {
 		return ctx, errPerKeyRateLimited
 	}
 
-	if shouldTouchLastUsed(key.ID, time.Now()) {
-		_ = keyRepo.TouchLastUsed(ctx, key.ID, ClientIP(c))
+	if shouldTouchLastUsed(principal.KeyID, time.Now()) {
+		_ = apiKeyStore.TouchLastUsed(ctx, principal.KeyID, ClientIP(c))
 	}
 
-	c.Set("user_id", user.ID)
-	c.Set("username", user.Username)
-	c.Set("role", user.Role)
-	c.Set("api_key_id", key.ID)   // 与 transport 侧 ContextKeyAPIKeyID 同字符串
-	c.Set("auth_type", "api_key") // 与 transport 侧 ContextKeyAuthType 同字符串
-	c.Header("X-User-ID", fmt.Sprintf("%d", user.ID))
-	c.Header("X-Username", user.Username)
-	c.Header("X-Role", user.Role)
+	c.Set("user_id", principal.UserID)
+	c.Set("username", principal.Username)
+	c.Set("role", principal.Role)
+	c.Set("api_key_id", principal.KeyID) // 与 transport 侧 ContextKeyAPIKeyID 同字符串
+	c.Set("auth_type", "api_key")        // 与 transport 侧 ContextKeyAuthType 同字符串
+	c.Header("X-User-ID", fmt.Sprintf("%d", principal.UserID))
+	c.Header("X-Username", principal.Username)
+	c.Header("X-Role", principal.Role)
 
-	return withIdentity(ctx, user.ID, user.Username, user.Role, ClientIP(c), key.ID), nil
+	return withIdentity(ctx, principal.UserID, principal.Username, principal.Role, ClientIP(c), principal.KeyID), nil
 }
 
 // respondAPIKeyError 统一错误响应：总开关关闭 → 401；被锁定/单 Key 限流 → 429；无效 → 401（统一文案防枚举）。

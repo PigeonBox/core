@@ -19,7 +19,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/filescodebox/core/storage"
 	"io"
 	"os"
 	"path/filepath"
@@ -46,9 +45,17 @@ var (
 	ErrAlreadyComplete = errors.New("upload already completed")
 )
 
+// redisKV presign 会话所需的最小 Redis 命令集（*redis.Client 天然满足；
+// 字段收窄为方法集以便注入内存 mock，构造函数仍收具体客户端）。
+type redisKV interface {
+	Get(ctx context.Context, key string) *redis.StringCmd
+	Set(ctx context.Context, key string, value any, expiration time.Duration) *redis.StatusCmd
+	Del(ctx context.Context, keys ...string) *redis.IntCmd
+}
+
 // Service 预签名上传 service
 type Service struct {
-	rdb           *redis.Client
+	rdb           redisKV
 	defaultExpire time.Duration
 	signingKey    []byte
 	baseURL       string
@@ -75,6 +82,13 @@ type StorageWriter interface {
 	DeleteFile(ctx context.Context, filePath string) error
 }
 
+// streamWriter 流式写入能力（*storage.StorageService 实现；storage 包的
+// StorageInterface 自身已含 SaveStream）。包内私有能力探测：有则流式写，
+// 无则退化为缓冲写——避免为类型断言具体实现而 import 存储包。
+type streamWriter interface {
+	SaveStream(ctx context.Context, savePath string, r io.Reader, expectedSize int64) (int64, error)
+}
+
 // ObjectStore 真预签名直传能力（由 *storage.StorageService 实现）。
 // PresignPutURL 对 local/webdav 返回 storage.ErrPresignUnsupported，调用方回退自家中转。
 type ObjectStore interface {
@@ -90,10 +104,15 @@ type ShareServiceInterface interface {
 	CreateShare(ctx context.Context, req *share.ShareFileReq) (*share.ShareResp, error)
 }
 
-// NewService 创建 service
+// NewService 创建 service。rdb nil 归一化：typed-nil 接口会骗过
+// "Redis 可用"守卫（!= nil 判真）。
 func NewService(rdb *redis.Client, baseURL string, signingKey string) *Service {
+	var kv redisKV
+	if rdb != nil {
+		kv = rdb
+	}
 	return &Service{
-		rdb:           rdb,
+		rdb:           kv,
 		defaultExpire: 1 * time.Hour,
 		signingKey:    []byte(signingKey),
 		baseURL:       baseURL,
@@ -155,7 +174,7 @@ func (s *Service) Init(ctx context.Context, meta InitMeta) (*InitResult, error) 
 	}
 	// 类型 + 整文件大小校验（presign 为大文件直传通道，上限走
 	// upload.max_file_size 而非单请求体上限；单请求体上限由 HTTP 层约束）
-	if err := utils.CheckUploadSize(meta.FileSize, utils.GetMaxFileSize()); err != nil {
+	if err := utils.CheckWholeFileSize(meta.FileSize); err != nil {
 		return nil, fmt.Errorf("文件过大: 最大允许 %d 字节", utils.GetMaxFileSize())
 	}
 	if !utils.IsAllowedExtension(meta.FileName) {
@@ -422,7 +441,7 @@ func (s *Service) UploadDirect(ctx context.Context, uploadID, token string, body
 	tee := io.TeeReader(limited, hasher)
 
 	var written int64
-	if ss, ok := s.storage.(*storage.StorageService); ok {
+	if ss, ok := s.storage.(streamWriter); ok {
 		if written, err = ss.SaveStream(ctx, meta.ObjectKey, tee, meta.FileSize); err != nil {
 			return fmt.Errorf("write file failed: %w", err)
 		}

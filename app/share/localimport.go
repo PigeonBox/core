@@ -11,11 +11,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/filescodebox/core/conf"
 	"github.com/filescodebox/core/pkg/utils"
-	"github.com/google/uuid"
 )
 
 // ImportLocalOpts 本地导入参数
@@ -71,8 +69,7 @@ func (s *Service) ImportLocalFile(ctx context.Context, opts ImportLocalOpts) (*S
 	}
 	defer func() { _ = f.Close() }()
 
-	now := time.Now()
-	rel := filepath.Join("uploads", now.Format("2006"), now.Format("01"), now.Format("02"), uuid.New().String()+filepath.Ext(name))
+	_, rel := utils.NewUploadRelPath(name)
 	written, err := s.storage.SaveStream(ctx, rel, f, info.Size())
 	if err != nil {
 		return nil, fmt.Errorf("导入存储失败: %w", err)

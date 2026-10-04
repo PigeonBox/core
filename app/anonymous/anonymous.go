@@ -13,17 +13,14 @@ package anonymous
 
 import (
 	"context"
-	"crypto/rand"
 	"errors"
 	"fmt"
-	"math/big"
 	"strings"
 	"time"
 
 	"github.com/filescodebox/contracts/errcode"
 	"github.com/redis/go-redis/v9"
 	"github.com/filescodebox/core/pkg/logger"
-	shareApp "github.com/filescodebox/core/app/share"
 	"github.com/filescodebox/core/pkg/utils"
 	"github.com/filescodebox/core/repo/db/dao"
 	"github.com/filescodebox/core/repo/db/model"
@@ -70,19 +67,33 @@ func (e *BlockedError) ErrCode() int {
 	return errcode.CodeShareBlocked
 }
 
+// redisKV 匿名取件所需的最小 Redis 命令集（*redis.Client 天然满足；
+// 字段收窄为方法集以便注入内存 mock，构造函数仍收具体客户端）。
+type redisKV interface {
+	Get(ctx context.Context, key string) *redis.StringCmd
+	Set(ctx context.Context, key string, value any, expiration time.Duration) *redis.StatusCmd
+	SetArgs(ctx context.Context, key string, value any, a redis.SetArgs) *redis.StatusCmd
+	Del(ctx context.Context, keys ...string) *redis.IntCmd
+}
+
 // Service 匿名取件 service。
 // Redis 仅存映射 + 展示信息；过期/次数/密码等真实状态全部以 file_codes 表为准。
 type Service struct {
-	rdb          *redis.Client
+	rdb          redisKV
 	fileCodeRepo *dao.FileCodeRepository
 }
 
 // NewService 创建 service。fileCodeRepo 为 nil 时内部自建（Retrieve 需查 DB）。
+// rdb nil 归一化：typed-nil 接口会骗过"Redis 可用"守卫（!= nil 判真）。
 func NewService(rdb *redis.Client, fileCodeRepo *dao.FileCodeRepository) *Service {
 	if fileCodeRepo == nil {
 		fileCodeRepo = dao.NewFileCodeRepository()
 	}
-	return &Service{rdb: rdb, fileCodeRepo: fileCodeRepo}
+	var kv redisKV
+	if rdb != nil {
+		kv = rdb
+	}
+	return &Service{rdb: kv, fileCodeRepo: fileCodeRepo}
 }
 
 // CodeMeta 取件码展示信息（仅存于 Redis，真实状态查 DB）
@@ -211,7 +222,7 @@ func (s *Service) Retrieve(ctx context.Context, code, password string) (*CodeMet
 	}
 
 	// 4.6 未完成登记（FilePath 空且非文本）：此前会先扣次数再在下载时 500
-	if !shareApp.IsTextShare(fc) && fc.GetFilePath() == "" {
+	if !fc.IsTextShare() && fc.GetFilePath() == "" {
 		return nil, ErrNotReady
 	}
 
@@ -264,19 +275,9 @@ func (s *Service) Peek(ctx context.Context, code string) (*CodeMeta, *model.File
 
 // ============ 内部辅助 ============
 
-// randomCode 生成 6 位随机码（crypto/rand）
+// randomCode 生成 6 位随机码（crypto/rand 经 utils 统一收口，字符表见 codeAlphabet）
 func randomCode() string {
-	result := make([]byte, codeLength)
-	max := big.NewInt(int64(len(codeAlphabet)))
-	for i := range result {
-		n, err := rand.Int(rand.Reader, max)
-		if err != nil {
-			// 极端情况下回退到时间戳
-			n = big.NewInt(int64(time.Now().UnixNano()) % int64(len(codeAlphabet)))
-		}
-		result[i] = codeAlphabet[n.Int64()]
-	}
-	return string(result)
+	return utils.RandomString(codeAlphabet, codeLength)
 }
 
 // parseMeta 解析展示信息（兼容旧格式：字段不足时用空值）
@@ -387,15 +388,5 @@ func (s *Service) CreateAnonymousShare(ctx context.Context, p AnonymousSharePara
 // randomShareCode 8 位 file_code（crypto/rand，小写字母+数字）
 func randomShareCode() string {
 	const charset = "abcdefghijklmnopqrstuvwxyz0123456789"
-	const length = 8
-	max := big.NewInt(int64(len(charset)))
-	b := make([]byte, length)
-	for i := range b {
-		n, err := rand.Int(rand.Reader, max)
-		if err != nil {
-			n = big.NewInt(int64(time.Now().UnixNano()) % int64(len(charset)))
-		}
-		b[i] = charset[n.Int64()]
-	}
-	return string(b)
+	return utils.RandomString(charset, 8)
 }

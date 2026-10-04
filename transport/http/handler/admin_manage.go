@@ -15,15 +15,11 @@ import (
 
 	adminapp "github.com/filescodebox/core/app/admin"
 	userapp "github.com/filescodebox/core/app/user"
-	"github.com/filescodebox/core/pkg/logger"
-	"github.com/filescodebox/core/pkg/middleware"
 	"github.com/filescodebox/core/pkg/resp"
 	"github.com/filescodebox/core/pkg/security"
 	"github.com/filescodebox/core/pkg/utils"
-	"github.com/filescodebox/core/repo/db/dao"
 	"github.com/filescodebox/core/repo/db/model"
 	"github.com/filescodebox/core/storage"
-	"go.uber.org/zap"
 )
 
 var (
@@ -41,40 +37,22 @@ func SetManageServices(svc *adminapp.Service, userSvc *userapp.Service, st stora
 
 func getManageSvc() *adminapp.Service {
 	if manageSvc == nil {
-		manageSvc = adminapp.NewService()
+		// fail-fast：装配缺失必须显式暴露（bootstrap 保证 SetManageServices 先于服务流量）
+		panic("admin manage service not initialized: SetManageServices must be called before serving")
 	}
 	return manageSvc
 }
 
 func getManageUserSvc() *userapp.Service {
 	if manageUserSvc == nil {
-		manageUserSvc = userapp.NewService()
+		panic("user manage service not initialized: SetManageServices must be called before serving")
 	}
 	return manageUserSvc
 }
 
-// audit 管理端增强操作审计（复用 admin_operation_logs）
+// audit 管理端增强操作审计（委托 app/admin 统一入口，消除与 service 层的孪生实现）
 func audit(ctx context.Context, action, target string, success bool) {
-	repo := dao.NewAdminOperationLogRepository()
-	var id *uint
-	name := "system"
-	if uid, ok := middleware.UserIDFromContext(ctx); ok {
-		id = &uid
-	}
-	if n := middleware.UsernameFromContext(ctx); n != "" {
-		name = n
-	}
-	entry := &model.AdminOperationLog{
-		Action:    action,
-		Target:    target,
-		Success:   success,
-		ActorID:   id,
-		ActorName: name,
-		IP:        middleware.ClientIPFromContext(ctx),
-	}
-	if err := repo.Create(ctx, entry); err != nil {
-		logger.Warn("admin audit log write failed", zap.String("action", action), zap.Error(err))
-	}
+	adminapp.Audit(ctx, action, target, success)
 }
 
 // ==================== 用户管理（CRUD 补齐） ====================
@@ -198,8 +176,8 @@ func AdminResetUserPassword(ctx context.Context, c *app.RequestContext) {
 		resp.NewErrorWithMessage(c, 10008, "密码哈希失败")
 		return
 	}
-	repo := dao.NewUserRepository()
-	if err := repo.UpdatePasswordHash(ctx, uint(id64), string(hashed)); err != nil {
+	repo := getManageSvc()
+	if err := repo.ResetUserPassword(ctx, uint(id64), string(hashed)); err != nil {
 		resp.NewErrorWithMessage(c, 40001, "重置密码失败: "+err.Error())
 		return
 	}
@@ -210,9 +188,8 @@ func AdminResetUserPassword(ctx context.Context, c *app.RequestContext) {
 // AdminListUsersFiltered 带筛选的用户列表（keyword/status/role）
 // GET /admin/users/filter?keyword=&status=&role=&page=&page_size=
 func AdminListUsersFiltered(ctx context.Context, c *app.RequestContext) {
-	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
-	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
-	users, total, err := dao.NewUserRepository().ListFiltered(ctx, dao.UserFilter{
+	page, pageSize := parsePage(c)
+	users, total, err := getManageSvc().ListUsersFiltered(ctx, adminapp.UserListFilter{
 		Keyword:  c.Query("keyword"),
 		Status:   c.Query("status"),
 		Role:     c.Query("role"),
@@ -223,11 +200,7 @@ func AdminListUsersFiltered(ctx context.Context, c *app.RequestContext) {
 		resp.NewErrorWithMessage(c, 10008, "查询用户失败: "+err.Error())
 		return
 	}
-	items := make([]*model.UserResp, len(users))
-	for i, u := range users {
-		items[i] = u.ToResp()
-	}
-	resp.Page(c, items, total, page, pageSize)
+	resp.Page(c, users, total, page, pageSize)
 }
 
 // ==================== 文件管理（详情/编辑/批量/下载） ====================
@@ -235,25 +208,23 @@ func AdminListUsersFiltered(ctx context.Context, c *app.RequestContext) {
 // AdminFileDetail 文件详情
 // GET /admin/files/:id
 func AdminFileDetail(ctx context.Context, c *app.RequestContext) {
-	id64, err := strconv.ParseUint(c.Param("id"), 10, 64)
-	if err != nil {
-		resp.NewErrorWithMessage(c, 10001, "文件 ID 格式错误")
+	id, ok := paramID(c, "文件")
+	if !ok {
 		return
 	}
-	fc, err := dao.NewFileCodeRepository().GetByID(ctx, uint(id64))
+	fc, children, err := getManageSvc().GetFileDetail(ctx, id)
 	if err != nil {
 		resp.NewErrorByCode(c, 20008)
 		return
 	}
 	// P0 多文件：附子文件列表（旧单文件无子表行时回退主表合成）
-	children, _ := dao.NewFileCodeFileRepository().ListByFileCodeID(ctx, fc.ID)
 	files := make([]map[string]interface{}, 0, len(children))
 	for _, ch := range children {
 		files = append(files, map[string]interface{}{
-			"id":    ch.ID,
-			"name":  ch.DisplayName(),
-			"size":  ch.Size,
-			"hash":  ch.FileHash,
+			"id":   ch.ID,
+			"name": ch.DisplayName(),
+			"size": ch.Size,
+			"hash": ch.FileHash,
 		})
 	}
 	if len(files) == 0 && fc.GetFilePath() != "" {
@@ -294,9 +265,8 @@ func AdminUpdateUserSettings(ctx context.Context, c *app.RequestContext) {
 // AdminUpdateFile 编辑文件（延期 / 改剩余次数）
 // PUT /admin/files/:id  {expire_value, expire_style, expired_count}
 func AdminUpdateFile(ctx context.Context, c *app.RequestContext) {
-	id64, err := strconv.ParseUint(c.Param("id"), 10, 64)
-	if err != nil {
-		resp.NewErrorWithMessage(c, 10001, "文件 ID 格式错误")
+	id, ok := paramID(c, "文件")
+	if !ok {
 		return
 	}
 	var req struct {
@@ -315,11 +285,11 @@ func AdminUpdateFile(ctx context.Context, c *app.RequestContext) {
 			expireAt = t
 		}
 	}
-	if err := dao.NewFileCodeRepository().UpdateExpireByID(ctx, uint(id64), expireAt, req.ExpiredCount); err != nil {
+	if err := getManageSvc().UpdateFileExpire(ctx, id, expireAt, req.ExpiredCount); err != nil {
 		resp.NewErrorWithMessage(c, 10008, "更新失败: "+err.Error())
 		return
 	}
-	audit(ctx, "file.update", fmt.Sprintf("file %d updated (expire set, count=%v)", id64, req.ExpiredCount), true)
+	audit(ctx, "file.update", fmt.Sprintf("file %d updated (expire set, count=%v)", id, req.ExpiredCount), true)
 	resp.SuccessWithMessage(c, "已更新", nil)
 }
 
@@ -333,20 +303,7 @@ func AdminBatchDeleteFiles(ctx context.Context, c *app.RequestContext) {
 		resp.NewErrorWithMessage(c, 10001, "ids 必填")
 		return
 	}
-	repo := dao.NewFileCodeRepository()
-
-	// 物理文件清理（失败不阻断）
-	for _, id := range req.IDs {
-		if fc, err := repo.GetByID(ctx, id); err == nil && manageStorage != nil && fc.FilePath != "" {
-			if fp := fc.GetFilePath(); fp != "" {
-				if err := manageStorage.DeleteFile(ctx, fp); err != nil {
-					logger.Warn("batch delete physical file failed", zap.String("path", fp), zap.Error(err))
-				}
-			}
-		}
-	}
-
-	n, err := repo.BatchDeleteByIDs(ctx, req.IDs)
+	n, err := getManageSvc().BatchDeleteFiles(ctx, req.IDs)
 	if err != nil {
 		resp.NewErrorWithMessage(c, 10008, "批量删除失败: "+err.Error())
 		return
@@ -372,7 +329,7 @@ func AdminBatchExtendFiles(ctx context.Context, c *app.RequestContext) {
 		resp.NewErrorWithMessage(c, 10001, "无效的过期样式: "+req.ExpireStyle)
 		return
 	}
-	n, err := dao.NewFileCodeRepository().BatchExtendByIDsAdmin(ctx, req.IDs, *expireAt)
+	n, err := getManageSvc().BatchExtendFiles(ctx, req.IDs, *expireAt)
 	if err != nil {
 		resp.NewErrorWithMessage(c, 10008, "批量延期失败: "+err.Error())
 		return
@@ -384,12 +341,11 @@ func AdminBatchExtendFiles(ctx context.Context, c *app.RequestContext) {
 // AdminDownloadFile 管理端下载：302 到公开下载端点（附服务端签发的下载令牌）
 // GET /admin/files/:id/download
 func AdminDownloadFile(ctx context.Context, c *app.RequestContext) {
-	id64, err := strconv.ParseUint(c.Param("id"), 10, 64)
-	if err != nil {
-		resp.NewErrorWithMessage(c, 10001, "文件 ID 格式错误")
+	id, ok := paramID(c, "文件")
+	if !ok {
 		return
 	}
-	fc, err := dao.NewFileCodeRepository().GetByID(ctx, uint(id64))
+	fc, err := getManageSvc().GetFileByID(ctx, id)
 	if err != nil {
 		resp.NewErrorByCode(c, 20008)
 		return
@@ -403,32 +359,15 @@ func AdminDownloadFile(ctx context.Context, c *app.RequestContext) {
 
 // ==================== Dashboard 富统计 ====================
 
-// AdminEnhancedStats 富指标（昨日对比 / 下载总量 / top 后缀 / 类型分布 / 磁盘状态）
+// AdminEnhancedStats 富指标（昨日对比 / 下载总量 / top 后缀 / 类型分布 / 存储用量与配额）
 // GET /admin/stats/enhanced
 func AdminEnhancedStats(ctx context.Context, c *app.RequestContext) {
-	repo := dao.NewFileCodeRepository()
-	now := time.Now()
-	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
-	yesterdayStart := todayStart.Add(-24 * time.Hour)
-
-	todayUploads, _ := repo.CountCreatedBetween(ctx, todayStart, now.Add(time.Minute))
-	yesterdayUploads, _ := repo.CountCreatedBetween(ctx, yesterdayStart, todayStart)
-	totalDownloads, _ := repo.SumUsedCount(ctx)
-	expiredFiles, _ := repo.CountExpired(ctx)
-	anonymousFiles, _ := repo.CountByUploadType(ctx, "anonymous")
-	presignFiles, _ := repo.CountByUploadType(ctx, "presign_anonymous")
-	presignAuthFiles, _ := repo.CountByUploadType(ctx, "presign_authenticated")
-	topSuffixes, _ := repo.TopSuffixes(ctx, 10)
-
-	resp.Success(c, map[string]interface{}{
-		"today_uploads":     todayUploads,
-		"yesterday_uploads": yesterdayUploads,
-		"total_downloads":   totalDownloads,
-		"expired_files":     expiredFiles,
-		"anonymous_files":   anonymousFiles,
-		"presign_files":     presignFiles + presignAuthFiles,
-		"top_suffixes":      topSuffixes,
-	})
+	stats, err := getManageSvc().EnhancedStats(ctx)
+	if err != nil {
+		resp.NewErrorWithMessage(c, 10008, "统计失败: "+err.Error())
+		return
+	}
+	resp.Success(c, stats)
 }
 
 // AdminStatsTrend 趋势序列（连续 N 天，缺失日补 0）：
@@ -439,35 +378,10 @@ func AdminStatsTrend(ctx context.Context, c *app.RequestContext) {
 	if v, err := strconv.Atoi(c.Query("days")); err == nil && v > 0 && v <= 30 {
 		days = v
 	}
-	now := time.Now()
-	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
-	from := todayStart.AddDate(0, 0, -(days - 1))
-
-	upRows, err := dao.NewFileCodeRepository().TrendByDay(ctx, from)
+	series, err := getManageSvc().TrendSeries(ctx, days)
 	if err != nil {
 		resp.NewErrorWithMessage(c, 10008, "统计上传趋势失败: "+err.Error())
 		return
-	}
-	// 下载日志查询失败不阻断（表可能尚无数据/旧库未建）——降级为全 0 序列
-	dlRows, _ := dao.NewTransferLogRepository().TrendByDay(ctx, from, "download")
-
-	upMap := make(map[string]int64, len(upRows))
-	for _, r := range upRows {
-		upMap[r.Date] = r.Count
-	}
-	dlMap := make(map[string]int64, len(dlRows))
-	for _, r := range dlRows {
-		dlMap[r.Date] = r.Count
-	}
-
-	series := make([]map[string]interface{}, 0, days)
-	for i := 0; i < days; i++ {
-		date := from.AddDate(0, 0, i).Format("2006-01-02")
-		series = append(series, map[string]interface{}{
-			"date":      date,
-			"uploads":   upMap[date],
-			"downloads": dlMap[date],
-		})
 	}
 	resp.Success(c, map[string]interface{}{"days": series})
 }
@@ -478,18 +392,14 @@ func AdminStatsTrend(ctx context.Context, c *app.RequestContext) {
 // AdminTransferLogs 传输日志分页查询
 // GET /admin/logs/transfer?page=&page_size=&operation=&keyword=
 func AdminTransferLogs(ctx context.Context, c *app.RequestContext) {
-	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
-	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
-	if pageSize <= 0 || pageSize > 200 {
-		pageSize = 20
-	}
+	page, pageSize := parsePage(c)
 	query := model.TransferLogQuery{
 		Operation: c.Query("operation"),
 		Search:    c.Query("keyword"),
 		Page:      page,
 		PageSize:  pageSize,
 	}
-	logs, total, err := dao.NewTransferLogRepository().List(ctx, query)
+	logs, total, err := getManageSvc().GetTransferLogs(ctx, query)
 	if err != nil {
 		resp.NewErrorWithMessage(c, 10008, "查询传输日志失败: "+err.Error())
 		return
@@ -510,16 +420,7 @@ func AdminTransferLogs(ctx context.Context, c *app.RequestContext) {
 		})
 	}
 	// 前端 TransferLogs.vue 判 code===200 且读 data.items/total，故不用 resp.Success（code=0）
-	c.JSON(consts.StatusOK, map[string]interface{}{
-		"code":    200,
-		"message": "success",
-		"data": map[string]interface{}{
-			"items":     items,
-			"total":     total,
-			"page":      page,
-			"page_size": pageSize,
-		},
-	})
+	respondLegacyPage(c, items, total, page, pageSize)
 }
 
 // ==================== 分享治理（2026-10-03）：强过滤列表 + 状态机 ====================
@@ -580,10 +481,7 @@ func AdminListFilesFiltered(ctx context.Context, c *app.RequestContext) {
 	for _, f := range files {
 		ids = append(ids, f.ID)
 	}
-	counts, cerr := dao.NewFileCodeFileRepository().CountByFileCodeIDs(ctx, ids)
-	if cerr != nil {
-		counts = nil
-	}
+	counts := getManageSvc().ChildFileCounts(ctx, ids)
 	items := make([]map[string]interface{}, 0, len(files))
 	for _, f := range files {
 		item := fileGovernanceItem(f)
@@ -594,16 +492,7 @@ func AdminListFilesFiltered(ctx context.Context, c *app.RequestContext) {
 		}
 		items = append(items, item)
 	}
-	c.JSON(consts.StatusOK, map[string]interface{}{
-		"code":    200,
-		"message": "success",
-		"data": map[string]interface{}{
-			"items":     items,
-			"total":     total,
-			"page":      q.Page,
-			"page_size": q.PageSize,
-		},
-	})
+	respondLegacyPage(c, items, total, q.Page, q.PageSize)
 }
 
 // fileGovernanceItem 管理端文件治理视图（含管控字段；owner_ip 仅管理端可见）

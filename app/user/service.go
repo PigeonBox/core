@@ -2,7 +2,6 @@ package user
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -12,8 +11,9 @@ import (
 
 	usermodel "github.com/filescodebox/contracts/gen/user"
 	"github.com/filescodebox/contracts/errcode"
+	"github.com/filescodebox/core/conf"
 	"github.com/filescodebox/core/pkg/auth"
-	admin "github.com/filescodebox/core/app/admin"
+	"github.com/filescodebox/core/pkg/utils"
 	"github.com/filescodebox/core/repo/db/dao"
 	"github.com/filescodebox/core/repo/db/model"
 	"golang.org/x/crypto/bcrypt"
@@ -34,10 +34,21 @@ type UpdateUserReq struct {
 	Status   string
 }
 
+// DefaultsProvider 系统级用户默认值来源（管理后台持久化配置优先，回退 yaml）。
+// 消费侧接口：bootstrap 注入 admin 域适配器；未注入时回退全局 conf——
+// 本域不依赖 admin 包（跨域依赖收口为装配点）。
+type DefaultsProvider interface {
+	// DefaultStorageQuota 用户存储配额默认值（字节，0 = 不限）
+	DefaultStorageQuota(ctx context.Context) int64
+	// DefaultUploadSize 单次上传大小默认上限（字节，0 = 不限）
+	DefaultUploadSize(ctx context.Context) int64
+}
+
 type Service struct {
 	repo         *dao.UserRepository
 	apiKeyRepo   *dao.UserAPIKeyRepository
 	fileCodeRepo *dao.FileCodeRepository
+	defaults     DefaultsProvider
 }
 
 func NewService() *Service {
@@ -47,6 +58,35 @@ func NewService() *Service {
 		apiKeyRepo:   nil, // 延迟初始化
 		fileCodeRepo: nil, // 延迟初始化
 	}
+}
+
+// SetDefaultsProvider 注入系统级默认值来源（bootstrap 装配调用）。
+func (s *Service) SetDefaultsProvider(p DefaultsProvider) { s.defaults = p }
+
+// systemDefaults 无注入 provider 时的回退：直接读全局 yaml 配置
+// （与 admin 域"无持久化记录回退 yaml"的兜底语义一致）。
+func systemDefaults(ctx context.Context) (quota, uploadSize int64) {
+	_ = ctx
+	if cfg := conf.GetGlobalConfig(); cfg != nil {
+		return cfg.User.UserStorageQuota, cfg.User.UserUploadSize
+	}
+	return 0, 0
+}
+
+func (s *Service) defaultStorageQuota(ctx context.Context) int64 {
+	if s.defaults != nil {
+		return s.defaults.DefaultStorageQuota(ctx)
+	}
+	q, _ := systemDefaults(ctx)
+	return q
+}
+
+func (s *Service) defaultUploadSize(ctx context.Context) int64 {
+	if s.defaults != nil {
+		return s.defaults.DefaultUploadSize(ctx)
+	}
+	_, u := systemDefaults(ctx)
+	return u
 }
 
 // ensureRepository 确保repository已初始化
@@ -63,7 +103,6 @@ func (s *Service) ensureRepository() {
 }
 
 func (s *Service) Create(ctx context.Context, req *CreateUserReq) (*model.UserResp, error) {
-	s.ensureRepository()
 	s.ensureRepository()
 
 	existing, err := s.repo.GetByUsername(ctx, req.Username)
@@ -295,7 +334,7 @@ func (s *Service) CheckQuota(ctx context.Context, userID uint, addBytes int64) e
 	limit := user.MaxStorageQuota
 	if limit <= 0 {
 		// 系统默认取管理后台"用户配置"持久化值（无记录回退 yaml）
-		limit = admin.EffectiveUserSettings(ctx).UserStorageQuota
+		limit = s.defaultStorageQuota(ctx)
 	}
 	if limit <= 0 {
 		return nil
@@ -352,7 +391,7 @@ func (s *Service) GetUploadSizeCap(ctx context.Context, userID uint) int64 {
 	if user.MaxUploadSize > 0 {
 		return user.MaxUploadSize
 	}
-	return admin.EffectiveUserSettings(ctx).UserUploadSize
+	return s.defaultUploadSize(ctx)
 }
 
 // GetStats 获取用户统计信息
@@ -413,13 +452,9 @@ type APIKeyData struct {
 
 // ==================== API Key 方法 ====================
 
-// GenerateRandomKey 生成32位随机字符串
+// GenerateRandomKey 生成32位随机字符串（16字节 hex，crypto/rand 经 utils 统一收口）
 func GenerateRandomKey() (string, error) {
-	bytes := make([]byte, 16) // 16字节 = 32位十六进制字符
-	if _, err := rand.Read(bytes); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(bytes), nil
+	return utils.RandomHex(16)
 }
 
 // HashAPIKey 计算密钥的 SHA256 哈希

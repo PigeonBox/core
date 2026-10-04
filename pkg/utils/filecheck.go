@@ -139,3 +139,9 @@ func CheckUploadSize(fileSize, maxSize int64) error {
 	}
 	return nil
 }
+
+// CheckWholeFileSize 整文件大小上限校验（upload.max_file_size，0=不限）。
+// 分片/presign 直传等"整文件"通道用本函数；与单请求体上限 GetMaxUploadSize 区分。
+func CheckWholeFileSize(fileSize int64) error {
+	return CheckUploadSize(fileSize, GetMaxFileSize())
+}

@@ -106,6 +106,17 @@ func (f *FileCode) IsBlockedShare() bool {
 	return f.Status == StatusBlocked || f.Status == StatusPendingReview
 }
 
+// IsTextShare 判定是否纯文本分享：Text 非空且无文件路径。
+//
+// 回归要点（P0）：文件分享会把原始文件名存进 Text 字段，因此仅凭
+// Text != "" 判定会把文件分享误判为文本——文件下载曾被文本分支拦截，
+// 返回文件名字符串而非文件内容。判定逻辑此前在 app/share 包级函数，
+// 多域（anonymous/mcp/presign）需要时各自 import share——下沉到 model
+// 作为领域事实，消费方零跨域依赖。
+func (f *FileCode) IsTextShare() bool {
+	return f != nil && f.Text != "" && f.FilePath == ""
+}
+
 // FileCodeQuery 管理端文件列表过滤条件（DAO ListWithFilter 消费）。
 // 全字段可选，零值 = 不过滤。
 type FileCodeQuery struct {

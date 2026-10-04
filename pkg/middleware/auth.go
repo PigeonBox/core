@@ -64,6 +64,22 @@ func ClientIPFromContext(ctx context.Context) string {
 	return v
 }
 
+// SetJWTClaims JWT 身份 c.Set 四件套（键名单一真相源：user_id/username/role/auth_type，
+// 与 transport 侧 ContextKey* 常量同字符串）。pkg 与 transport 两个中间件栈均委托此处。
+func SetJWTClaims(c *app.RequestContext, claims *auth.Claims) {
+	c.Set("user_id", claims.UserID)
+	c.Set("username", claims.Username)
+	c.Set("role", claims.Role)
+	c.Set("auth_type", "jwt")
+}
+
+// SetIdentityHeaders 身份响应头三连（X-User-ID/X-Username/X-Role）。
+func SetIdentityHeaders(c *app.RequestContext, claims *auth.Claims) {
+	c.Header("X-User-ID", fmt.Sprintf("%d", claims.UserID))
+	c.Header("X-Username", claims.Username)
+	c.Header("X-Role", claims.Role)
+}
+
 // AuthMiddleware JWT认证中间件
 func AuthMiddleware() app.HandlerFunc {
 	return func(ctx context.Context, c *app.RequestContext) {
@@ -112,16 +128,9 @@ func AuthMiddleware() app.HandlerFunc {
 
 		// 将用户信息存储到上下文中（RequestContext + ctx 双写：
 		// c.Get 供 handler 用，ctx value 供 service 层提取审计操作者）
-		c.Set("user_id", claims.UserID)
-		c.Set("username", claims.Username)
-		c.Set("role", claims.Role)
-		c.Set("auth_type", "jwt")
+		SetJWTClaims(c, claims)
 		ctx = withIdentity(ctx, claims.UserID, claims.Username, claims.Role, ClientIP(c), 0)
-
-		// 同时设置 Header，方便 handler 读取
-		c.Header("X-User-ID", fmt.Sprintf("%d", claims.UserID))
-		c.Header("X-Username", claims.Username)
-		c.Header("X-Role", claims.Role)
+		SetIdentityHeaders(c, claims)
 
 		c.Next(ctx)
 	}
@@ -190,15 +199,9 @@ func OptionalAuthMiddleware() app.HandlerFunc {
 		// c.Set 供 handler c.Get，ctx value 供 UserIDFromContext 审计/闸门读取。
 		// 回归：此前可选路径只写 c.Set，JWT 用户被 UserIDFromContext 静默
 		// 当匿名——直传闸门误判、传输日志归因恒空、自定义取件码失效）
-		c.Set("user_id", claims.UserID)
-		c.Set("username", claims.Username)
-		c.Set("role", claims.Role)
+		SetJWTClaims(c, claims)
 		ctx = withIdentity(ctx, claims.UserID, claims.Username, claims.Role, ClientIP(c), 0)
-
-		// 同时设置 Header
-		c.Header("X-User-ID", fmt.Sprintf("%d", claims.UserID))
-		c.Header("X-Username", claims.Username)
-		c.Header("X-Role", claims.Role)
+		SetIdentityHeaders(c, claims)
 
 		c.Next(ctx)
 	}

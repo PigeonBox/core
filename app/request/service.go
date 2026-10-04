@@ -9,16 +9,14 @@ package request
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"time"
 
-	"github.com/filescodebox/core/app/share"
 	"github.com/filescodebox/core/pkg/utils"
 	"github.com/filescodebox/core/repo/db/dao"
 	"github.com/filescodebox/core/repo/db/model"
+	"github.com/filescodebox/core/storage"
 )
 
 // 收到投递生成的分享的默认寿命/次数（v1 固定；管理端后续可配）
@@ -27,10 +25,33 @@ const (
 	defaultRecvCount = -1 // 无限次数
 )
 
+// ShareResult 投递落地结果（调用方需要的最小字段）。
+type ShareResult struct {
+	ID   uint
+	Code string
+	Size int64
+}
+
+// ShareCreateRequest 投递转分享的装配参数（网关实现适配为具体分享域的请求）。
+type ShareCreateRequest struct {
+	Entries      []storage.StoredFileEntry
+	OwnerID      uint
+	OwnerIP      string
+	Channel      string
+	ExpiredAt    *time.Time
+	ExpiredCount int
+}
+
+// ShareGateway 分享创建网关（消费侧接口；bootstrap 注入 share 域适配器，
+// 本域不直接依赖 share 包——跨域依赖收口为单一装配点）。
+type ShareGateway interface {
+	CreateFromFileEntries(ctx context.Context, req *ShareCreateRequest) (*ShareResult, error)
+}
+
 // Service 寄件码服务
 type Service struct {
 	reqRepo  *dao.FileRequestRepository
-	shareSvc *share.Service
+	shareSvc ShareGateway
 	notify   NotifySender
 }
 
@@ -39,8 +60,8 @@ type NotifySender interface {
 	CreateForUserSimple(ctx context.Context, userID uint, title, content, notifyType, level string) error
 }
 
-// NewService 构建服务
-func NewService(shareSvc *share.Service, notify NotifySender) *Service {
+// NewService 构建服务。shareSvc 为分享创建网关（未注入时投递创建分享会失败）。
+func NewService(shareSvc ShareGateway, notify NotifySender) *Service {
 	return &Service{
 		reqRepo:  dao.NewFileRequestRepository(),
 		shareSvc: shareSvc,
@@ -48,11 +69,10 @@ func NewService(shareSvc *share.Service, notify NotifySender) *Service {
 	}
 }
 
-// genToken 32 位 hex 随机令牌
+// genToken 32 位 hex 随机令牌（crypto/rand 经 utils 统一收口）
 func genToken() string {
-	b := make([]byte, 16)
-	_, _ = rand.Read(b)
-	return hex.EncodeToString(b)
+	tok, _ := utils.RandomHex(16)
+	return tok
 }
 
 // CreateReq 创建投递链接入参
@@ -125,7 +145,7 @@ func (s *Service) GetPublic(ctx context.Context, token string) (*PublicView, err
 
 // Submit 访客投递（entries 已落存储；此处做约束校验并创建归属分享）。
 // 失败时调用方负责清理已落盘文件。
-func (s *Service) Submit(ctx context.Context, token string, entries []share.StoredFileEntry, guestIP string) (*share.ShareResp, error) {
+func (s *Service) Submit(ctx context.Context, token string, entries []storage.StoredFileEntry, guestIP string) (*ShareResult, error) {
 	fr, err := s.reqRepo.GetByToken(ctx, token)
 	if err != nil {
 		return nil, errors.New("投递链接不存在或已撤销")
@@ -148,14 +168,13 @@ func (s *Service) Submit(ctx context.Context, token string, entries []share.Stor
 	}
 
 	ownerID := fr.UserID
-	resp, err := s.shareSvc.CreateMultiFileShare(ctx, &share.MultiShareReq{
+	resp, err := s.shareSvc.CreateFromFileEntries(ctx, &ShareCreateRequest{
 		Entries:      entries,
-		ExpiredAt:    utils.CalculateExpireTime(defaultRecvDays, "day"),
-		ExpiredCount: defaultRecvCount,
-		UserID:       &ownerID,
-		UploadType:   "authenticated",
+		OwnerID:      ownerID,
 		OwnerIP:      guestIP,
 		Channel:      "request",
+		ExpiredAt:    utils.CalculateExpireTime(defaultRecvDays, "day"),
+		ExpiredCount: defaultRecvCount,
 	})
 	if err != nil {
 		return nil, err

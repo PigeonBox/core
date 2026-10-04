@@ -13,6 +13,7 @@ import (
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
 
+	adminApp "github.com/filescodebox/core/app/admin"
 	shareApp "github.com/filescodebox/core/app/share"
 	"github.com/filescodebox/core/repo/db"
 	"github.com/filescodebox/core/repo/db/dao"
@@ -38,6 +39,77 @@ func (nopStorage) GetFileReader(_ context.Context, _ string) (io.ReadCloser, int
 	return nil, 0, nil
 }
 
+// shareAPIAdapter 测试桥：mcp.ShareAPI 接真实 share.Service
+// （生产由 bootstrap 的 mcpShareAdapter 注入同形适配器；测试文件允许跨层 import）。
+type shareAPIAdapter struct{ svc *shareApp.Service }
+
+func (a shareAPIAdapter) CreateTextShare(ctx context.Context, text string, expireValue int, expireStyle string,
+	requireAuth bool, passwordHash string, ownerIP, customCode string) (string, string, error) {
+	resp, err := a.svc.ShareTextWithAuth(ctx, text, expireValue, expireStyle, requireAuth, passwordHash, nil, ownerIP, false, customCode)
+	if err != nil {
+		return "", "", err
+	}
+	return resp.Code, resp.FullShareURL, nil
+}
+
+func (a shareAPIAdapter) ShareFiles(ctx context.Context, code string) ([]ShareFileInfo, error) {
+	items, err := a.svc.ListShareFiles(ctx, code)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]ShareFileInfo, len(items))
+	for i, it := range items {
+		out[i] = ShareFileInfo{Name: it.Name, Size: it.Size}
+	}
+	return out, nil
+}
+
+// adminAPIAdapter 测试桥：mcp.AdminAPI 接真实 admin.Service
+// （生产由 bootstrap 的 mcpAdminAdapter 注入同形适配器）。
+type adminAPIAdapter struct{ svc *adminApp.Service }
+
+func (a adminAPIAdapter) DeleteShareByID(ctx context.Context, id uint) error {
+	return a.svc.DeleteFile(ctx, id)
+}
+
+func (a adminAPIAdapter) SystemStats(ctx context.Context) (*SystemStats, error) {
+	st, err := a.svc.GetStats(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &SystemStats{
+		TotalFiles: st.TotalFiles, TotalUsers: st.TotalUsers, TotalSize: st.TotalSize,
+		TodayUploads: st.TodayUploads, ExpiredFiles: st.ExpiredFiles,
+	}, nil
+}
+
+func (a adminAPIAdapter) StorageStatus(ctx context.Context) (*StorageStatusInfo, error) {
+	st, err := a.svc.GetStorageStatus(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &StorageStatusInfo{
+		StorageType: st.StorageType, TotalSpace: st.TotalSpace, UsedSpace: st.UsedSpace,
+		UsagePercent: st.UsagePercent, FileCount: st.FileCount,
+	}, nil
+}
+
+func (a adminAPIAdapter) Users(ctx context.Context, page, pageSize int) ([]UserRow, int64, error) {
+	users, total, err := a.svc.GetUsers(ctx, page, pageSize)
+	if err != nil {
+		return nil, 0, err
+	}
+	rows := make([]UserRow, len(users))
+	for i, u := range users {
+		rows[i] = UserRow{ID: u.ID, Username: u.Username, Email: u.Email, Status: u.Status}
+	}
+	return rows, total, nil
+}
+
+func (a adminAPIAdapter) CleanExpired(ctx context.Context) (int64, int64, error) {
+	return a.svc.CleanExpiredFiles(ctx)
+}
+
 func newMCPTestService(t *testing.T) *Service {
 	t.Helper()
 	g, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
@@ -47,7 +119,8 @@ func newMCPTestService(t *testing.T) *Service {
 	t.Cleanup(func() { db.SetDatabaseInstance(nil) })
 
 	svc := NewService("test-1.0.0")
-	svc.SetShareService(shareApp.NewService("http://test.local", nopStorage{}))
+	svc.SetShareService(shareAPIAdapter{shareApp.NewService("http://test.local", nopStorage{})})
+	svc.SetAdminService(adminAPIAdapter{adminApp.NewService()})
 	return svc
 }
 

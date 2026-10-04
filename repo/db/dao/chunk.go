@@ -181,3 +181,13 @@ func (r *ChunkRepository) UpdateOwner(ctx context.Context, uploadID string, upda
 		Where("upload_id = ? AND chunk_index = -1", uploadID).
 		Updates(updates).Error
 }
+
+// ListSessionIDs 全量分片会话 ID（含软删，Distinct）——物理 chunks/ 目录对账用。
+func (r *ChunkRepository) ListSessionIDs(ctx context.Context) ([]string, error) {
+	var ids []string
+	if err := r.db().WithContext(ctx).Unscoped().
+		Model(&model.UploadChunk{}).Distinct().Pluck("upload_id", &ids).Error; err != nil {
+		return nil, err
+	}
+	return ids, nil
+}

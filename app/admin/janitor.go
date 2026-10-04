@@ -19,21 +19,28 @@ import (
 	"time"
 
 	"github.com/filescodebox/core/pkg/logger"
-	"github.com/filescodebox/core/repo/db"
 	"github.com/filescodebox/core/repo/db/dao"
-	"github.com/filescodebox/core/repo/db/model"
 	"github.com/filescodebox/core/storage"
 	"go.uber.org/zap"
 )
 
+// StorageProvider janitor 所需存储能力：通用操作 + 本地后端判定/根目录。
+// EffectiveType/DataPath 是 *storage.StorageService 的扩展能力（不在
+// StorageInterface 内），按消费侧窄接口收窄依赖，bootstrap 传具体实现即可。
+type StorageProvider interface {
+	storage.StorageInterface
+	EffectiveType() storage.StorageType
+	DataPath() string
+}
+
 // Janitor 存储对账 + 日志保留。svc 为 nil 或非 local 时对账自动跳过。
 type Janitor struct {
-	svc           *storage.StorageService
+	svc           StorageProvider
 	retentionDays int // 0 = 永久保留日志
 }
 
 // NewJanitor 创建 janitor。
-func NewJanitor(svc *storage.StorageService, retentionDays int) *Janitor {
+func NewJanitor(svc StorageProvider, retentionDays int) *Janitor {
 	return &Janitor{svc: svc, retentionDays: retentionDays}
 }
 
@@ -52,10 +59,8 @@ func (j *Janitor) ReconcileOrphans(ctx context.Context) (int, int, error) {
 	}
 
 	// 1. 收集 DB 引用集（含软删记录——可恢复的分享其物理文件不算孤儿）
-	var rows []*model.FileCode
-	if err := db.GetDB().WithContext(ctx).Unscoped().
-		Model(&model.FileCode{}).
-		Find(&rows).Error; err != nil {
+	rows, err := dao.NewFileCodeRepository().ListAllIncludingDeleted(ctx)
+	if err != nil {
 		return 0, 0, err
 	}
 	referenced := make(map[string]bool, len(rows))
@@ -66,9 +71,8 @@ func (j *Janitor) ReconcileOrphans(ctx context.Context) (int, int, error) {
 	}
 
 	// 2. 收集分片会话集合
-	var uploadIDs []string
-	if err := db.GetDB().WithContext(ctx).Unscoped().
-		Model(&model.UploadChunk{}).Distinct().Pluck("upload_id", &uploadIDs).Error; err != nil {
+	uploadIDs, err := dao.NewChunkRepository().ListSessionIDs(ctx)
+	if err != nil {
 		return 0, 0, err
 	}
 	activeChunks := make(map[string]bool, len(uploadIDs))
@@ -147,13 +151,15 @@ func (j *Janitor) CleanupLogs(ctx context.Context) (int64, error) {
 	}
 	cutoff := time.Now().AddDate(0, 0, -j.retentionDays)
 	var total int64
-	for _, m := range []any{&model.TransferLog{}, &model.AdminOperationLog{}} {
-		res := db.GetDB().WithContext(ctx).Where("created_at < ?", cutoff).Delete(m)
-		if res.Error != nil {
-			return total, res.Error
-		}
-		total += res.RowsAffected
+	n, err := dao.NewTransferLogRepository().DeleteOlderThan(ctx, cutoff)
+	if err != nil {
+		return total, err
 	}
+	total += n
+	if n, err = dao.NewAdminOperationLogRepository().DeleteOlderThan(ctx, cutoff); err != nil {
+		return total, err
+	}
+	total += n
 	if total > 0 {
 		logger.Info("log retention cleanup done",
 			zap.Int64("deleted", total), zap.Int("retention_days", j.retentionDays))

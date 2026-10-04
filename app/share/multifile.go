@@ -9,26 +9,17 @@ import (
 	"github.com/filescodebox/core/app/moderation"
 	"github.com/filescodebox/core/pkg/logger"
 	"github.com/filescodebox/core/pkg/metrics"
-	"github.com/filescodebox/core/pkg/utils"
 	"github.com/filescodebox/core/repo/db/dao"
 	"github.com/filescodebox/core/repo/db/model"
+	"github.com/filescodebox/core/storage"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
 
 // StoredFileEntry 已落存储的文件项（多文件分享创建入参）。
-// 由传输层负责"物理文件已就位"（direct 保存 / chunk 合并 / presign HeadObject 核实），
-// 本层只做业务装配：配额、审核、主表+子表写入。
-type StoredFileEntry struct {
-	// RelPath 存储相对路径（含唯一文件名；local 下与合并写入路径一致）
-	RelPath string
-	// FileName 原始文件名（消毒后，仅展示）
-	FileName string
-	// Size 实际大小（handler 已复核）
-	Size int64
-	// FileHash SHA-256（可空：哈希失败不阻断分享）
-	FileHash string
-}
+// 结构定义已下沉 storage.StoredFileEntry（中立载体，request 等域零 share 依赖）；
+// 本别名保留既有引用路径，新代码可直接使用 storage.StoredFileEntry。
+type StoredFileEntry = storage.StoredFileEntry
 
 // MultiShareReq 多文件分享创建请求。
 type MultiShareReq struct {
@@ -90,18 +81,8 @@ func (s *Service) CreateMultiFileShare(ctx context.Context, req *MultiShareReq) 
 		totalSize += e.Size
 	}
 
-	// 单用户单次上传总大小上限（与单文件语义一致，按合计校验）
-	if req.UserID != nil && s.userService != nil {
-		if capSize := s.userService.GetUploadSizeCap(ctx, *req.UserID); capSize > 0 {
-			if err := utils.CheckUploadSize(totalSize, capSize); err != nil {
-				return nil, fmt.Errorf("上传总大小超过限制（上限 %d 字节）", capSize)
-			}
-		}
-	}
-
-	// 存储配额（合计一次扣检）
-	if err := s.checkQuota(ctx, req.UserID, totalSize); err != nil {
-		metrics.RecordRejected(metrics.RejectQuota)
+	// 单用户单次上传总大小上限 + 存储配额（合计一次校验/扣检）
+	if err := s.checkUploadCaps(ctx, req.UserID, totalSize); err != nil {
 		return nil, err
 	}
 
@@ -117,13 +98,11 @@ func (s *Service) CreateMultiFileShare(ctx context.Context, req *MultiShareReq) 
 				Channel:     req.Channel,
 				StoragePath: e.RelPath, // 文件内容扫描（ClamAV）读取路径
 			}
-			switch s.moderator.InspectFile(ctx, meta) {
-			case moderation.VerdictReject:
-				metrics.RecordModerationHit("reject")
-				metrics.RecordRejected(metrics.RejectModerated)
-				return nil, &ContentRejectedError{}
-			case moderation.VerdictPending:
-				metrics.RecordModerationHit("pending")
+			p, err := s.inspectFile(ctx, meta)
+			if err != nil {
+				return nil, err
+			}
+			if p {
 				filePending = true
 			}
 		}
@@ -171,29 +150,12 @@ func (s *Service) CreateMultiFileShare(ctx context.Context, req *MultiShareReq) 
 	}
 
 	// 用户统计：次数 +1，存储按合计
-	if s.userService != nil && req.UserID != nil {
-		if err := s.userService.UpdateUserStats(*req.UserID, "uploads", 1); err != nil {
-			logger.Warn("update user uploads stat failed", zap.Error(err), zap.Uint("user_id", *req.UserID))
-		}
-		if err := s.userService.UpdateUserStats(*req.UserID, "storage", totalSize); err != nil {
-			logger.Warn("update user storage stat failed", zap.Error(err), zap.Uint("user_id", *req.UserID))
-		}
-	}
+	s.bumpUserStats(req.UserID, totalSize)
 
 	// pending 策略（fail-closed 同单文件通道）
 	if filePending {
-		target := model.StatusPendingReview
-		if _, err := s.SetShareStatus(ctx, []uint{fileCode.ID}, target); err != nil {
-			target = model.StatusBlocked
-			if _, berr := s.SetShareStatus(ctx, []uint{fileCode.ID}, target); berr != nil {
-				logger.Error("multi pending fallback blocked failed, removing share", zap.String("code", fileCode.Code), zap.Error(berr))
-				_ = s.fileRepo().SoftDeleteByFileCodeIDs(ctx, []uint{fileCode.ID})
-				_ = s.fileCodeRepo.Delete(ctx, fileCode.ID)
-				return nil, &ContentRejectedError{}
-			}
-		}
-		if s.flagEmitter != nil {
-			s.flagEmitter.EmitShareFlagged(fileCode.Code, "file flagged by moderator", req.OwnerIP)
+		if _, err := s.applyPending(ctx, fileCode.ID, fileCode.Code, "file flagged by moderator", req.OwnerIP); err != nil {
+			return nil, err
 		}
 	}
 

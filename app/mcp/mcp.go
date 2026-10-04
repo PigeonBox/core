@@ -18,8 +18,6 @@ import (
 	"fmt"
 	"strings"
 
-	adminApp "github.com/filescodebox/core/app/admin"
-	shareApp "github.com/filescodebox/core/app/share"
 	"github.com/filescodebox/core/pkg/utils"
 	"github.com/filescodebox/core/repo/db/dao"
 	"github.com/filescodebox/core/repo/db/model"
@@ -63,28 +61,85 @@ type rpcError struct {
 	Message string `json:"message"`
 }
 
+// ===== 消费侧窄接口（bootstrap 注入域适配器，本包不直接依赖 admin/share 包）=====
+
+// SystemStats 系统状态工具所需统计事实。
+type SystemStats struct {
+	TotalFiles   int64
+	TotalUsers   int64
+	TotalSize    int64
+	TodayUploads int64
+	ExpiredFiles int64
+}
+
+// StorageStatusInfo 存储状态工具所需事实。
+type StorageStatusInfo struct {
+	StorageType  string
+	TotalSpace   int64
+	UsedSpace    int64
+	UsagePercent float64
+	FileCount    int64
+}
+
+// UserRow 用户列表工具所需最小身份字段。
+type UserRow struct {
+	ID       uint
+	Username string
+	Email    string
+	Status   string
+}
+
+// ShareFileInfo 分享子文件清单项。
+type ShareFileInfo struct {
+	Name string
+	Size int64
+}
+
+// AdminAPI 系统维护类工具所需的 admin 域能力（bootstrap 注入全站唯一实例适配器）。
+type AdminAPI interface {
+	DeleteShareByID(ctx context.Context, id uint) error
+	SystemStats(ctx context.Context) (*SystemStats, error)
+	StorageStatus(ctx context.Context) (*StorageStatusInfo, error)
+	Users(ctx context.Context, page, pageSize int) ([]UserRow, int64, error)
+	CleanExpired(ctx context.Context) (count, freed int64, err error)
+}
+
+// ShareAPI 分享创建/查询工具所需的 share 域能力。
+type ShareAPI interface {
+	// CreateTextShare 创建文本分享，返回 (取件码, 完整链接)。
+	CreateTextShare(ctx context.Context, text string, expireValue int, expireStyle string,
+		requireAuth bool, passwordHash string, ownerIP, customCode string) (code, fullURL string, err error)
+	// ShareFiles 取分享的子文件清单。
+	ShareFiles(ctx context.Context, code string) ([]ShareFileInfo, error)
+}
+
 // Service MCP server。adminSvc 提供统计/存储/用户/清理能力，
-// shareSvc 提供分享创建（含配额/审计链路），storage 用于 delete_share 删物理文件。
+// shareSvc 提供分享创建，storage/DAO 直查用于 get_share/list_shares 展示。
 type Service struct {
-	adminSvc *adminApp.Service
-	shareSvc *shareApp.Service
+	adminSvc AdminAPI
+	shareSvc ShareAPI
 	version  string
 }
 
-// NewService 创建 MCP service
+// NewService 创建 MCP service。依赖经 SetAdminService/SetShareService 注入
+// （bootstrap 装配；未注入时对应工具返回明确错误而非静默降级）。
 func NewService(version string) *Service {
-	return &Service{
-		adminSvc: adminApp.NewService(),
-		shareSvc: nil,
-		version:  version,
-	}
+	return &Service{version: version}
 }
 
-// SetAdminService 注入 admin service（统计/用户/维护）
-func (s *Service) SetAdminService(svc *adminApp.Service) { s.adminSvc = svc }
+// SetAdminService 注入 admin 域能力适配器（统计/用户/维护）
+func (s *Service) SetAdminService(svc AdminAPI) { s.adminSvc = svc }
 
-// SetShareService 注入 share service（创建分享）
-func (s *Service) SetShareService(svc *shareApp.Service) { s.shareSvc = svc }
+// SetShareService 注入 share 域能力适配器（创建分享）
+func (s *Service) SetShareService(svc ShareAPI) { s.shareSvc = svc }
+
+// adminReady 管理类工具依赖检查（明确报错，避免 nil 指针）。
+func (s *Service) adminReady() (string, bool) {
+	if s.adminSvc == nil {
+		return "管理服务未注入（SetAdminService）", true
+	}
+	return "", false
+}
 
 // Handle 处理一次 JSON-RPC POST。
 // 返回 (httpStatus, responseBody)；通知类请求返回 (202, "")。
@@ -243,12 +298,12 @@ func (s *Service) execTool(ctx context.Context, name string, args json.RawMessag
 			}
 			passwordHash = hash
 		}
-		resp, err := s.shareSvc.ShareTextWithAuth(ctx, text,
-			argInt("expire_value", 1), style, passwordHash != "", passwordHash, nil, "mcp", false, argStr("custom_code"))
+		code, fullURL, err := s.shareSvc.CreateTextShare(ctx, text,
+			argInt("expire_value", 1), style, passwordHash != "", passwordHash, "mcp", argStr("custom_code"))
 		if err != nil {
 			return "创建分享失败: " + err.Error(), true
 		}
-		return fmt.Sprintf("分享创建成功\n取件码: %s\n分享链接: %s", resp.Code, resp.FullShareURL), false
+		return fmt.Sprintf("分享创建成功\n取件码: %s\n分享链接: %s", code, fullURL), false
 
 	case "get_share":
 		code := argStr("code")
@@ -262,14 +317,14 @@ func (s *Service) execTool(ctx context.Context, name string, args json.RawMessag
 		}
 		// 文件分享的 Text 存原始文件名（非空），须用 IsTextShare 判定（Text 非空且无文件路径）
 		kind := "文件"
-		if shareApp.IsTextShare(fc) {
+		if fc.IsTextShare() {
 			kind = "文本"
 		}
 		out := fmt.Sprintf("分享信息\n取件码: %s\n类型: %s\n内容/文件名: %s\n大小: %d 字节\n剩余次数: %d（-1 不限）\n已用次数: %d\n过期时间: %s\n创建时间: %s",
 			fc.Code, kind, displayFileName(fc), fc.Size, fc.ExpiredCount, fc.UsedCount, expire, fc.CreatedAt.Format("2006-01-02 15:04:05"))
 		// P0 多文件：附子文件清单（仅文件分享且存在子表行时）
-		if s.shareSvc != nil && !shareApp.IsTextShare(fc) {
-			if items, lerr := s.shareSvc.ListShareFiles(ctx, code); lerr == nil && len(items) > 1 {
+		if s.shareSvc != nil && !fc.IsTextShare() {
+			if items, lerr := s.shareSvc.ShareFiles(ctx, code); lerr == nil && len(items) > 1 {
 				out += fmt.Sprintf("\n文件清单（%d 个）:", len(items))
 				for _, it := range items {
 					out += fmt.Sprintf("\n  - %s（%d 字节）", it.Name, it.Size)
@@ -306,13 +361,19 @@ func (s *Service) execTool(ctx context.Context, name string, args json.RawMessag
 		if err != nil {
 			return "分享不存在: " + code, true
 		}
-		if err := s.adminSvc.DeleteFile(ctx, fc.ID); err != nil {
+		if msg, missing := s.adminReady(); missing {
+			return msg, true
+		}
+		if err := s.adminSvc.DeleteShareByID(ctx, fc.ID); err != nil {
 			return "删除失败: " + err.Error(), true
 		}
 		return fmt.Sprintf("已删除分享 %s（%s）", code, displayFileName(fc)), false
 
 	case "get_system_status":
-		stats, err := s.adminSvc.GetStats(ctx)
+		if msg, missing := s.adminReady(); missing {
+			return msg, true
+		}
+		stats, err := s.adminSvc.SystemStats(ctx)
 		if err != nil {
 			return "查询失败: " + err.Error(), true
 		}
@@ -320,7 +381,10 @@ func (s *Service) execTool(ctx context.Context, name string, args json.RawMessag
 			s.version, stats.TotalFiles, stats.TotalUsers, stats.TotalSize, stats.TodayUploads, stats.ExpiredFiles), false
 
 	case "get_storage_info":
-		st, err := s.adminSvc.GetStorageStatus(ctx)
+		if msg, missing := s.adminReady(); missing {
+			return msg, true
+		}
+		st, err := s.adminSvc.StorageStatus(ctx)
 		if err != nil {
 			return "查询失败: " + err.Error(), true
 		}
@@ -328,7 +392,10 @@ func (s *Service) execTool(ctx context.Context, name string, args json.RawMessag
 			st.StorageType, st.TotalSpace, st.UsedSpace, st.UsagePercent, st.FileCount), false
 
 	case "list_users":
-		users, total, err := s.adminSvc.GetUsers(ctx, argInt("page", 1), argInt("page_size", 20))
+		if msg, missing := s.adminReady(); missing {
+			return msg, true
+		}
+		users, total, err := s.adminSvc.Users(ctx, argInt("page", 1), argInt("page_size", 20))
 		if err != nil {
 			return "查询失败: " + err.Error(), true
 		}
@@ -340,7 +407,10 @@ func (s *Service) execTool(ctx context.Context, name string, args json.RawMessag
 		return b.String(), false
 
 	case "cleanup_expired":
-		n, freed, err := s.adminSvc.CleanExpiredFiles(ctx)
+		if msg, missing := s.adminReady(); missing {
+			return msg, true
+		}
+		n, freed, err := s.adminSvc.CleanExpired(ctx)
 		if err != nil {
 			return "清理失败: " + err.Error(), true
 		}

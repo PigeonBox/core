@@ -14,6 +14,17 @@ import (
 	"gorm.io/gorm"
 )
 
+// daoSink 测试桥：落盘能力接 dao（生产由 bootstrap 注入同形实现）。
+type daoSink struct{}
+
+func (daoSink) Create(ctx context.Context, e Entry) error {
+	return dao.NewTransferLogRepository().Create(ctx, &model.TransferLog{
+		Operation: e.Operation, FileCodeID: e.FileCodeID, FileCode: e.Code,
+		FileName: e.FileName, FileSize: e.FileSize, UserID: e.UserID,
+		APIKeyID: e.APIKeyID, Username: e.Username, IP: e.IP, DurationMs: e.DurationMs,
+	})
+}
+
 // TestRecord_PersistsAttribution Record 落库（含 API Key 归因列）。
 // sqlite :memory: 多连接各见独立库，钉死单连接；Record 为异步，轮询等待。
 func TestRecord_PersistsAttribution(t *testing.T) {
@@ -25,6 +36,8 @@ func TestRecord_PersistsAttribution(t *testing.T) {
 	sqlDB.SetMaxOpenConns(1)
 	db.SetDatabaseInstance(g)
 	t.Cleanup(func() { db.SetDatabaseInstance(nil) })
+	SetSink(daoSink{})
+	t.Cleanup(func() { SetSink(nil) })
 
 	uid, keyID := uint(9), uint(4)
 	Record(Entry{

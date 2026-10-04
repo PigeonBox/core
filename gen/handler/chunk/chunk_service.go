@@ -5,7 +5,6 @@ package chunk
 import (
 	"bytes"
 	"context"
-	"crypto/hmac"
 	"crypto/md5"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -13,7 +12,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -433,32 +431,17 @@ func ChunkUploadStatus(ctx context.Context, c *app.RequestContext) {
 	c.JSON(consts.StatusOK, resp)
 }
 
-// chunkSessionToken 会话令牌：HMAC(uploadID, 密钥)。客户端从 init 响应头
-// X-Upload-Token 取得并在后续请求回传，即可在 IP 漂移（移动网络/CGNAT）后
-// 仍通过归属校验。密钥复用 presign 签名密钥（FCB_PRESIGN_SIGNING_KEY，缺省
-// 回退 jwt_secret）。
+// chunkSessionToken/verifyChunkToken/ownedByCaller 收敛为 app/chunk 单一实现的
+// 薄委托（此前与 transport/handler/share_multi.go 逐字孪生）。
+
 func chunkSessionToken(uploadID string) string {
-	key := os.Getenv("FCB_PRESIGN_SIGNING_KEY")
-	if key == "" {
-		if cfg := conf.GetGlobalConfig(); cfg != nil {
-			key = cfg.User.JWTSecret
-		}
-	}
-	if key == "" {
-		return ""
-	}
-	mac := hmac.New(sha256.New, []byte(key))
-	_, _ = mac.Write([]byte("chunk-session:" + uploadID))
-	return hex.EncodeToString(mac.Sum(nil))
+	return chunkService.SessionToken(uploadID)
 }
 
-// verifyChunkToken 客户端回传的会话令牌是否有效
 func verifyChunkToken(uploadID, token string) bool {
-	want := chunkSessionToken(uploadID)
-	return want != "" && token != "" && hmac.Equal([]byte(want), []byte(token))
+	return chunkService.VerifySessionToken(uploadID, token)
 }
 
-// ownedByCaller 归属校验（治理）：控制记录记有 OwnerIP 时，要求 IP 一致、
 // expectedChunkHash 读取客户端期望的分片哈希：query 优先、multipart form 兜底。
 // 空串表示未携带（跳过校验，保持旧行为）。
 func expectedChunkHash(c *app.RequestContext) string {
@@ -468,24 +451,15 @@ func expectedChunkHash(c *app.RequestContext) string {
 	return strings.ToLower(string(c.FormValue("hash")))
 }
 
-// 同一登录用户或持有效会话令牌。老数据（OwnerIP 为空）跳过保持兼容。
-func ownedByCaller(info *model.UploadChunk, c *app.RequestContext) bool {	if info.OwnerIP == "" {
-		return true
-	}
-	if info.OwnerIP == middleware.ClientIP(c) {
-		return true
-	}
-	if verifyChunkToken(info.UploadID, string(c.GetHeader("X-Upload-Token"))) {
-		return true
-	}
-	if info.UserID != nil {
-		if uid, exists := c.Get("user_id"); exists {
-			if uidUint, ok := uid.(uint); ok && uidUint == *info.UserID {
-				return true
-			}
+// ownedByCaller 归属校验（身份从 c.Get 提取，与本组中间件注入路径一致）
+func ownedByCaller(info *model.UploadChunk, c *app.RequestContext) bool {
+	var callerUserID *uint
+	if uid, exists := c.Get("user_id"); exists {
+		if uidUint, ok := uid.(uint); ok {
+			callerUserID = &uidUint
 		}
 	}
-	return false
+	return chunkService.OwnedByCaller(info, middleware.ClientIP(c), string(c.GetHeader("X-Upload-Token")), callerUserID)
 }
 
 // ChunkUploadComplete .

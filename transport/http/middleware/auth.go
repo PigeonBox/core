@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/cloudwego/hertz/pkg/app"
+	pkgmw "github.com/filescodebox/core/pkg/middleware"
 	"github.com/filescodebox/core/pkg/auth"
 	"github.com/filescodebox/core/pkg/errors"
 )
@@ -21,18 +22,16 @@ const (
 	ContextKeyAuthType = "auth_type"
 )
 
-// parseAndSetClaims 解析JWT并将用户信息存入上下文
+// parseAndSetClaims 解析JWT并将用户信息存入上下文。
+// c.Set 四件套委托 pkg/middleware 统一实现（键名单一真相源）。
+// 注意：本栈只写 c.Set，不做 ctx value 注入/X- headers（与 pkg 栈的有意差异，
+// 统一前需验证 /api/v1 组审计归因的预期行为）。
 func parseAndSetClaims(c *app.RequestContext, tokenString string) error {
 	claims, err := auth.ParseToken(tokenString)
 	if err != nil {
 		return err
 	}
-
-	c.Set(ContextKeyUserID, claims.UserID)
-	c.Set(ContextKeyUsername, claims.Username)
-	c.Set(ContextKeyUserRole, claims.Role)
-	c.Set(ContextKeyAuthType, "jwt")
-
+	pkgmw.SetJWTClaims(c, claims)
 	return nil
 }
 

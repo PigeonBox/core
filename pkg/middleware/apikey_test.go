@@ -27,6 +27,26 @@ import (
 // sqlite :memory: 多连接各见独立库，必须钉死单连接（upload-governance 教训）。
 // =====================================================================
 
+// daoAPIKeyStore 测试桥：持久化能力接 dao（生产由 bootstrap 注入同形实现）。
+type daoAPIKeyStore struct{}
+
+func (daoAPIKeyStore) FindActiveByHash(ctx context.Context, hash string) (*APIKeyPrincipal, error) {
+	key, err := dao.NewUserAPIKeyRepository().GetActiveByHash(ctx, hash)
+	if err != nil {
+		return nil, err
+	}
+	user, err := dao.NewUserRepository().GetByID(ctx, key.UserID)
+	if err != nil || user.Status != "active" {
+		// 封禁/停用用户的 Key 视为无效 Key（同生产桥语义）
+		return nil, errInvalidAPIKey
+	}
+	return &APIKeyPrincipal{KeyID: key.ID, UserID: user.ID, Username: user.Username, Role: user.Role}, nil
+}
+
+func (daoAPIKeyStore) TouchLastUsed(ctx context.Context, keyID uint, ip string) error {
+	return dao.NewUserAPIKeyRepository().TouchLastUsed(ctx, keyID, ip)
+}
+
 func newAPIKeyTestEnv(t *testing.T) {
 	t.Helper()
 	g, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
@@ -37,6 +57,8 @@ func newAPIKeyTestEnv(t *testing.T) {
 	sqlDB.SetMaxOpenConns(1)
 	db.SetDatabaseInstance(g)
 	t.Cleanup(func() { db.SetDatabaseInstance(nil) })
+	SetAPIKeyStore(daoAPIKeyStore{})
+	t.Cleanup(func() { SetAPIKeyStore(nil) })
 	// 重置全局锁定器为纯内存实例 + 清空触碰节流/单Key限流表，测试间隔离（同包直取）
 	InitDefaultLockout(nil)
 	t.Cleanup(func() { InitDefaultLockout(nil) })

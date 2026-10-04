@@ -49,14 +49,7 @@ type UserFilter struct {
 
 // ListFiltered 带筛选的用户分页列表（管理端用户管理）
 func (r *UserRepository) ListFiltered(ctx context.Context, f UserFilter) ([]*model.User, int64, error) {
-	page := f.Page
-	if page < 1 {
-		page = 1
-	}
-	pageSize := f.PageSize
-	if pageSize < 1 || pageSize > 200 {
-		pageSize = 20
-	}
+	page, pageSize := clampPage(f.Page, f.PageSize, MaxPageSize)
 	q := r.db().WithContext(ctx).Model(&model.User{})
 	if f.Keyword != "" {
 		like := "%" + f.Keyword + "%"
@@ -68,16 +61,7 @@ func (r *UserRepository) ListFiltered(ctx context.Context, f UserFilter) ([]*mod
 	if f.Role != "" {
 		q = q.Where("role = ?", f.Role)
 	}
-	var total int64
-	if err := q.Count(&total).Error; err != nil {
-		return nil, 0, err
-	}
-	var users []*model.User
-	offset := (page - 1) * pageSize
-	if err := q.Order("created_at DESC").Offset(offset).Limit(pageSize).Find(&users).Error; err != nil {
-		return nil, 0, err
-	}
-	return users, total, nil
+	return paginate[model.User](q.Order("created_at DESC"), page, pageSize)
 }
 
 func (r *UserRepository) Delete(ctx context.Context, id uint) error {
@@ -122,20 +106,8 @@ func (r *UserRepository) GetByOIDCSub(ctx context.Context, sub string) (*model.U
 }
 
 func (r *UserRepository) List(ctx context.Context, page, pageSize int) ([]*model.User, int64, error) {
-	var users []*model.User
-	var total int64
-
-	offset := (page - 1) * pageSize
-
-	if err := r.db().WithContext(ctx).Model(&model.User{}).Count(&total).Error; err != nil {
-		return nil, 0, err
-	}
-
-	if err := r.db().WithContext(ctx).Offset(offset).Limit(pageSize).Find(&users).Error; err != nil {
-		return nil, 0, err
-	}
-
-	return users, total, nil
+	page, pageSize = clampPage(page, pageSize, MaxPageSize)
+	return paginate[model.User](r.db().WithContext(ctx).Model(&model.User{}), page, pageSize)
 }
 
 // Count returns the total number of users

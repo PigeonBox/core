@@ -4,20 +4,13 @@ package handler
 import (
 	"context"
 	"fmt"
-	"io"
-	"path/filepath"
-	"time"
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
-	"github.com/filescodebox/contracts/errcode"
 	requestApp "github.com/filescodebox/core/app/request"
-	shareService "github.com/filescodebox/core/app/share"
 	"github.com/filescodebox/core/pkg/middleware"
 	"github.com/filescodebox/core/pkg/resp"
 	"github.com/filescodebox/core/pkg/transfer"
-	"github.com/filescodebox/core/pkg/utils"
-	"github.com/google/uuid"
 )
 
 var requestSvc *requestApp.Service
@@ -160,57 +153,10 @@ func GuestSubmitFiles(ctx context.Context, c *app.RequestContext) {
 
 	guestIP := middleware.ClientIP(c)
 	st := manageStorage
-	var stored []shareService.StoredFileEntry
-	for _, fh := range files {
-		name := utils.SanitizeFileName(fh.Filename)
-		if !utils.IsAllowedExtension(name) {
-			cleanupStored(ctx, st, stored)
-			c.JSON(consts.StatusBadRequest, map[string]interface{}{
-				"code":    errcode.CodeFileTypeDenied,
-				"message": fmt.Sprintf("文件类型禁止上传: %s", name),
-			})
-			return
-		}
-		if maxFile := utils.GetMaxFileSize(); maxFile > 0 && fh.Size > maxFile {
-			cleanupStored(ctx, st, stored)
-			c.JSON(consts.StatusBadRequest, map[string]interface{}{
-				"code":    errcode.CodeTooLarge,
-				"message": fmt.Sprintf("文件 %s 超过单文件大小上限", name),
-			})
-			return
-		}
-		var head []byte
-		if f, oerr := fh.Open(); oerr == nil {
-			buf := make([]byte, 512)
-			n, rerr := io.ReadFull(f, buf)
-			if rerr == nil || rerr == io.ErrUnexpectedEOF {
-				head = buf[:n]
-			}
-			_ = f.Close()
-		}
-		if err := utils.CheckUploadContent(name, head); err != nil {
-			cleanupStored(ctx, st, stored)
-			c.JSON(consts.StatusBadRequest, map[string]interface{}{
-				"code":    errcode.CodeFileTypeDenied,
-				"message": err.Error(),
-			})
-			return
-		}
-
-		ext := filepath.Ext(name)
-		rel := filepath.Join("uploads", time.Now().Format("2006"), time.Now().Format("01"), time.Now().Format("02"), uuid.New().String()+ext)
-		result, serr := st.SaveFile(ctx, fh, rel)
-		if serr != nil {
-			cleanupStored(ctx, st, stored)
-			c.JSON(consts.StatusInternalServerError, map[string]interface{}{"code": 500, "message": "文件保存失败: " + serr.Error()})
-			return
-		}
-		stored = append(stored, shareService.StoredFileEntry{
-			RelPath:  result.FilePath,
-			FileName: name,
-			Size:     result.FileSize,
-			FileHash: result.FileHash,
-		})
+	// 访客投递为明文上传，不跳过魔数校验（encrypted=false）
+	stored, ok := saveUploadEntries(ctx, c, st, files, false)
+	if !ok {
+		return
 	}
 
 	shareResult, err := svc.Submit(ctx, token, stored, guestIP)

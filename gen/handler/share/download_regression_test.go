@@ -23,6 +23,7 @@ import (
 
 	shareService "github.com/filescodebox/core/app/share"
 	"github.com/filescodebox/core/conf"
+	"github.com/filescodebox/core/pkg/transfer"
 	"github.com/filescodebox/core/repo/db"
 	"github.com/filescodebox/core/repo/db/dao"
 	"github.com/filescodebox/core/repo/db/model"
@@ -31,6 +32,17 @@ import (
 
 const regRelPath = "uploads/2026/10/03/reg-test-uuid.txt"
 const regBody = "file-body-123"
+
+// daoTransferLogSink 测试桥：transfer.Sink 接 dao（生产由 bootstrap 注入同形实现）
+type daoTransferLogSink struct{}
+
+func (daoTransferLogSink) Create(ctx context.Context, e transfer.Entry) error {
+	return dao.NewTransferLogRepository().Create(ctx, &model.TransferLog{
+		Operation: e.Operation, FileCodeID: e.FileCodeID, FileCode: e.Code,
+		FileName: e.FileName, FileSize: e.FileSize, UserID: e.UserID,
+		APIKeyID: e.APIKeyID, Username: e.Username, IP: e.IP, DurationMs: e.DurationMs,
+	})
+}
 
 // newDownloadTestEnv 临时文件 DB（:memory: 多连接会各见独立库，异步日志会写不进）
 // + 临时目录存储 + 注入 handler 单例 + 关闭下载令牌
@@ -42,6 +54,8 @@ func newDownloadTestEnv(t *testing.T) {
 	require.NoError(t, g.AutoMigrate(&model.FileCode{}, &model.TransferLog{}))
 	db.SetDatabaseInstance(g)
 	t.Cleanup(func() { db.SetDatabaseInstance(nil) })
+	transfer.SetSink(daoTransferLogSink{})
+	t.Cleanup(func() { transfer.SetSink(nil) })
 
 	dataPath := t.TempDir()
 	fullPath := filepath.Join(dataPath, regRelPath)

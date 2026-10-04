@@ -65,7 +65,7 @@ func (s *Service) InitiateUpload(ctx context.Context, req *InitiateUploadReq) (*
 	// 类型 + 整文件大小校验（应用层）。
 	// 回归：此前误用 GetMaxUploadSize（单请求体上限 10MB）拦截整个文件，
 	// 分片通道被单请求限制误伤。整文件上限走 upload.max_file_size（0=不限）。
-	if err := utils.CheckUploadSize(req.FileSize, utils.GetMaxFileSize()); err != nil {
+	if err := utils.CheckWholeFileSize(req.FileSize); err != nil {
 		return nil, fmt.Errorf("文件过大: 最大允许 %d 字节", utils.GetMaxFileSize())
 	}
 	if !utils.IsAllowedExtension(req.FileName) {

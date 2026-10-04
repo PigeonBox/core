@@ -11,7 +11,6 @@ import (
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
 
 	"github.com/filescodebox/core/app/share"
-	"github.com/filescodebox/core/repo/db/dao"
 	"github.com/filescodebox/core/transport/http/middleware"
 )
 
@@ -24,7 +23,9 @@ func SetShareService(s *share.Service) {
 
 func getShareService() *share.Service {
 	if shareSvc == nil {
-		shareSvc = share.NewService("", nil)
+		// fail-fast：残废实例（空 baseURL/nil storage）只会静默放大错误；
+		// bootstrap 保证 SetShareService 先于服务流量，装配缺失必须显式暴露
+		panic("share service not initialized: SetShareService must be called before serving")
 	}
 	return shareSvc
 }
@@ -61,25 +62,16 @@ type UserSharesListData struct {
 // ListUserShares 我的分享列表
 // GET /api/v1/user/shares?status=active&search=&page=1&page_size=20
 func ListUserShares(ctx context.Context, c *app.RequestContext) {
-	uid, ok := userIDFromCtx(c)
+	uid, ok := requireLogin(c)
 	if !ok {
-		c.JSON(consts.StatusUnauthorized, map[string]interface{}{
-			"code": 401, "message": "未登录",
-		})
 		return
 	}
 
-	status := string(c.Query("status"))
-	search := string(c.Query("search"))
 	page, _ := strconv.Atoi(string(c.Query("page")))
 	pageSize, _ := strconv.Atoi(string(c.Query("page_size")))
 
-	items, total, err := getShareService().ListUserShares(ctx, uid, dao.UserShareFilter{
-		Status:   status,
-		Search:   search,
-		Page:     page,
-		PageSize: pageSize,
-	})
+	items, total, err := getShareService().ListUserShares(ctx, uid,
+		string(c.Query("status")), string(c.Query("search")), page, pageSize)
 	if err != nil {
 		c.JSON(consts.StatusInternalServerError, map[string]interface{}{
 			"code": 500, "message": "获取分享列表失败: " + err.Error(),
@@ -122,9 +114,8 @@ type BatchDeleteUserSharesReq struct {
 // BatchDeleteUserShares 批量软删除我的分享
 // POST /api/v1/user/shares/batch-delete
 func BatchDeleteUserShares(ctx context.Context, c *app.RequestContext) {
-	uid, ok := userIDFromCtx(c)
+	uid, ok := requireLogin(c)
 	if !ok {
-		c.JSON(consts.StatusUnauthorized, map[string]interface{}{"code": 401, "message": "未登录"})
 		return
 	}
 	var req BatchDeleteUserSharesReq
@@ -158,9 +149,8 @@ type BatchExtendUserSharesReq struct {
 // BatchExtendUserShares 批量延期我的分享
 // POST /api/v1/user/shares/batch-extend
 func BatchExtendUserShares(ctx context.Context, c *app.RequestContext) {
-	uid, ok := userIDFromCtx(c)
+	uid, ok := requireLogin(c)
 	if !ok {
-		c.JSON(consts.StatusUnauthorized, map[string]interface{}{"code": 401, "message": "未登录"})
 		return
 	}
 	var req BatchExtendUserSharesReq
@@ -198,9 +188,8 @@ func BatchExtendUserShares(ctx context.Context, c *app.RequestContext) {
 // RestoreUserShare 恢复软删除的分享
 // POST /api/v1/user/shares/:code/restore
 func RestoreUserShare(ctx context.Context, c *app.RequestContext) {
-	uid, ok := userIDFromCtx(c)
+	uid, ok := requireLogin(c)
 	if !ok {
-		c.JSON(consts.StatusUnauthorized, map[string]interface{}{"code": 401, "message": "未登录"})
 		return
 	}
 	code := c.Param("code")
@@ -218,9 +207,8 @@ func RestoreUserShare(ctx context.Context, c *app.RequestContext) {
 // HardDeleteUserShare 永久删除（仅已软删除的）
 // DELETE /api/v1/user/shares/:code/hard
 func HardDeleteUserShare(ctx context.Context, c *app.RequestContext) {
-	uid, ok := userIDFromCtx(c)
+	uid, ok := requireLogin(c)
 	if !ok {
-		c.JSON(consts.StatusUnauthorized, map[string]interface{}{"code": 401, "message": "未登录"})
 		return
 	}
 	code := c.Param("code")

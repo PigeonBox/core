@@ -6,14 +6,9 @@ package handler
 import (
 	"bytes"
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
 	"strconv"
 	"time"
 
@@ -22,7 +17,6 @@ import (
 	"github.com/filescodebox/contracts/errcode"
 	"github.com/filescodebox/core/app/chunk"
 	shareService "github.com/filescodebox/core/app/share"
-	"github.com/filescodebox/core/conf"
 	"github.com/filescodebox/core/pkg/gate"
 	"github.com/filescodebox/core/pkg/middleware"
 	"github.com/filescodebox/core/pkg/resp"
@@ -30,7 +24,6 @@ import (
 	"github.com/filescodebox/core/pkg/utils"
 	"github.com/filescodebox/core/repo/db/model"
 	"github.com/filescodebox/core/storage"
-	"github.com/google/uuid"
 )
 
 // userIDAny 读请求身份：JWT 走 c.Set（OptionalAuthMiddleware），API Key 走 ctx 值
@@ -46,23 +39,6 @@ func userIDAny(ctx context.Context, c *app.RequestContext) (uint, bool) {
 // multiChunkSvc 多文件绑定的 chunk 会话查询（chunk.Service 无状态，DAO 惰性）
 func multiChunkSvc() *chunk.Service {
 	return chunk.NewService()
-}
-
-// chunkSessionTokenOf 与 gen/handler/chunk 同源的会话令牌（HMAC，密钥同 presign/jwt），
-// 用于绑定时的归属校验（IP 漂移场景）。
-func chunkSessionTokenOf(uploadID string) string {
-	key := os.Getenv("FCB_PRESIGN_SIGNING_KEY")
-	if key == "" {
-		if cfg := conf.GetGlobalConfig(); cfg != nil {
-			key = cfg.User.JWTSecret
-		}
-	}
-	if key == "" {
-		return ""
-	}
-	mac := hmac.New(sha256.New, []byte(key))
-	_, _ = mac.Write([]byte("chunk-session:" + uploadID))
-	return hex.EncodeToString(mac.Sum(nil))
 }
 
 // multiCommonParams 多文件创建的公共表单/JSON 参数
@@ -127,23 +103,10 @@ func finishMultiCommon(ctx context.Context, c *app.RequestContext, expireValue i
 		Encrypted:   encrypted,
 		OwnerIP:     middleware.ClientIP(c),
 	}
-	if requireAuth {
-		if password == "" {
-			c.JSON(consts.StatusBadRequest, map[string]interface{}{
-				"code":    400,
-				"message": "开启密码保护时必须提供密码",
-			})
-			return nil
-		}
-		hash, err := utils.HashPassword(password)
-		if err != nil {
-			c.JSON(consts.StatusInternalServerError, map[string]interface{}{
-				"code":    500,
-				"message": "密码处理失败",
-			})
-			return nil
-		}
+	if hash, ok := resolveSharePassword(c, requireAuth, password); ok {
 		p.PasswordHash = hash
+	} else {
+		return nil
 	}
 	if v, ok := userIDAny(ctx, c); ok {
 		p.UserID = &v
@@ -162,13 +125,10 @@ func (p *multiCommonParams) multiExpire() (*time.Time, int) {
 		utils.CalculateExpireCount(p.ExpireStyle, p.ExpireValue)
 }
 
-// newRelPath 新存储相对路径（uploads/YYYY/MM/DD/uuid.ext，与单文件直传一致）
+// newRelPath 新存储相对路径（uploads/YYYY/MM/DD/uuid.ext，与单文件直传一致；
+// 收口 utils.NewUploadRelPath，单次取时钟避免跨秒日期漂移）
 func newRelPath(originalName string) (uuidName, rel string) {
-	ext := filepath.Ext(originalName)
-	uuidName = uuid.New().String() + ext
-	now := time.Now()
-	rel = filepath.Join("uploads", now.Format("2006"), now.Format("01"), now.Format("02"), uuidName)
-	return uuidName, rel
+	return utils.NewUploadRelPath(originalName)
 }
 
 // cleanupStored 失败回滚：删除已落存储的文件（best-effort）
@@ -238,59 +198,9 @@ func MultiShareDirect(ctx context.Context, c *app.RequestContext) {
 	}
 
 	st := manageStorage
-	var stored []shareService.StoredFileEntry
-	for _, fh := range files {
-		name := utils.SanitizeFileName(fh.Filename)
-		if !utils.IsAllowedExtension(name) {
-			cleanupStored(ctx, st, stored)
-			c.JSON(consts.StatusBadRequest, map[string]interface{}{
-				"code":    errcode.CodeFileTypeDenied,
-				"message": fmt.Sprintf("文件类型禁止上传: %s", name),
-			})
-			return
-		}
-		if maxFile := utils.GetMaxFileSize(); maxFile > 0 && fh.Size > maxFile {
-			cleanupStored(ctx, st, stored)
-			c.JSON(consts.StatusBadRequest, map[string]interface{}{
-				"code":    errcode.CodeTooLarge,
-				"message": fmt.Sprintf("文件 %s 超过单文件大小上限", name),
-			})
-			return
-		}
-		// 魔数 + 扩展名一致性（E2E 密文跳过：密文头为随机字节，必然不过魔数表）
-		var head []byte
-		if !p.Encrypted {
-			if f, oerr := fh.Open(); oerr == nil {
-				buf := make([]byte, 512)
-				n, rerr := io.ReadFull(f, buf)
-				if rerr == nil || rerr == io.ErrUnexpectedEOF {
-					head = buf[:n]
-				}
-				_ = f.Close()
-			}
-			if err := utils.CheckUploadContent(name, head); err != nil {
-				cleanupStored(ctx, st, stored)
-				c.JSON(consts.StatusBadRequest, map[string]interface{}{
-					"code":    errcode.CodeFileTypeDenied,
-					"message": err.Error(),
-				})
-				return
-			}
-		}
-
-		_, rel := newRelPath(name)
-		result, serr := st.SaveFile(ctx, fh, rel)
-		if serr != nil {
-			cleanupStored(ctx, st, stored)
-			c.JSON(consts.StatusInternalServerError, map[string]interface{}{"code": 500, "message": fmt.Sprintf("文件保存失败: %v", serr)})
-			return
-		}
-		stored = append(stored, shareService.StoredFileEntry{
-			RelPath:  result.FilePath,
-			FileName: name,
-			Size:     result.FileSize,
-			FileHash: result.FileHash,
-		})
+	stored, ok := saveUploadEntries(ctx, c, st, files, p.Encrypted)
+	if !ok {
+		return
 	}
 
 	expireAt, expireCount := p.multiExpire()
@@ -570,25 +480,15 @@ func bindChunkEntry(ctx context.Context, c *app.RequestContext, chunkSvc *chunk.
 	}, uploadID, true
 }
 
-// multiOwnedByCaller 绑定归属校验（与 gen chunk ownedByCaller 同语义）：
+// multiOwnedByCaller 绑定归属校验（薄委托 chunk.OwnedByCaller 单一实现）：
 // 控制记录记有 OwnerIP 时，要求 IP 一致、同一登录用户或持有效会话令牌；
 // 老数据（OwnerIP 为空）跳过保持兼容。
 func multiOwnedByCaller(ctx context.Context, info *model.UploadChunk, c *app.RequestContext) bool {
-	if info.OwnerIP == "" {
-		return true
+	var callerUserID *uint
+	if uid, ok := middleware.UserIDFromContext(ctx); ok {
+		callerUserID = &uid
 	}
-	if info.OwnerIP == middleware.ClientIP(c) {
-		return true
-	}
-	if tok := chunkSessionTokenOf(info.UploadID); tok != "" && hmac.Equal([]byte(tok), c.GetHeader("X-Upload-Token")) {
-		return true
-	}
-	if info.UserID != nil {
-		if uid, ok := middleware.UserIDFromContext(ctx); ok && uid == *info.UserID {
-			return true
-		}
-	}
-	return false
+	return chunk.OwnedByCaller(info, middleware.ClientIP(c), string(c.GetHeader("X-Upload-Token")), callerUserID)
 }
 
 // apiKeyIDPtr 提取 ctx 中的 API Key 归因（JWT/匿名请求返回 nil）

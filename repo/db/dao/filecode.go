@@ -81,12 +81,7 @@ func (r *FileCodeRepository) Count(ctx context.Context) (int64, error) {
 	return count, err
 }
 
-func (r *FileCodeRepository) CountToday(ctx context.Context) (int64, error) {
-	var count int64
-	today := time.Now().Format("2006-01-02")
-	err := r.db().WithContext(ctx).Unscoped().Model(&model.FileCode{}).Where("created_at >= ?", today).Count(&count).Error
-	return count, err
-}
+// CountToday 已删除：全库无调用方（统计走 CountTodayUploads/CountCreatedBetween）。
 
 func (r *FileCodeRepository) CountActive(ctx context.Context) (int64, error) {
 	var count int64
@@ -103,8 +98,7 @@ func (r *FileCodeRepository) GetTotalSize(ctx context.Context) (int64, error) {
 }
 
 func (r *FileCodeRepository) List(ctx context.Context, page, pageSize int, search string) ([]*model.FileCode, int64, error) {
-	var files []*model.FileCode
-	var total int64
+	page, pageSize = clampPage(page, pageSize, MaxPageSize)
 
 	query := r.db().WithContext(ctx).Model(&model.FileCode{})
 
@@ -115,16 +109,7 @@ func (r *FileCodeRepository) List(ctx context.Context, page, pageSize int, searc
 			searchPattern, searchPattern, searchPattern)
 	}
 
-	// 获取总数
-	if err := query.Count(&total).Error; err != nil {
-		return nil, 0, err
-	}
-
-	// 分页查询
-	offset := (page - 1) * pageSize
-	err := query.Order("created_at DESC").Offset(offset).Limit(pageSize).Find(&files).Error
-
-	return files, total, err
+	return paginate[model.FileCode](query.Order("created_at DESC"), page, pageSize)
 }
 
 func (r *FileCodeRepository) GetExpiredFiles(ctx context.Context) ([]*model.FileCode, error) {
@@ -161,17 +146,7 @@ func (r *FileCodeRepository) CheckCodeExists(ctx context.Context, code string, e
 	return true, nil
 }
 
-func (r *FileCodeRepository) GetByHash(ctx context.Context, fileHash string, fileSize int64) (*model.FileCode, error) {
-	var existingFile model.FileCode
-	err := r.db().WithContext(ctx).
-		Where("file_hash = ? AND size = ? AND deleted_at IS NULL AND status = ? AND require_auth = ?",
-			fileHash, fileSize, model.StatusNormal, false).
-		First(&existingFile).Error
-	if err != nil {
-		return nil, err
-	}
-	return &existingFile, nil
-}
+// GetByHash 已删除：与 GetByHashAndSize SQL 逐字重复且全库无调用方（秒传走 GetByHashAndSize）。
 
 func (r *FileCodeRepository) CountByUserID(ctx context.Context, userID uint) (int64, error) {
 	var count int64
@@ -204,22 +179,12 @@ func (r *FileCodeRepository) GetFilesByUserID(ctx context.Context, userID uint) 
 }
 
 func (r *FileCodeRepository) GetFilesByUserIDWithPagination(ctx context.Context, userID uint, page, pageSize int) ([]*model.FileCode, int64, error) {
-	var files []*model.FileCode
-	var total int64
+	page, pageSize = clampPage(page, pageSize, MaxPageSize)
 
 	// 构建查询条件
 	query := r.db().WithContext(ctx).Model(&model.FileCode{}).Where("user_id = ?", userID)
 
-	// 获取总数
-	if err := query.Count(&total).Error; err != nil {
-		return nil, 0, err
-	}
-
-	// 分页查询
-	offset := (page - 1) * pageSize
-	err := query.Order("created_at DESC").Offset(offset).Limit(pageSize).Find(&files).Error
-
-	return files, total, err
+	return paginate[model.FileCode](query.Order("created_at DESC"), page, pageSize)
 }
 
 func (r *FileCodeRepository) DeleteByUserID(ctx context.Context, userID uint) error {
@@ -249,14 +214,7 @@ type UserShareFilter struct {
 //   - "deleted": 软删除的（deleted_at != null）
 //   - "all" / "": 不过滤状态
 func (r *FileCodeRepository) GetUserSharesWithFilter(ctx context.Context, userID uint, filter UserShareFilter) ([]*model.FileCode, int64, error) {
-	page := filter.Page
-	if page < 1 {
-		page = 1
-	}
-	pageSize := filter.PageSize
-	if pageSize < 1 || pageSize > 100 {
-		pageSize = 20
-	}
+	page, pageSize := clampPage(filter.Page, filter.PageSize, 100)
 
 	now := time.Now()
 	q := r.db().WithContext(ctx).Model(&model.FileCode{}).Where("user_id = ?", userID)
@@ -281,17 +239,7 @@ func (r *FileCodeRepository) GetUserSharesWithFilter(ctx context.Context, userID
 			like, like, like, like)
 	}
 
-	var total int64
-	if err := q.Count(&total).Error; err != nil {
-		return nil, 0, err
-	}
-
-	offset := (page - 1) * pageSize
-	var files []*model.FileCode
-	if err := q.Order("created_at DESC").Offset(offset).Limit(pageSize).Find(&files).Error; err != nil {
-		return nil, 0, err
-	}
-	return files, total, nil
+	return paginate[model.FileCode](q.Order("created_at DESC"), page, pageSize)
 }
 
 // BatchSoftDeleteByCodes 按 code 列表软删除（限定 userID 防止越权）
@@ -486,14 +434,7 @@ func (r *FileCodeRepository) CountExpired(ctx context.Context) (int64, error) {
 // ListWithFilter 管理端文件列表：组合过滤 + 分页（此前仅 keyword 模糊匹配，
 // 无法按上传者/IP/类型/大小/时间/状态定位滥用资源）。
 func (r *FileCodeRepository) ListWithFilter(ctx context.Context, q model.FileCodeQuery) ([]*model.FileCode, int64, error) {
-	page := q.Page
-	if page < 1 {
-		page = 1
-	}
-	pageSize := q.PageSize
-	if pageSize < 1 || pageSize > 200 {
-		pageSize = 20
-	}
+	page, pageSize := clampPage(q.Page, q.PageSize, MaxPageSize)
 
 	query := r.db().WithContext(ctx).Model(&model.FileCode{})
 
@@ -536,17 +477,7 @@ func (r *FileCodeRepository) ListWithFilter(ctx context.Context, q model.FileCod
 		}
 	}
 
-	var total int64
-	if err := query.Count(&total).Error; err != nil {
-		return nil, 0, err
-	}
-
-	offset := (page - 1) * pageSize
-	var files []*model.FileCode
-	if err := query.Order("created_at DESC").Offset(offset).Limit(pageSize).Find(&files).Error; err != nil {
-		return nil, 0, err
-	}
-	return files, total, nil
+	return paginate[model.FileCode](query.Order("created_at DESC"), page, pageSize)
 }
 
 // UpdateStatusByIDs 批量更新管控状态（单个/批量禁用、恢复共用）。
@@ -562,4 +493,24 @@ func (r *FileCodeRepository) UpdateStatusByIDs(ctx context.Context, ids []uint, 
 		Where("id IN ?", ids).
 		Update("status", status)
 	return res.RowsAffected, res.Error
+}
+
+// DeleteByIDTx 事务内软删单条分享主记录（原子性由事务保证；
+// app 层经此删除，不再直接持有 gorm 会话）。
+func (r *FileCodeRepository) DeleteByIDTx(ctx context.Context, id uint) error {
+	return r.db().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		return tx.Delete(&model.FileCode{}, id).Error
+	})
+}
+
+// ListAllIncludingDeleted 全量拉取分享记录（含软删）——物理文件对账的引用集：
+// 可恢复（软删）分享的物理文件不算孤儿。
+func (r *FileCodeRepository) ListAllIncludingDeleted(ctx context.Context) ([]*model.FileCode, error) {
+	var rows []*model.FileCode
+	if err := r.db().WithContext(ctx).Unscoped().
+		Model(&model.FileCode{}).
+		Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	return rows, nil
 }

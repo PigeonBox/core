@@ -2,6 +2,7 @@ package dao
 
 import (
 	"context"
+	"time"
 
 	"github.com/filescodebox/core/repo/db"
 	"github.com/filescodebox/core/repo/db/model"
@@ -24,18 +25,7 @@ func (r *AdminOperationLogRepository) Create(ctx context.Context, log *model.Adm
 }
 
 func (r *AdminOperationLogRepository) List(ctx context.Context, query model.AdminOperationLogQuery) ([]*model.AdminOperationLog, int64, error) {
-	page := query.Page
-	if page < 1 {
-		page = 1
-	}
-
-	pageSize := query.PageSize
-	if pageSize <= 0 {
-		pageSize = 20
-	}
-	if pageSize > 200 {
-		pageSize = 200
-	}
+	page, pageSize := clampPage(query.Page, query.PageSize, MaxPageSize)
 
 	dbQuery := r.db().WithContext(ctx).Model(&model.AdminOperationLog{})
 
@@ -51,16 +41,11 @@ func (r *AdminOperationLogRepository) List(ctx context.Context, query model.Admi
 		dbQuery = dbQuery.Where("success = ?", *query.Success)
 	}
 
-	var total int64
-	if err := dbQuery.Count(&total).Error; err != nil {
-		return nil, 0, err
-	}
+	return paginate[model.AdminOperationLog](dbQuery.Order("created_at DESC"), page, pageSize)
+}
 
-	offset := (page - 1) * pageSize
-	var logs []*model.AdminOperationLog
-	if err := dbQuery.Order("created_at DESC").Offset(offset).Limit(pageSize).Find(&logs).Error; err != nil {
-		return nil, 0, err
-	}
-
-	return logs, total, nil
+// DeleteOlderThan 日志保留清理：删除 created_at 早于 cutoff 的行，返回删除行数。
+func (r *AdminOperationLogRepository) DeleteOlderThan(ctx context.Context, cutoff time.Time) (int64, error) {
+	res := r.db().WithContext(ctx).Where("created_at < ?", cutoff).Delete(&model.AdminOperationLog{})
+	return res.RowsAffected, res.Error
 }

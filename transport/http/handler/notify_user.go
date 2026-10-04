@@ -28,9 +28,8 @@ func getNotifyService() *notifyapp.Service {
 // ListMyNotifications 我的通知列表（含广播 + 定向）
 // GET /api/v1/notifies/mine?page=1&page_size=20
 func ListMyNotifications(ctx context.Context, c *app.RequestContext) {
-	uid, ok := userIDFromCtx(c)
+	uid, ok := requireLogin(c)
 	if !ok {
-		c.JSON(consts.StatusUnauthorized, map[string]interface{}{"code": 401, "message": "未登录"})
 		return
 	}
 	page, _ := strconv.Atoi(string(c.Query("page")))
@@ -67,9 +66,8 @@ type MarkNotifyReq struct {
 // MarkNotifyRead 标记已读
 // POST /api/v1/notifies/mark-read
 func MarkNotifyRead(ctx context.Context, c *app.RequestContext) {
-	uid, ok := userIDFromCtx(c)
+	uid, ok := requireLogin(c)
 	if !ok {
-		c.JSON(consts.StatusUnauthorized, map[string]interface{}{"code": 401, "message": "未登录"})
 		return
 	}
 	var req MarkNotifyReq

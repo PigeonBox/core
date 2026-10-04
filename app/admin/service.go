@@ -267,6 +267,167 @@ func (s *Service) GetTransferLogs(ctx context.Context, query model.TransferLogQu
 	return s.transferLogRepo.List(ctx, query)
 }
 
+// ============ 管理端增强操作（transport handler 经此下沉，不直连 DAO） ============
+
+// UserListFilter 带筛选的用户列表条件（管理端用户管理）。
+type UserListFilter struct {
+	Keyword  string
+	Status   string
+	Role     string
+	Page     int
+	PageSize int
+}
+
+// ListUsersFiltered 带筛选的用户列表（keyword/status/role + 分页）。
+func (s *Service) ListUsersFiltered(ctx context.Context, f UserListFilter) ([]*model.UserResp, int64, error) {
+	users, total, err := s.userRepo.ListFiltered(ctx, dao.UserFilter{
+		Keyword:  f.Keyword,
+		Status:   f.Status,
+		Role:     f.Role,
+		Page:     f.Page,
+		PageSize: f.PageSize,
+	})
+	if err != nil {
+		return nil, 0, err
+	}
+	resps := make([]*model.UserResp, len(users))
+	for i, u := range users {
+		resps[i] = u.ToResp()
+	}
+	return resps, total, nil
+}
+
+// ResetUserPassword 管理员重置用户密码（写入已哈希口令）。
+func (s *Service) ResetUserPassword(ctx context.Context, userID uint, passwordHash string) error {
+	return s.userRepo.UpdatePasswordHash(ctx, userID, passwordHash)
+}
+
+// GetFileByID 按主键取分享记录（管理端详情/下载重定向）。
+func (s *Service) GetFileByID(ctx context.Context, id uint) (*model.FileCode, error) {
+	return s.fileCodeRepo.GetByID(ctx, id)
+}
+
+// GetFileDetail 文件详情：主记录 + 子文件行（旧单文件分享无子行由调用方回退主表合成）。
+func (s *Service) GetFileDetail(ctx context.Context, id uint) (*model.FileCode, []*model.FileCodeFile, error) {
+	fc, err := s.fileCodeRepo.GetByID(ctx, id)
+	if err != nil {
+		return nil, nil, err
+	}
+	children, err := dao.NewFileCodeFileRepository().ListByFileCodeID(ctx, fc.ID)
+	if err != nil {
+		return fc, nil, err
+	}
+	return fc, children, nil
+}
+
+// ChildFileCounts 批量取子文件数（一次 GROUP BY；失败返回 nil 由调用方降级为 0）。
+func (s *Service) ChildFileCounts(ctx context.Context, ids []uint) map[uint]int64 {
+	counts, err := dao.NewFileCodeFileRepository().CountByFileCodeIDs(ctx, ids)
+	if err != nil {
+		return nil
+	}
+	return counts
+}
+
+// UpdateFileExpire 编辑文件（延期 / 改剩余次数）。
+func (s *Service) UpdateFileExpire(ctx context.Context, id uint, expireAt *time.Time, expiredCount *int) error {
+	return s.fileCodeRepo.UpdateExpireByID(ctx, id, expireAt, expiredCount)
+}
+
+// BatchDeleteFiles 批量删除：DB 软删 + 物理文件清理（best-effort，失败不阻断，
+// 孤儿由 janitor 对账）。返回受影响行数。
+func (s *Service) BatchDeleteFiles(ctx context.Context, ids []uint) (int, error) {
+	for _, id := range ids {
+		if fc, err := s.fileCodeRepo.GetByID(ctx, id); err == nil && s.storage != nil && fc.FilePath != "" {
+			if fp := fc.GetFilePath(); fp != "" {
+				if err := s.storage.DeleteFile(ctx, fp); err != nil {
+					logger.Warn("batch delete physical file failed", zap.String("path", fp), zap.Error(err))
+				}
+			}
+		}
+	}
+	return s.fileCodeRepo.BatchDeleteByIDs(ctx, ids)
+}
+
+// BatchExtendFiles 管理端跨用户批量延期。
+func (s *Service) BatchExtendFiles(ctx context.Context, ids []uint, expireAt time.Time) (int, error) {
+	return s.fileCodeRepo.BatchExtendByIDsAdmin(ctx, ids, expireAt)
+}
+
+// EnhancedStats Dashboard 富指标（昨日对比/下载总量/类型分布）。
+type EnhancedStats struct {
+	TodayUploads     int64             `json:"today_uploads"`
+	YesterdayUploads int64             `json:"yesterday_uploads"`
+	TotalDownloads   int64             `json:"total_downloads"`
+	ExpiredFiles     int64             `json:"expired_files"`
+	AnonymousFiles   int64             `json:"anonymous_files"`
+	PresignFiles     int64             `json:"presign_files"`
+	TopSuffixes      []*dao.SuffixStat `json:"top_suffixes"`
+	// 站点级存储配额（storage.quota，0=不限）与当前用量（存活 file_codes 合计）
+	StorageUsed  int64 `json:"storage_used"`
+	StorageQuota int64 `json:"storage_quota"`
+}
+
+// EnhancedStats 汇总富指标。单项统计失败按 0 降级（与历史 handler 行为一致）。
+func (s *Service) EnhancedStats(ctx context.Context) (*EnhancedStats, error) {
+	now := time.Now()
+	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	yesterdayStart := todayStart.Add(-24 * time.Hour)
+
+	stats := &EnhancedStats{}
+	stats.TodayUploads, _ = s.fileCodeRepo.CountCreatedBetween(ctx, todayStart, now.Add(time.Minute))
+	stats.YesterdayUploads, _ = s.fileCodeRepo.CountCreatedBetween(ctx, yesterdayStart, todayStart)
+	stats.TotalDownloads, _ = s.fileCodeRepo.SumUsedCount(ctx)
+	stats.ExpiredFiles, _ = s.fileCodeRepo.CountExpired(ctx)
+	stats.AnonymousFiles, _ = s.fileCodeRepo.CountByUploadType(ctx, "anonymous")
+	presignFiles, _ := s.fileCodeRepo.CountByUploadType(ctx, "presign_anonymous")
+	presignAuthFiles, _ := s.fileCodeRepo.CountByUploadType(ctx, "presign_authenticated")
+	stats.PresignFiles = presignFiles + presignAuthFiles
+	stats.TopSuffixes, _ = s.fileCodeRepo.TopSuffixes(ctx, 10)
+	stats.StorageUsed, _ = s.fileCodeRepo.GetTotalSize(ctx)
+	if cfg := conf.GetGlobalConfig(); cfg != nil {
+		stats.StorageQuota = cfg.Storage.Quota
+	}
+	return stats, nil
+}
+
+// TrendDay 趋势序列单日点。
+type TrendDay struct {
+	Date      string `json:"date"`
+	Uploads   int64  `json:"uploads"`
+	Downloads int64  `json:"downloads"`
+}
+
+// TrendSeries 连续 N 天的上传/下载趋势（缺失日补 0）。下载日志查询失败不阻断
+// （表可能尚无数据/旧库未建）——降级为全 0 序列。
+func (s *Service) TrendSeries(ctx context.Context, days int) ([]TrendDay, error) {
+	now := time.Now()
+	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	from := todayStart.AddDate(0, 0, -(days - 1))
+
+	upRows, err := s.fileCodeRepo.TrendByDay(ctx, from)
+	if err != nil {
+		return nil, err
+	}
+	dlRows, _ := s.transferLogRepo.TrendByDay(ctx, from, "download")
+
+	upMap := make(map[string]int64, len(upRows))
+	for _, r := range upRows {
+		upMap[r.Date] = r.Count
+	}
+	dlMap := make(map[string]int64, len(dlRows))
+	for _, r := range dlRows {
+		dlMap[r.Date] = r.Count
+	}
+
+	series := make([]TrendDay, 0, days)
+	for i := 0; i < days; i++ {
+		date := from.AddDate(0, 0, i).Format("2006-01-02")
+		series = append(series, TrendDay{Date: date, Uploads: upMap[date], Downloads: dlMap[date]})
+	}
+	return series, nil
+}
+
 // CleanupExpiredFiles 清理过期文件
 func (s *Service) CleanupExpiredFiles(ctx context.Context) (int, error) {
 	// 获取过期文件
@@ -342,6 +503,12 @@ func actorFromCtx(ctx context.Context) (*uint, string, string) {
 	}
 	ip := middleware.ClientIPFromContext(ctx)
 	return id, name, ip
+}
+
+// Audit 管理端操作审计的统一入口（transport 侧审计写入收口到此，消除与
+// service 层的孪生实现；经全站唯一 Default() 实例落库）。
+func Audit(ctx context.Context, action, target string, success bool) {
+	Default().logAdminOperation(ctx, action, target, success)
 }
 
 // defaultSystemConfig 站点配置默认值。

@@ -10,11 +10,18 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+// redisBlacklistCmds 注销黑名单所需的最小 Redis 命令集（*redis.Client 天然满足；
+// 字段收窄为方法集以便注入内存 mock，注入函数仍收具体客户端）。
+type redisBlacklistCmds interface {
+	Set(ctx context.Context, key string, value any, expiration time.Duration) *redis.StatusCmd
+	Exists(ctx context.Context, keys ...string) *redis.IntCmd
+}
+
 // tokenBlacklist JWT 注销黑名单（logout 端点写入，认证中间件查询）。
 // 键 = token 的 SHA-256（避免明文 token 进入存储），TTL = token 剩余有效期。
 // Redis 可用时多实例共享；否则进程内存兜底（单实例部署语义不变）。
 type tokenBlacklist struct {
-	rdb *redis.Client
+	rdb redisBlacklistCmds
 
 	memMu sync.Mutex
 	mem   map[string]time.Time
@@ -23,9 +30,14 @@ type tokenBlacklist struct {
 // 供 auth 包内部单例使用
 var globalBlacklist *tokenBlacklist
 
-// SetBlacklistRedis 注入 Redis（bootstrap 调用；nil = 纯内存模式）
+// SetBlacklistRedis 注入 Redis（bootstrap 调用；nil = 纯内存模式）。
+// nil 归一化：typed-nil 接口会骗过内存模式守卫（!= nil 判真）。
 func SetBlacklistRedis(rdb *redis.Client) {
-	globalBlacklist = &tokenBlacklist{rdb: rdb, mem: map[string]time.Time{}}
+	var cmds redisBlacklistCmds
+	if rdb != nil {
+		cmds = rdb
+	}
+	globalBlacklist = &tokenBlacklist{rdb: cmds, mem: map[string]time.Time{}}
 }
 
 func getBlacklist() *tokenBlacklist {

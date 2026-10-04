@@ -12,13 +12,23 @@ import (
 	"github.com/filescodebox/core/conf"
 )
 
+// redisLockCmds 失败锁定所需的最小 Redis 命令集（*redis.Client 天然满足；
+// 字段收窄为方法集以便注入内存 mock，构造函数仍收具体客户端）。
+type redisLockCmds interface {
+	TTL(ctx context.Context, key string) *redis.DurationCmd
+	Incr(ctx context.Context, key string) *redis.IntCmd
+	Expire(ctx context.Context, key string, expiration time.Duration) *redis.BoolCmd
+	Set(ctx context.Context, key string, value any, expiration time.Duration) *redis.StatusCmd
+	Del(ctx context.Context, keys ...string) *redis.IntCmd
+}
+
 // Lockout 登录/取件失败计数锁定（防爆破，非 QPS 语义）。
 //
 // 维度由调用方决定（建议 "ip"、"user:xxx"、"code:xxx" 组合键）：
 //   - 窗口内失败次数达到 MaxAttempts → 锁定 LockSeconds
 //   - Redis 可用时计数/锁定共享（多实例生效）；否则进程内存兜底
 type Lockout struct {
-	rdb *redis.Client
+	rdb redisLockCmds
 	cfg conf.LockoutConfig
 
 	mu      sync.Mutex
@@ -37,7 +47,13 @@ const (
 )
 
 // NewLockout 创建失败锁定器。rdb 为 nil 或配置未启用时仍返回可用实例（内存模式）。
+// nil 归一化：*redis.Client 的 typed-nil 赋给接口字段后 != nil 判真，会骗过
+// 内存模式守卫并在方法调用时 panic——必须在注入边界处理。
 func NewLockout(rdb *redis.Client) *Lockout {
+	var cmds redisLockCmds
+	if rdb != nil {
+		cmds = rdb
+	}
 	cfg := conf.LockoutConfig{
 		Enabled:       true,
 		MaxAttempts:   10,
@@ -50,7 +66,7 @@ func NewLockout(rdb *redis.Client) *Lockout {
 		}
 	}
 	return &Lockout{
-		rdb:     rdb,
+		rdb:     cmds,
 		cfg:     cfg,
 		memHit:  map[string]time.Time{},
 		memFail: map[string]*failWindow{},
