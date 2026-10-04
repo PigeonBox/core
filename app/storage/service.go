@@ -314,8 +314,11 @@ func hasFlatStorageFields(sc conf.StorageConfig) bool {
 func (s *Service) UpdateStorageConfig(ctx context.Context, req *UpdateConfigRequest) error {
 	// 扁平形态（新）：请求体即完整候选配置——校验 → Probe → 热切换 → 持久化。
 	// 判定须看「顶层实质字段」而非 Type（内嵌提升使 Type 与旧形态同名，
-	// 旧调用 {type, config:{...}} 不带任何顶层字段，须走原分支保持兼容语义）
-	if req.StorageConfig.Type != "" && hasFlatStorageFields(req.StorageConfig) {
+	// 旧调用 {type, config:{...}} 不带任何顶层字段，须走原分支保持兼容语义）。
+	// JSON 冲突注意：顶层 legacy Type（深度 0，tag "type" 精确匹配）会赢过内嵌
+	// StorageConfig.Type（深度 1）——扁平分支的类型以 req.Type 兜底为准。
+	if hasFlatStorageFields(req.StorageConfig) && req.Type != "" {
+		req.StorageConfig.Type = req.Type
 		candidate := req.StorageConfig
 		if candidate.StoragePath == "" {
 			candidate.StoragePath = s.config.Storage.StoragePath
