@@ -88,6 +88,7 @@ type Service struct {
 	quotaChecker QuotaChecker
 	moderator    moderation.Moderator // 内容审核钩子（nil = 不审核）
 	flagEmitter  FlagEventEmitter     // share.flagged webhook（nil = 不推送）
+	federation   FederationNotifier   // P2P 联邦口令路由钩子（nil = 非联邦模式）
 
 	// 存储兜底（storageClient 惰性本地后端，仅未注入时使用；见 files.go）
 	fallbackOnce    sync.Once
@@ -116,11 +117,38 @@ type FlagEventEmitter interface {
 	EmitShareFlagged(code, reason, ownerIP string)
 }
 
+// FederationNotifier P2P 联邦口令路由钩子（bootstrap 注入；nil = 非联邦模式）。
+// 单向可选依赖：本包只定义窄接口，实现在 app/federation（实现方 import 本包，
+// 本包不反向依赖——与 NotifyServiceInterface 同风格）。
+type FederationNotifier interface {
+	// ShareCreated 新分享公告到联邦（实现方内部自滤低熵码，异步不阻塞）。
+	ShareCreated(code string, expiresAt *time.Time)
+	// ShareDeleted 分享删除时撤销联邦公告（best-effort）。
+	ShareDeleted(code string)
+}
+
 // SetModerator 注入内容审核钩子（bootstrap 调用；nil = 不审核）
 func (s *Service) SetModerator(m moderation.Moderator) { s.moderator = m }
 
 // SetFlagEventEmitter 注入 share.flagged webhook 推送（bootstrap 调用）
 func (s *Service) SetFlagEventEmitter(e FlagEventEmitter) { s.flagEmitter = e }
+
+// SetFederationNotifier 注入 P2P 联邦口令路由钩子（bootstrap 调用；nil = 非联邦）
+func (s *Service) SetFederationNotifier(f FederationNotifier) { s.federation = f }
+
+// federationCreated 联邦公告（nil 安全；实现方保证异步不阻塞建分享）
+func (s *Service) federationCreated(code string, expiresAt *time.Time) {
+	if s.federation != nil {
+		s.federation.ShareCreated(code, expiresAt)
+	}
+}
+
+// federationDeleted 联邦撤销（nil 安全；实现方 best-effort）
+func (s *Service) federationDeleted(code string) {
+	if s.federation != nil {
+		s.federation.ShareDeleted(code)
+	}
+}
 
 // ContentRejectedError 内容未通过审核（moderation 命中且策略为 reject）
 type ContentRejectedError struct{}
@@ -287,6 +315,8 @@ func (s *Service) ShareText(ctx context.Context, req *ShareTextReq) (*ShareResp,
 
 	// 更新用户统计（次数 +1；文本分享无存储占用）
 	s.bumpUserStats(req.UserID, 0)
+	// P2P 联邦公告（未启用为 no-op；实现方自滤低熵码）
+	s.federationCreated(fileCode.Code, fileCode.ExpiredAt)
 
 	return s.modelToResp(fileCode), nil
 }
@@ -563,6 +593,8 @@ func (s *Service) CreateShare(ctx context.Context, req *ShareFileReq) (*ShareRes
 	}
 	metrics.RecordUploadBytes(channel, req.Size)
 	metrics.RecordShareCreated(req.UploadType)
+	// P2P 联邦公告（未启用为 no-op）
+	s.federationCreated(fileCode.Code, fileCode.ExpiredAt)
 
 	return s.modelToResp(fileCode), nil
 }
@@ -600,6 +632,12 @@ func (s *Service) GetFilesByUserID(ctx context.Context, userID uint, page, pageS
 func (s *Service) DeleteFile(ctx context.Context, fileID uint, userID *uint) error {
 	s.ensureRepository()
 
+	// 联邦撤销需要口令,先查（best-effort:查不到跳过钩子,不影响删除本身）
+	var fedCode string
+	if file, err := s.fileCodeRepo.GetByID(ctx, fileID); err == nil {
+		fedCode = file.Code
+	}
+
 	// 如果指定了用户ID，验证文件所有权
 	if userID != nil {
 		file, err := s.fileCodeRepo.GetByUserID(ctx, *userID, fileID)
@@ -615,7 +653,11 @@ func (s *Service) DeleteFile(ctx context.Context, fileID uint, userID *uint) err
 		}
 	}
 
-	return s.fileCodeRepo.Delete(ctx, fileID)
+	if err := s.fileCodeRepo.Delete(ctx, fileID); err != nil {
+		return err
+	}
+	s.federationDeleted(fedCode)
+	return nil
 }
 
 // DeleteFileByCode 根据分享码删除文件。
@@ -667,6 +709,9 @@ func (s *Service) DeleteFileByCode(ctx context.Context, code string, userID uint
 				zap.Uint("user_id", userID), zap.Int64("size", file.Size), zap.Error(err))
 		}
 	}
+
+	// 6. 联邦撤销公告（未启用为 no-op）
+	s.federationDeleted(code)
 
 	return nil
 }
@@ -858,7 +903,15 @@ func (s *Service) ListUserShares(ctx context.Context, userID uint, status, searc
 // BatchDeleteUserShares 批量软删除
 func (s *Service) BatchDeleteUserShares(ctx context.Context, userID uint, codes []string) (int, error) {
 	s.ensureRepository()
-	return s.fileCodeRepo.BatchSoftDeleteByCodes(ctx, userID, codes)
+	n, err := s.fileCodeRepo.BatchSoftDeleteByCodes(ctx, userID, codes)
+	if err == nil && n > 0 {
+		// 有实际删除才撤销联邦公告；批量接口不回报实际命中的 code 子集，
+		// 误撤未删码由心跳循环按 entries 重新补公告自愈（实现方约定）
+		for _, code := range codes {
+			s.federationDeleted(code)
+		}
+	}
+	return n, err
 }
 
 // BatchExtendUserShares 批量延期
@@ -876,7 +929,11 @@ func (s *Service) RestoreUserShare(ctx context.Context, userID uint, code string
 // HardDeleteUserShare 永久删除软删除的分享
 func (s *Service) HardDeleteUserShare(ctx context.Context, userID uint, code string) error {
 	s.ensureRepository()
-	return s.fileCodeRepo.HardDeleteByCode(ctx, userID, code)
+	if err := s.fileCodeRepo.HardDeleteByCode(ctx, userID, code); err != nil {
+		return err
+	}
+	s.federationDeleted(code)
+	return nil
 }
 
 // RecordViewer 记录取件人 IP / 时间（用于 owner 查看取件历史）

@@ -118,7 +118,18 @@ type Service struct {
 	config       *SystemConfig
 	configLoaded bool // 已尝试过 DB 加载（含无记录的情况），避免每次读都打 DB
 	configRepo   *dao.SystemConfigRepository
+	federation   FederationNotifier // P2P 联邦口令路由钩子（nil = 非联邦模式）
 }
+
+// FederationNotifier P2P 联邦撤销钩子（窄接口，实现在 app/federation；
+// bootstrap 注入。admin 删除路径独立于 share 域，须单独挂钩——否则管理端
+// 删除的分享在联邦里残留到公告 TTL 过期）。
+type FederationNotifier interface {
+	ShareDeleted(code string)
+}
+
+// SetFederationNotifier 注入联邦撤销钩子（bootstrap 调用；nil = 非联邦）
+func (s *Service) SetFederationNotifier(f FederationNotifier) { s.federation = f }
 
 func NewService() *Service {
 	return &Service{
@@ -273,6 +284,11 @@ func (s *Service) DeleteFile(ctx context.Context, fileID uint) error {
 		}
 	}
 
+	// 3. 联邦撤销公告（未启用为 no-op）
+	if s.federation != nil {
+		s.federation.ShareDeleted(file.Code)
+	}
+
 	s.logAdminOperation(ctx, "file.delete",
 		fmt.Sprintf("file %d (code=%s, name=%s) deleted", fileID, file.Code, file.Text), true)
 	return nil
@@ -358,16 +374,23 @@ func (s *Service) UpdateFileExpire(ctx context.Context, id uint, expireAt *time.
 // BatchDeleteFiles 批量删除：DB 软删 + 物理文件清理（best-effort，失败不阻断，
 // 孤儿由 janitor 对账）。返回受影响行数。
 func (s *Service) BatchDeleteFiles(ctx context.Context, ids []uint) (int, error) {
-	for _, id := range ids {
-		if fc, err := s.fileCodeRepo.GetByID(ctx, id); err == nil && s.storage != nil && fc.FilePath != "" {
-			if fp := fc.GetFilePath(); fp != "" {
-				if err := s.storage.DeleteFile(ctx, fp); err != nil {
-					logger.Warn("batch delete physical file failed", zap.String("path", fp), zap.Error(err))
-				}
+	// 先取口令供联邦撤销（批量接口不回报实际命中，按请求集合撤销；
+	// 误撤未删码由联邦客户端心跳补公告自愈）
+	codes := make([]string, 0, len(ids))
+	if s.federation != nil {
+		for _, id := range ids {
+			if fc, err := s.fileCodeRepo.GetByID(ctx, id); err == nil {
+				codes = append(codes, fc.Code)
 			}
 		}
 	}
-	return s.fileCodeRepo.BatchDeleteByIDs(ctx, ids)
+	n, err := s.fileCodeRepo.BatchDeleteByIDs(ctx, ids)
+	if err == nil && s.federation != nil {
+		for _, code := range codes {
+			s.federation.ShareDeleted(code)
+		}
+	}
+	return n, err
 }
 
 // BatchExtendFiles 管理端跨用户批量延期。

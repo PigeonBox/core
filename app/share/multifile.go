@@ -165,6 +165,8 @@ func (s *Service) CreateMultiFileShare(ctx context.Context, req *MultiShareReq) 
 	}
 	metrics.RecordUploadBytes(channel, totalSize)
 	metrics.RecordShareCreated(req.UploadType)
+	// P2P 联邦公告（未启用为 no-op）
+	s.federationCreated(fileCode.Code, fileCode.ExpiredAt)
 
 	return s.modelToResp(fileCode), nil
 }

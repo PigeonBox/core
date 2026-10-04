@@ -27,6 +27,26 @@ type AppConfiguration struct {
 	MCP           MCPConfig           `mapstructure:"mcp"`
 	Moderation    ModerationConfig    `mapstructure:"moderation"`
 	Admin         AdminConfig         `mapstructure:"admin"`
+	Federation    FederationConfig    `mapstructure:"federation"`
+}
+
+// FederationConfig P2P 联邦接入（M2；默认关闭。对端服务：github.com/filescodebox/p2p）。
+// 启用后本站注册进联邦注册中心，口令分享跨站可达（文件仍从本站直出，
+// 注册中心不落盘不见明文）。详见 docs/specs/2026-10-04-p2p-registry-service-design.md。
+type FederationConfig struct {
+	// Enabled 总开关（默认 false）。env: FCB_FEDERATION_ENABLED
+	Enabled bool `mapstructure:"enabled"`
+	// RegistryURL 联邦注册中心基址，如 http://p2p:12346。env: FCB_FEDERATION_REGISTRY_URL
+	RegistryURL string `mapstructure:"registry_url"`
+	// PublicURL 本站对外可达基址（公告给取件方直连下载用；必须公网/局域网可达，
+	// 一般与 server.base_url 一致）。env: FCB_FEDERATION_PUBLIC_URL
+	PublicURL string `mapstructure:"public_url"`
+	// NodeKeyPath 节点身份密钥（Ed25519 seed hex, 0600），首次启动自动生成。
+	// 缺失/损坏会重新生成=联邦身份更换。env: FCB_FEDERATION_NODE_KEY_PATH
+	NodeKeyPath string `mapstructure:"node_key_path"`
+	// AnnounceMinEntropyBits 口令公告熵门槛（位），低于此熵的口令不出站
+	// （6 位数字取件码默认只在本站有效，防 registry 侧枚举）。0=默认 40。
+	AnnounceMinEntropyBits int `mapstructure:"announce_min_entropy_bits"`
 }
 
 // MCPConfig Model Context Protocol server（AI 客户端集成；上游没有的差异化能力）。
@@ -73,11 +93,11 @@ type NotifyConfig struct {
 
 // SMTPConfig SMTP 邮件配置（P2；默认禁用）
 type SMTPConfig struct {
-	Host     string `mapstructure:"host" json:"host"`     // env: FCB_SMTP_HOST
-	Port     int    `mapstructure:"port" json:"port"`     // 465=隐式 TLS；25/587=STARTTLS；env: FCB_SMTP_PORT
+	Host     string `mapstructure:"host" json:"host"`         // env: FCB_SMTP_HOST
+	Port     int    `mapstructure:"port" json:"port"`         // 465=隐式 TLS；25/587=STARTTLS；env: FCB_SMTP_PORT
 	Username string `mapstructure:"username" json:"username"` // env: FCB_SMTP_USERNAME
 	Password string `mapstructure:"password" json:"password"` // env: FCB_SMTP_PASSWORD
-	From     string `mapstructure:"from" json:"from"`     // 发件地址，空 = 取 Username；env: FCB_SMTP_FROM
+	From     string `mapstructure:"from" json:"from"`         // 发件地址，空 = 取 Username；env: FCB_SMTP_FROM
 }
 
 // SetGlobalConfig 设置全局配置
@@ -172,9 +192,9 @@ type UserConfig struct {
 
 // UploadConfig 上传配置
 type UploadConfig struct {
-	OpenUpload     bool  `mapstructure:"open_upload" json:"open_upload"`
-	UploadSize     int64 `mapstructure:"upload_size" json:"upload_size"`
-	EnableChunk    bool  `mapstructure:"enable_chunk" json:"enable_chunk"`
+	OpenUpload   bool  `mapstructure:"open_upload" json:"open_upload"`
+	UploadSize   int64 `mapstructure:"upload_size" json:"upload_size"`
+	EnableChunk  bool  `mapstructure:"enable_chunk" json:"enable_chunk"`
 	ChunkSize    int64 `mapstructure:"chunk_size" json:"chunk_size"`
 	RequireLogin bool  `mapstructure:"require_login" json:"require_login"`
 	// TextMaxBytes 文本分享大小上限（字节）。<=0 时用默认 222KB（对齐上游）。
@@ -209,13 +229,13 @@ type UploadConfig struct {
 // LocalImportConfig 本地文件导入配置
 type LocalImportConfig struct {
 	Enabled bool     `mapstructure:"enabled" json:"enabled"` // env: FCB_LOCAL_IMPORT_ENABLED
-	Roots   []string `mapstructure:"roots" json:"roots"`   // 允许导入的绝对目录白名单；env: FCB_LOCAL_IMPORT_ROOTS（逗号分隔）
+	Roots   []string `mapstructure:"roots" json:"roots"`     // 允许导入的绝对目录白名单；env: FCB_LOCAL_IMPORT_ROOTS（逗号分隔）
 }
 
 // DownloadConfig 下载配置
 type DownloadConfig struct {
 	DownloadTimeout int  `mapstructure:"download_timeout" json:"download_timeout"`
-	RequireLogin             bool `mapstructure:"require_login" json:"require_login"`
+	RequireLogin    bool `mapstructure:"require_login" json:"require_login"`
 	// S3DirectDownload s3 直下：存储后端为 s3 且开启时，文件下载 302 到短时效
 	// 预签名 GET URL（下载流量不经过服务器）。env: FCB_DOWNLOAD_S3_DIRECT
 	S3DirectDownload bool `mapstructure:"s3_direct_download" json:"s3_direct_download"`
@@ -231,19 +251,19 @@ type StorageConfig struct {
 	StoragePath string `mapstructure:"storage_path" json:"storage_path"`
 	// Quota 站点级全局存储配额（字节，0=不限）。统计口径=存活 file_codes 尺寸合计；
 	// 全通道统一闸口（直传/分片完成/预签名完成/本地导入/多文件）。env: FCB_STORAGE_QUOTA
-	Quota       int64               `mapstructure:"quota" json:"quota"`
-	S3          *S3Config           `mapstructure:"s3" json:"s3"`
-	WebDAV      *WebDAVConfig       `mapstructure:"webdav" json:"webdav"`
-	FTP         *FTPConfig          `mapstructure:"ftp" json:"ftp"`
-	SFTP        *SFTPConfig         `mapstructure:"sftp" json:"sftp"`
-	AzureBlob   *AzureBlobConfig    `mapstructure:"azureblob" json:"azureblob"`
-	HDFS        *HDFSConfig         `mapstructure:"hdfs" json:"hdfs"`
-	OneDrive    *OneDriveConfig     `mapstructure:"onedrive" json:"onedrive"`
-	OSS         *CloudStorageConfig `mapstructure:"oss" json:"oss"`
-	COS         *CloudStorageConfig `mapstructure:"cos" json:"cos"`
-	BOS         *CloudStorageConfig `mapstructure:"bos" json:"bos"`
-	KS3         *CloudStorageConfig `mapstructure:"ks3" json:"ks3"`
-	OBS         *CloudStorageConfig `mapstructure:"obs" json:"obs"`
+	Quota     int64               `mapstructure:"quota" json:"quota"`
+	S3        *S3Config           `mapstructure:"s3" json:"s3"`
+	WebDAV    *WebDAVConfig       `mapstructure:"webdav" json:"webdav"`
+	FTP       *FTPConfig          `mapstructure:"ftp" json:"ftp"`
+	SFTP      *SFTPConfig         `mapstructure:"sftp" json:"sftp"`
+	AzureBlob *AzureBlobConfig    `mapstructure:"azureblob" json:"azureblob"`
+	HDFS      *HDFSConfig         `mapstructure:"hdfs" json:"hdfs"`
+	OneDrive  *OneDriveConfig     `mapstructure:"onedrive" json:"onedrive"`
+	OSS       *CloudStorageConfig `mapstructure:"oss" json:"oss"`
+	COS       *CloudStorageConfig `mapstructure:"cos" json:"cos"`
+	BOS       *CloudStorageConfig `mapstructure:"bos" json:"bos"`
+	KS3       *CloudStorageConfig `mapstructure:"ks3" json:"ks3"`
+	OBS       *CloudStorageConfig `mapstructure:"obs" json:"obs"`
 }
 
 // CloudStorageConfig 云厂商对象存储通用配置（S3 兼容协议）。
@@ -253,8 +273,8 @@ type CloudStorageConfig struct {
 	Bucket    string `mapstructure:"bucket" json:"bucket"`
 	AccessKey string `mapstructure:"access_key" json:"access_key"`
 	SecretKey string `mapstructure:"secret_key" json:"secret_key"`
-	Endpoint  string `mapstructure:"endpoint" json:"endpoint"`   // 空 = 按厂商+Region 推导
-	UseSSL    *bool  `mapstructure:"use_ssl" json:"use_ssl"`    // 缺省 true
+	Endpoint  string `mapstructure:"endpoint" json:"endpoint"`     // 空 = 按厂商+Region 推导
+	UseSSL    *bool  `mapstructure:"use_ssl" json:"use_ssl"`       // 缺省 true
 	PathStyle *bool  `mapstructure:"path_style" json:"path_style"` // 缺省 false（各厂商均为 virtual-host 风格）
 }
 
@@ -378,20 +398,20 @@ type SecurityConfig struct {
 // OIDCConfig OIDC 单点登录配置（P2；默认关闭。启用需 issuer/client_id/client_secret，
 // 回调地址 <base_url>/api/v1/user/oidc/callback）
 type OIDCConfig struct {
-	Enabled          bool   `mapstructure:"enabled" json:"enabled"`            // env: FCB_OIDC_ENABLED
-	Issuer           string `mapstructure:"issuer" json:"issuer"`             // env: FCB_OIDC_ISSUER
-	ClientID         string `mapstructure:"client_id" json:"client_id"`          // env: FCB_OIDC_CLIENT_ID
-	ClientSecret     string `mapstructure:"client_secret" json:"client_secret"`      // env: FCB_OIDC_CLIENT_SECRET
-	Scopes           string `mapstructure:"scopes" json:"scopes"`             // 默认 "openid profile email"；env: FCB_OIDC_SCOPES
-	FrontendCallback string `mapstructure:"frontend_callback" json:"frontend_callback"`  // 默认 /#/oidc/callback
+	Enabled          bool   `mapstructure:"enabled" json:"enabled"`                     // env: FCB_OIDC_ENABLED
+	Issuer           string `mapstructure:"issuer" json:"issuer"`                       // env: FCB_OIDC_ISSUER
+	ClientID         string `mapstructure:"client_id" json:"client_id"`                 // env: FCB_OIDC_CLIENT_ID
+	ClientSecret     string `mapstructure:"client_secret" json:"client_secret"`         // env: FCB_OIDC_CLIENT_SECRET
+	Scopes           string `mapstructure:"scopes" json:"scopes"`                       // 默认 "openid profile email"；env: FCB_OIDC_SCOPES
+	FrontendCallback string `mapstructure:"frontend_callback" json:"frontend_callback"` // 默认 /#/oidc/callback
 }
 
 // APITokenConfig 用户级 API Key（个人访问令牌，fcb_sk_）。
 // Enabled 为认证总开关（env FCB_API_TOKEN_ENABLED）：false 时携带 Key 的请求一律 401。
 // PerKeyQPS 为单 Key 独立限流（令牌桶，进程内）：0 = 不限（默认 20，burst 默认 2×QPS）。
 type APITokenConfig struct {
-	Enabled     bool `mapstructure:"enabled" json:"enabled"`       // 默认 true
-	PerKeyQPS   int  `mapstructure:"per_key_qps" json:"per_key_qps"`   // 默认 20；显式 0 = 不限
+	Enabled     bool `mapstructure:"enabled" json:"enabled"`             // 默认 true
+	PerKeyQPS   int  `mapstructure:"per_key_qps" json:"per_key_qps"`     // 默认 20；显式 0 = 不限
 	PerKeyBurst int  `mapstructure:"per_key_burst" json:"per_key_burst"` // 默认 0 = 2×QPS
 }
 

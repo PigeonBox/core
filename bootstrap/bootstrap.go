@@ -38,6 +38,7 @@ import (
 
 	adminApp "github.com/filescodebox/core/app/admin"
 	chunkApp "github.com/filescodebox/core/app/chunk"
+	federationApp "github.com/filescodebox/core/app/federation"
 	mcpApp "github.com/filescodebox/core/app/mcp"
 	moderationApp "github.com/filescodebox/core/app/moderation"
 	notifyAppService "github.com/filescodebox/core/app/notify"
@@ -230,6 +231,10 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("moderation.enabled", false)
 	v.SetDefault("moderation.block_action", "reject")
 	v.SetDefault("admin.log_retention_days", 90)
+	// P2P 联邦（M2）默认关闭；启用须显式配置 registry_url + public_url
+	v.SetDefault("federation.enabled", false)
+	v.SetDefault("federation.node_key_path", "data/federation.key")
+	v.SetDefault("federation.announce_min_entropy_bits", 40)
 }
 
 // envBindings 环境变量 → 配置 key 的映射。
@@ -318,6 +323,12 @@ var envBindings = map[string][]string{
 	"moderation.clamav.addr":    {"FCB_MODERATION_CLAMAV_ADDR"},
 	// admin 运维
 	"admin.log_retention_days": {"FCB_ADMIN_LOG_RETENTION_DAYS"},
+	// federation（P2P 联邦接入）
+	"federation.enabled":                   {"FCB_FEDERATION_ENABLED"},
+	"federation.registry_url":              {"FCB_FEDERATION_REGISTRY_URL"},
+	"federation.public_url":                {"FCB_FEDERATION_PUBLIC_URL"},
+	"federation.node_key_path":             {"FCB_FEDERATION_NODE_KEY_PATH"},
+	"federation.announce_min_entropy_bits": {"FCB_FEDERATION_MIN_ENTROPY"},
 	// upload 安全项
 	"upload.text_max_bytes":        {"FCB_TEXT_MAX_BYTES"},
 	"upload.allowed_extensions":    {"FCB_UPLOAD_ALLOWED_EXTENSIONS"},
@@ -708,6 +719,11 @@ func BootstrapWithOptions(configPath string, opts ...Option) (*server.Hertz, err
 func Cleanup() {
 	logger.Info("Cleaning up resources...")
 
+	// 联邦服务先于数据库停：注销节点（best-effort），停心跳循环
+	if federationSvcInstance != nil {
+		federationSvcInstance.Stop()
+	}
+
 	if database != nil {
 		if err := db.Close(); err != nil {
 			logger.Error("Failed to close database", zap.Error(err))
@@ -753,6 +769,9 @@ func customizedRegister(r *server.Hertz) {
 	// 前端 publicApi.getConfig() 请求 /api/config 获取站点配置（名称、上传限制等），
 	// 此前端点缺失导致前端启动报 "获取配置失败: Network Error"。此处补齐。
 	r.GET("/api/config", publicConfigHandler)
+
+	// ===== P2P 联邦解析代理（M2；未启用时 handler 返回 available:false）=====
+	r.GET("/api/v1/federation/resolve", customHandler.FederationResolve)
 
 	// ===== robots.txt（对标上游 SEO 可配；输出 ui.robots_text）=====
 	r.GET("/robots.txt", func(ctx context.Context, c *app.RequestContext) {
@@ -1307,6 +1326,26 @@ func initThriftIDLServices(database *gorm.DB) {
 	requestSvcInstance = requestApp.NewService(requestShareGateway{shareSvc}, notifyApp)
 	customHandler.SetRequestService(requestSvcInstance)
 
+	// 2.4.2 P2P 联邦（M2）：启用时注册进联邦注册中心并公告口令路由。
+	// 初始化失败降级为非联邦模式（单站功能不受影响）；resolve 代理路由
+	// 恒注册（customizedRegister），未启用时由 handler 返回 available:false。
+	if config.Federation.Enabled {
+		if fedSvc, err := federationApp.NewService(config.Federation, config.App.Name); err != nil {
+			logger.Error("federation 服务初始化失败(继续以非联邦模式运行)", zap.Error(err))
+		} else {
+			fedSvc.Start()
+			federationSvcInstance = fedSvc
+			shareSvc.SetFederationNotifier(fedSvc)
+			// admin 删除路径独立于 share 域，须单独挂钩（管理端删除即联邦撤销）
+			adminApp.Default().SetFederationNotifier(fedSvc)
+			customHandler.SetFederationService(fedSvc)
+			logger.Info("federation enabled",
+				zap.String("registry", config.Federation.RegistryURL),
+				zap.String("public_url", config.Federation.PublicURL),
+				zap.String("node_id", fedSvc.NodeID()))
+		}
+	}
+
 	// 3. anonymous service（需要 Redis）
 	anonHandler.SetService(redis.GetClient())
 
@@ -1389,6 +1428,9 @@ var mcpService *mcpApp.Service
 
 // requestSvcInstance 寄件码服务实例（initThriftIDLServices 装配）
 var requestSvcInstance *requestApp.Service
+
+// federationSvcInstance P2P 联邦服务实例（initThriftIDLServices 装配；nil=未启用）
+var federationSvcInstance *federationApp.Service
 
 // startExpiredFileCleanup 定时清理过期文件（DB 记录 + 物理文件）。
 // 默认每 1 小时执行一次；懒清理由取件路径覆盖（GetFileByCode 发现过期即返回错误）。

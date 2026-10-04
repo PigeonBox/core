@@ -115,6 +115,8 @@ func TestRegisteredRoutesMatchContract(t *testing.T) {
 		"POST /api/v1/notifies/mark-read",
 		// ===== 多文件分享（P0 多文件，手写；OptionalIdentity 可选身份）=====
 		"POST /api/v1/share/multi-direct", "POST /api/v1/share/multi-bind",
+		// ===== P2P 联邦解析代理（M2 手写；未启用时 available:false）=====
+		"GET /api/v1/federation/resolve",
 		// ===== 寄件码/反向收件（P2 手写）=====
 		"POST /api/v1/user/requests", "GET /api/v1/user/requests",
 		"DELETE /api/v1/user/requests/:token",
