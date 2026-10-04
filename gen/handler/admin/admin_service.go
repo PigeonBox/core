@@ -5,6 +5,7 @@ package admin
 
 import (
 	"context"
+	"encoding/json"
 	"strconv"
 
 	"github.com/cloudwego/hertz/pkg/app"
@@ -327,6 +328,29 @@ func AdminGetConfig(ctx context.Context, c *app.RequestContext) {
 // AdminUpdateConfig .
 // @router /admin/config [PUT]
 func AdminUpdateConfig(ctx context.Context, c *app.RequestContext) {
+	// 扩展形态（新契约）分派：body 含任一新段键（ui/upload_ex/download/notify/
+	// local_import/oidc/api_token）时直接绑 SystemConfig 走领域服务——
+	// 新段在 thrift 模型中不存在，且旧模型将 config 标为 required 会先拒掉请求。
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal(c.Request.Body(), &probe); err == nil {
+		newKeys := []string{"ui", "upload_ex", "download", "notify", "local_import", "oidc", "api_token"}
+		for _, k := range newKeys {
+			if _, ok := probe[k]; ok {
+				cfg := &adminsvc.SystemConfig{}
+				if err := json.Unmarshal(c.Request.Body(), cfg); err != nil {
+					c.JSON(consts.StatusBadRequest, &admin.AdminUpdateConfigResp{Code: 400, Message: err.Error()})
+					return
+				}
+				if err := adminService.UpdateConfig(ctx, cfg); err != nil {
+					c.JSON(consts.StatusInternalServerError, &admin.AdminUpdateConfigResp{Code: 500, Message: err.Error()})
+					return
+				}
+				c.JSON(consts.StatusOK, &admin.AdminUpdateConfigResp{Code: 200, Message: "success"})
+				return
+			}
+		}
+	}
+
 	var err error
 	var req admin.AdminUpdateConfigReq
 	err = c.BindAndValidate(&req)
