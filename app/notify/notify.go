@@ -5,7 +5,6 @@
 package notify
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -20,7 +19,11 @@ import (
 	"github.com/filescodebox/core/pkg/logger"
 	"github.com/filescodebox/core/repo/db/dao"
 	"github.com/filescodebox/core/repo/db/model"
+	"github.com/filescodebox/kit/httpjson"
 )
+
+// webhookHTTPClient webhook 推送专用客户端（5s 超时；推送失败静默记日志不重试）。
+var webhookHTTPClient = &http.Client{Timeout: 5 * time.Second}
 
 // 错误
 var (
@@ -443,21 +446,17 @@ func (s *Service) EmitShareFlagged(code, reason, ownerIP string) {
 	event := "share.flagged"
 	go func() {
 		defer func() { _ = recover() }()
-		req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, s.webhookURL, bytes.NewReader(body))
-		if err != nil {
-			return
-		}
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("X-FCB-Event", event)
-		client := &http.Client{Timeout: 5 * time.Second}
-		resp, err := client.Do(req)
+		err := httpjson.DoJSON(context.Background(), webhookHTTPClient, httpjson.Request{
+			Method: http.MethodPost,
+			URL:    s.webhookURL,
+			Body:   body,
+			Header: func(h http.Header) {
+				h.Set("Content-Type", "application/json")
+				h.Set("X-FCB-Event", event)
+			},
+		}, nil)
 		if err != nil {
 			logger.Warn("webhook push failed", zap.String("url", s.webhookURL), zap.Error(err))
-			return
-		}
-		defer func() { _ = resp.Body.Close() }()
-		if resp.StatusCode >= 300 {
-			logger.Warn("webhook push non-2xx", zap.String("url", s.webhookURL), zap.Int("status", resp.StatusCode))
 		}
 	}()
 }
@@ -482,21 +481,17 @@ func (s *Service) dispatchWebhook(ctx context.Context, userID uint, title, conte
 	}
 	go func() {
 		defer func() { _ = recover() }()
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.webhookURL, bytes.NewReader(body))
-		if err != nil {
-			return
-		}
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("X-FCB-Event", "notify.created")
-		client := &http.Client{Timeout: 5 * time.Second}
-		resp, err := client.Do(req)
+		err := httpjson.DoJSON(ctx, webhookHTTPClient, httpjson.Request{
+			Method: http.MethodPost,
+			URL:    s.webhookURL,
+			Body:   body,
+			Header: func(h http.Header) {
+				h.Set("Content-Type", "application/json")
+				h.Set("X-FCB-Event", "notify.created")
+			},
+		}, nil)
 		if err != nil {
 			logger.Warn("webhook push failed", zap.String("url", s.webhookURL), zap.Error(err))
-			return
-		}
-		defer func() { _ = resp.Body.Close() }()
-		if resp.StatusCode >= 300 {
-			logger.Warn("webhook push non-2xx", zap.String("url", s.webhookURL), zap.Int("status", resp.StatusCode))
 		}
 	}()
 }

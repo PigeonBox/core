@@ -17,6 +17,7 @@ import (
 	"github.com/filescodebox/core/repo/db/dao"
 	"github.com/filescodebox/core/repo/db/model"
 	"github.com/filescodebox/core/storage"
+	"github.com/filescodebox/kit/uidgen"
 )
 
 // 收到投递生成的分享的默认寿命/次数（v1 固定；管理端后续可配）
@@ -69,10 +70,9 @@ func NewService(shareSvc ShareGateway, notify NotifySender) *Service {
 	}
 }
 
-// genToken 32 位 hex 随机令牌（crypto/rand 经 utils 统一收口）
+// genToken 32 位 hex 随机令牌（crypto/rand 经 kit/uidgen 统一收口）
 func genToken() string {
-	tok, _ := utils.RandomHex(16)
-	return tok
+	return uidgen.RandomHex(16)
 }
 
 // CreateReq 创建投递链接入参

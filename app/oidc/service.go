@@ -13,10 +13,8 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -28,6 +26,7 @@ import (
 	"github.com/filescodebox/core/pkg/auth"
 	"github.com/filescodebox/core/repo/db/dao"
 	"github.com/filescodebox/core/repo/db/model"
+	"github.com/filescodebox/kit/httpjson"
 )
 
 // Config OIDC 配置（conf.SecurityConfig.OIDC）
@@ -103,21 +102,9 @@ func (s *Service) discover(ctx context.Context) (*discovery, error) {
 
 	issuer := strings.TrimSuffix(s.cfg.Issuer, "/")
 	wellKnown := issuer + "/.well-known/openid-configuration"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, wellKnown, nil)
-	if err != nil {
-		return nil, err
-	}
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("OIDC discovery 请求失败: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("OIDC discovery 返回 %d", resp.StatusCode)
-	}
 	var d discovery
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&d); err != nil {
-		return nil, fmt.Errorf("OIDC discovery 解析失败: %w", err)
+	if err := httpjson.DoJSON(ctx, s.client, httpjson.Request{URL: wellKnown}, &d); err != nil {
+		return nil, fmt.Errorf("OIDC discovery 失败: %w", err)
 	}
 	if d.AuthorizationEndpoint == "" || d.TokenEndpoint == "" {
 		return nil, errors.New("OIDC discovery 缺少必要端点")
@@ -135,24 +122,12 @@ func (s *Service) TestDiscovery(ctx context.Context) error {
 		return errors.New("issuer 未配置")
 	}
 	wellKnown := strings.TrimSuffix(s.cfg.Issuer, "/") + "/.well-known/openid-configuration"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, wellKnown, nil)
-	if err != nil {
-		return err
-	}
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return fmt.Errorf("discovery 不可达: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("discovery 返回 %d", resp.StatusCode)
-	}
 	var d struct {
 		AuthorizationEndpoint string `json:"authorization_endpoint"`
 		TokenEndpoint         string `json:"token_endpoint"`
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&d); err != nil {
-		return fmt.Errorf("discovery 解析失败: %w", err)
+	if err := httpjson.DoJSON(ctx, s.client, httpjson.Request{URL: wellKnown}, &d); err != nil {
+		return fmt.Errorf("discovery 不可用: %w", err)
 	}
 	if d.AuthorizationEndpoint == "" || d.TokenEndpoint == "" {
 		return errors.New("discovery 缺少 authorization/token 端点")
@@ -222,41 +197,30 @@ func (s *Service) ExchangeCallback(ctx context.Context, baseURL, code, state str
 	form.Set("redirect_uri", s.RedirectURI(baseURL))
 	form.Set("client_id", s.cfg.ClientID)
 	form.Set("client_secret", s.cfg.ClientSecret)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, d.TokenEndpoint, strings.NewReader(form.Encode()))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("token 交换失败: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
 	var tok struct {
 		AccessToken string `json:"access_token"`
-		Error       string `json:"error"`
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&tok); err != nil || tok.AccessToken == "" {
-		return "", fmt.Errorf("token 响应无效: %v %s", err, tok.Error)
+	if err := httpjson.DoJSON(ctx, s.client, httpjson.Request{
+		Method: http.MethodPost,
+		URL:    d.TokenEndpoint,
+		Body:   []byte(form.Encode()),
+		Header: func(h http.Header) { h.Set("Content-Type", "application/x-www-form-urlencoded") },
+	}, &tok); err != nil {
+		return "", fmt.Errorf("token 交换失败: %w", err)
+	}
+	if tok.AccessToken == "" {
+		return "", errors.New("token 响应缺少 access_token")
 	}
 
 	// 2. 拉 userinfo
-	ureq, err := http.NewRequestWithContext(ctx, http.MethodGet, d.UserinfoEndpoint, nil)
-	if err != nil {
-		return "", err
-	}
-	ureq.Header.Set("Authorization", "Bearer "+tok.AccessToken)
-	uresp, err := s.client.Do(ureq)
-	if err != nil {
-		return "", fmt.Errorf("userinfo 请求失败: %w", err)
-	}
-	defer func() { _ = uresp.Body.Close() }()
-	if uresp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("userinfo 返回 %d", uresp.StatusCode)
-	}
 	var claims idClaims
-	if err := json.NewDecoder(io.LimitReader(uresp.Body, 1<<20)).Decode(&claims); err != nil {
-		return "", fmt.Errorf("userinfo 解析失败: %w", err)
+	if err := httpjson.DoJSON(ctx, s.client, httpjson.Request{
+		URL: d.UserinfoEndpoint,
+		Header: func(h http.Header) {
+			h.Set("Authorization", "Bearer "+tok.AccessToken)
+		},
+	}, &claims); err != nil {
+		return "", fmt.Errorf("userinfo 拉取失败: %w", err)
 	}
 	if claims.Sub == "" {
 		return "", errors.New("userinfo 缺少 sub")

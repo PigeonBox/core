@@ -24,6 +24,7 @@ import (
 	"github.com/filescodebox/core/pkg/utils"
 	"github.com/filescodebox/core/repo/db/dao"
 	"github.com/filescodebox/core/repo/db/model"
+	"github.com/filescodebox/kit/uidgen"
 	"go.uber.org/zap"
 )
 
@@ -277,7 +278,7 @@ func (s *Service) Peek(ctx context.Context, code string) (*CodeMeta, *model.File
 
 // randomCode 生成 6 位随机码（crypto/rand 经 utils 统一收口，字符表见 codeAlphabet）
 func randomCode() string {
-	return utils.RandomString(codeAlphabet, codeLength)
+	return uidgen.RandomString(codeAlphabet, codeLength)
 }
 
 // parseMeta 解析展示信息（兼容旧格式：字段不足时用空值）
@@ -388,5 +389,5 @@ func (s *Service) CreateAnonymousShare(ctx context.Context, p AnonymousSharePara
 // randomShareCode 8 位 file_code（crypto/rand，小写字母+数字）
 func randomShareCode() string {
 	const charset = "abcdefghijklmnopqrstuvwxyz0123456789"
-	return utils.RandomString(charset, 8)
+	return uidgen.RandomString(charset, 8)
 }

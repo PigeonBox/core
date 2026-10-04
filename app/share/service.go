@@ -17,6 +17,8 @@ import (
 	"github.com/filescodebox/core/repo/db/dao"
 	"github.com/filescodebox/core/repo/db/model"
 	"github.com/filescodebox/core/storage"
+	"github.com/filescodebox/kit/retry"
+	"github.com/filescodebox/kit/uidgen"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
@@ -270,25 +272,33 @@ func (s *Service) createWithCode(ctx context.Context, customCode string, build f
 	return fc, nil
 }
 
-// GenerateCode 生成分享代码（8 位字母数字，crypto/rand 经 utils 统一收口）。
+// GenerateCode 生成分享代码（8 位字母数字，crypto/rand 经 kit/uidgen 统一收口）。
 func (s *Service) GenerateCode() string {
 	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-	return utils.RandomString(charset, 8)
+	return uidgen.RandomString(charset, 8)
 }
 
 // createWithRetry 通用写库重试（code 唯一冲突时换码重试，最多 5 次）。
 func (s *Service) createWithRetry(ctx context.Context, build func(code string) *model.FileCode) (*model.FileCode, error) {
-	for i := 0; i < 5; i++ {
-		fc := build(s.GenerateCode())
-		if err := s.fileCodeRepo.Create(ctx, fc); err != nil {
-			if errors.Is(err, gorm.ErrDuplicatedKey) {
-				continue // 换 code 重试
-			}
-			return nil, err
+	var fc *model.FileCode
+	err := retry.Do(ctx, retry.Config{
+		Attempts:  5,
+		Retryable: func(err error) bool { return errors.Is(err, gorm.ErrDuplicatedKey) },
+	}, func(attempt int) error {
+		rec := build(s.GenerateCode())
+		if err := s.fileCodeRepo.Create(ctx, rec); err != nil {
+			return err
 		}
-		return fc, nil
+		fc = rec
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, gorm.ErrDuplicatedKey) {
+			return nil, errors.New("生成分享码失败：多次冲突")
+		}
+		return nil, err
 	}
-	return nil, errors.New("生成分享码失败：多次冲突")
+	return fc, nil
 }
 
 // ShareText 分享文本

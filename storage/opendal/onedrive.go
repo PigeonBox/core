@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/filescodebox/kit/retry"
 )
 
 // onedriveDriver OneDrive / SharePoint（Microsoft Graph）驱动，零 SDK 依赖。
@@ -226,32 +228,30 @@ func (d *onedriveDriver) WriteStream(ctx context.Context, key string, r io.Reade
 		if _, err := io.ReadFull(r, buf); err != nil {
 			return fmt.Errorf("onedrive 读取分片 %d: %w", offset, err)
 		}
-		var attemptErr error
-		for attempt := 0; attempt < 3; attempt++ {
-			req, err := http.NewRequestWithContext(ctx, http.MethodPut, sess.UploadURL, bytes.NewReader(buf))
-			if err != nil {
-				return err
-			}
-			req.ContentLength = n
-			req.Header.Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", offset, end, size))
-			resp, err := d.client.Do(req)
-			if err != nil {
-				attemptErr = err
-				continue
-			}
-			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<12))
-			_ = resp.Body.Close()
-			if resp.StatusCode == http.StatusAccepted || resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusCreated {
-				attemptErr = nil
-				break
-			}
-			// 会话过期则整体失败（v1 不做会话重建）
-			attemptErr = fmt.Errorf("onedrive 分片上传 %s: %d", key, resp.StatusCode)
+	// 每片独立请求，至多 3 次（网络错误/非 2xx 重试；零延迟与原实现一致）
+	err := retry.Do(ctx, retry.Config{Attempts: 3}, func(attempt int) error {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPut, sess.UploadURL, bytes.NewReader(buf))
+		if err != nil {
+			return err
 		}
-		if attemptErr != nil {
-			return attemptErr
+		req.ContentLength = n
+		req.Header.Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", offset, end, size))
+		resp, err := d.client.Do(req)
+		if err != nil {
+			return err
 		}
-		offset += n
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<12))
+		_ = resp.Body.Close()
+		if resp.StatusCode == http.StatusAccepted || resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusCreated {
+			return nil
+		}
+		// 会话过期则整体失败（v1 不做会话重建）
+		return fmt.Errorf("onedrive 分片上传 %s: %d", key, resp.StatusCode)
+	})
+	if err != nil {
+		return err
+	}
+	offset += n
 	}
 	return nil
 }

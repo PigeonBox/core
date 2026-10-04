@@ -13,9 +13,9 @@ import (
 	"github.com/filescodebox/contracts/errcode"
 	"github.com/filescodebox/core/conf"
 	"github.com/filescodebox/core/pkg/auth"
-	"github.com/filescodebox/core/pkg/utils"
 	"github.com/filescodebox/core/repo/db/dao"
 	"github.com/filescodebox/core/repo/db/model"
+	"github.com/filescodebox/kit/uidgen"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 )
@@ -452,9 +452,10 @@ type APIKeyData struct {
 
 // ==================== API Key 方法 ====================
 
-// GenerateRandomKey 生成32位随机字符串（16字节 hex，crypto/rand 经 utils 统一收口）
-func GenerateRandomKey() (string, error) {
-	return utils.RandomHex(16)
+// GenerateRandomKey 生成32位随机字符串（16字节 hex，crypto/rand 经 kit/uidgen 统一收口；
+// crypto/rand 不可用属进程级灾难，uidgen 以 panic 上抛而非返回 error）
+func GenerateRandomKey() string {
+	return uidgen.RandomHex(16)
 }
 
 // HashAPIKey 计算密钥的 SHA256 哈希
@@ -497,11 +498,7 @@ func (s *Service) CreateAPIKey(ctx context.Context, userID uint, req *CreateAPIK
 	}
 
 	// 生成随机密钥
-	randomPart, err := GenerateRandomKey()
-	if err != nil {
-		return nil, fmt.Errorf("生成随机密钥失败: %w", err)
-	}
-	plainKey := apiKeyPrefix + randomPart
+	plainKey := apiKeyPrefix + GenerateRandomKey()
 	keyHash := HashAPIKey(plainKey)
 	keyPrefix := GetKeyPrefix(plainKey)
 
