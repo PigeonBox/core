@@ -1,9 +1,16 @@
-# core
+# core · 业务核心库
 
-FileCodeBox 业务核心库:10 个域服务 + 数据访问 + 存储抽象 + HTTP/RPC 装配(bootstrap)。**不含 main、不含静态资源、不含配置文件**——本模块定位是**被复用的库**,消费方:
+[![CI](https://github.com/filescodebox/core/actions/workflows/ci.yml/badge.svg)](https://github.com/filescodebox/core/actions/workflows/ci.yml)
+[![Tag](https://img.shields.io/github/v/tag/filescodebox/core)](https://github.com/filescodebox/core/tags)
+[![Go](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](https://go.dev)
+[![License](https://img.shields.io/github/license/filescodebox/core)](LICENSE)
+
+FilesCodeBox 业务核心库:10 个域服务 + 数据访问 + 存储抽象 + HTTP/RPC 装配(bootstrap)。**不含 main、不含静态资源、不含配置文件**——本模块定位是**被复用的库**,消费方:
 
 - [`filescodebox/server`](https://github.com/filescodebox/server) —— 标准独立部署(自托管)
-- `fnos` —— 飞牛 fnOS 应用(单容器库式调用)
+- [`filescodebox/fnos`](https://github.com/filescodebox/fnos) —— 飞牛 fnOS 应用(单容器库式调用)
+
+> 🗂️ [FilesCodeBox 生态](https://github.com/orgs/filescodebox)成员仓 · 总览见 [装配仓 filescodebox](https://github.com/filescodebox/filescodebox) · [架构图集](https://github.com/filescodebox/filescodebox/blob/main/docs/architecture.md)
 
 ## 结构
 
@@ -50,3 +57,7 @@ core ──► contracts ──► (thrift runtime)
 ## 来源
 
 拆分自 [zy84338719/fileCodeBox](https://github.com/zy84338719/FileCodeBox) 的 `backend/api`、`backend/gen/http/{handler,router}`、`backend/cmd/server/bootstrap`,import 路径机械替换,业务逻辑零变更。
+
+## License
+
+[Apache-2.0](LICENSE)
