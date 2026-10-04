@@ -337,11 +337,15 @@ type OneDriveConfig struct {
 }
 
 // UIConfig 前端 UI 相关配置。
-// showAdminAddr：公开页脚是否展示管理后台入口（默认隐藏；/admin 始终可直达，
-// 此键仅控制入口可见性）。其余 theme/background 等键待主题系统实装时按新形状回归。
+// Background/AccentColor 构成安全版主题：仅接受 http(s) 图片 URL 与 #RGB/#RRGGBB
+// 颜色值（serve 时校验，非白名单内容整体忽略）——不接受自由 CSS，杜绝旧单体
+// background 配置的 CSS 注入面（上游 2.6.0 同类修复）。showAdminAddr：公开页脚
+// 是否展示管理后台入口（默认隐藏；/admin 始终可直达，此键仅控制入口可见性）。
 type UIConfig struct {
 	RobotsText    string `mapstructure:"robots_text"`
 	ShowAdminAddr bool   `mapstructure:"show_admin_addr"`
+	Background    string `mapstructure:"background"`
+	AccentColor   string `mapstructure:"accent_color"`
 }
 
 // ObservabilityConfig 可观测性配置（metrics；分布式追踪见路线图，未实现前不暴露配置）

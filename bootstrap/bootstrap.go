@@ -1084,7 +1084,37 @@ func publicConfigHandler(ctx context.Context, c *app.RequestContext) {
 		"oidcEnabled": conf.GetGlobalConfig().Security.OIDC.Enabled,
 		// 管理入口可见性（ui.show_admin_addr；/admin 路由始终可达，仅控制页脚入口展示）
 		"showAdminAddr": config.UI.ShowAdminAddr,
+		// 安全版主题（serve 时白名单校验：非 http(s) URL / 非 #hex 颜色整体忽略）
+		"background":  safeImageURL(config.UI.Background),
+		"accentColor": safeHexColor(config.UI.AccentColor),
 	})
+}
+
+// safeImageURL 背景 URL 白名单校验：仅 http(s)，其余返回空（防 CSS/JS 注入）
+func safeImageURL(raw string) string {
+	u := strings.TrimSpace(raw)
+	if (strings.HasPrefix(u, "http://") || strings.HasPrefix(u, "https://")) && !strings.ContainsAny(u, "\"'<>{}") {
+		return u
+	}
+	return ""
+}
+
+// safeHexColor 主题色白名单校验：#RGB/#RRGGBB/#RRGGBBAA
+func safeHexColor(raw string) string {
+	u := strings.TrimSpace(raw)
+	if len(u) >= 4 && len(u) <= 9 && strings.HasPrefix(u, "#") {
+		ok := true
+		for _, c := range u[1:] {
+			if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			return u
+		}
+	}
+	return ""
 }
 
 // publicSetupSvc /api/config 查询初始化状态用（无依赖，惰性安全）
@@ -1238,11 +1268,12 @@ func initThriftIDLServices(database *gorm.DB) {
 	// 2.4 注入 user service：上传统计（此前从未接线，用户统计恒为 0）
 	// + 存储配额强制检查（user_quota / 用户级 max_storage_quota）
 	userSvc := userService.NewService()
+	userSvc.SetDefaultsProvider(adminDefaultsAdapter{})
 	shareSvc.SetUserService(userSvc)
 	shareSvc.SetQuotaChecker(userSvc)
 
-	// 2.4.1 寄件码/反向收件服务（P2）：依赖 share service 与 notify
-	requestSvcInstance = requestApp.NewService(shareSvc, notifyApp)
+	// 2.4.1 寄件码/反向收件服务（P2）：经 ShareGateway 适配器依赖 share（消跨域 import）
+	requestSvcInstance = requestApp.NewService(requestShareGateway{shareSvc}, notifyApp)
 	customHandler.SetRequestService(requestSvcInstance)
 
 	// 3. anonymous service（需要 Redis）
@@ -1300,11 +1331,11 @@ func initThriftIDLServices(database *gorm.DB) {
 	previewHandler.SetStorage(bootstrapStorage)
 
 	// 6.5 MCP server（AI 客户端集成）：统计/维护走全站唯一 admin 实例，
-	//     分享创建走 share service（复用配额/审计链路）
+	//     分享创建走 share service（复用配额/审计链路）——经窄接口适配器注入
 	if config.MCP.Enabled {
 		mcpService = mcpApp.NewService(config.App.Version)
-		mcpService.SetAdminService(adminSvc)
-		mcpService.SetShareService(shareSvc)
+		mcpService.SetAdminService(mcpAdminAdapter{adminSvc})
+		mcpService.SetShareService(mcpShareAdapter{shareSvc})
 	}
 
 	// 7. 启动过期文件定时清理（默认每小时，删 DB 记录 + 物理文件），
@@ -1443,6 +1474,111 @@ func (daoTransferSink) Create(ctx context.Context, e transfer.Entry) error {
 		FileName: e.FileName, FileSize: e.FileSize, UserID: e.UserID,
 		APIKeyID: e.APIKeyID, Username: e.Username, IP: e.IP, DurationMs: e.DurationMs,
 	})
+}
+
+// ===== 域间装配适配器 =====
+// 消费侧窄接口（mcp.AdminAPI/ShareAPI、request.ShareGateway、user.DefaultsProvider）
+// 的域适配器：跨域依赖收口到 composition root，各业务域互相零 import。
+
+// mcpAdminAdapter mcp.AdminAPI 的 admin 域适配器（全站唯一实例）。
+type mcpAdminAdapter struct{ svc *adminApp.Service }
+
+func (a mcpAdminAdapter) DeleteShareByID(ctx context.Context, id uint) error {
+	return a.svc.DeleteFile(ctx, id)
+}
+
+func (a mcpAdminAdapter) SystemStats(ctx context.Context) (*mcpApp.SystemStats, error) {
+	st, err := a.svc.GetStats(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &mcpApp.SystemStats{
+		TotalFiles: st.TotalFiles, TotalUsers: st.TotalUsers, TotalSize: st.TotalSize,
+		TodayUploads: st.TodayUploads, ExpiredFiles: st.ExpiredFiles,
+	}, nil
+}
+
+func (a mcpAdminAdapter) StorageStatus(ctx context.Context) (*mcpApp.StorageStatusInfo, error) {
+	st, err := a.svc.GetStorageStatus(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &mcpApp.StorageStatusInfo{
+		StorageType: st.StorageType, TotalSpace: st.TotalSpace, UsedSpace: st.UsedSpace,
+		UsagePercent: st.UsagePercent, FileCount: st.FileCount,
+	}, nil
+}
+
+func (a mcpAdminAdapter) Users(ctx context.Context, page, pageSize int) ([]mcpApp.UserRow, int64, error) {
+	users, total, err := a.svc.GetUsers(ctx, page, pageSize)
+	if err != nil {
+		return nil, 0, err
+	}
+	rows := make([]mcpApp.UserRow, len(users))
+	for i, u := range users {
+		rows[i] = mcpApp.UserRow{ID: u.ID, Username: u.Username, Email: u.Email, Status: u.Status}
+	}
+	return rows, total, nil
+}
+
+func (a mcpAdminAdapter) CleanExpired(ctx context.Context) (int64, int64, error) {
+	return a.svc.CleanExpiredFiles(ctx)
+}
+
+// mcpShareAdapter mcp.ShareAPI 的 share 域适配器。
+type mcpShareAdapter struct{ svc *shareService.Service }
+
+func (a mcpShareAdapter) CreateTextShare(ctx context.Context, text string, expireValue int, expireStyle string,
+	requireAuth bool, passwordHash string, ownerIP, customCode string) (string, string, error) {
+	resp, err := a.svc.ShareTextWithAuth(ctx, text, expireValue, expireStyle, requireAuth, passwordHash, nil, ownerIP, false, customCode)
+	if err != nil {
+		return "", "", err
+	}
+	return resp.Code, resp.FullShareURL, nil
+}
+
+func (a mcpShareAdapter) ShareFiles(ctx context.Context, code string) ([]mcpApp.ShareFileInfo, error) {
+	items, err := a.svc.ListShareFiles(ctx, code)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]mcpApp.ShareFileInfo, len(items))
+	for i, it := range items {
+		out[i] = mcpApp.ShareFileInfo{Name: it.Name, Size: it.Size}
+	}
+	return out, nil
+}
+
+// requestShareGateway request.ShareGateway 的 share 域适配器（访客投递 → 归属分享）。
+type requestShareGateway struct{ svc *shareService.Service }
+
+func (g requestShareGateway) CreateFromFileEntries(ctx context.Context, req *requestApp.ShareCreateRequest) (*requestApp.ShareResult, error) {
+	ownerID := req.OwnerID
+	resp, err := g.svc.CreateMultiFileShare(ctx, &shareService.MultiShareReq{
+		Entries:      req.Entries,
+		ExpiredAt:    req.ExpiredAt,
+		ExpiredCount: req.ExpiredCount,
+		UserID:       &ownerID,
+		UploadType:   "authenticated",
+		OwnerIP:      req.OwnerIP,
+		Channel:      req.Channel,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &requestApp.ShareResult{ID: resp.ID, Code: resp.Code, Size: resp.Size}, nil
+}
+
+// adminDefaultsAdapter user.DefaultsProvider 的 admin 域适配器
+// （管理后台持久化配置优先，无记录回退 yaml——EffectiveUserSettings 语义）。
+type adminDefaultsAdapter struct{}
+
+func (adminDefaultsAdapter) DefaultStorageQuota(ctx context.Context) int64 {
+	return adminApp.EffectiveUserSettings(ctx).UserStorageQuota
+}
+
+func (adminDefaultsAdapter) DefaultUploadSize(ctx context.Context) int64 {
+	return adminApp.EffectiveUserSettings(ctx).UserUploadSize
 }
 
 // restoreRuntimeStorage 启动时把 system_configs.runtime_storage 恢复进全局配置。
