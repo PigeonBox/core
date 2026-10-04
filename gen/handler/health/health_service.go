@@ -4,9 +4,11 @@ package health
 
 import (
 	"context"
+	"time"
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
+	"github.com/filescodebox/kit/version"
 )
 
 // Health 健康检查
@@ -38,10 +40,15 @@ func Readiness(ctx context.Context, c *app.RequestContext) {
 	})
 }
 
-// Version 版本信息
+// Version 版本信息(kit/version,-ldflags 注入;未注入时 version=dev)。
+// message 沿用统一响应信封;另附结构化字段供脚本/监控取用。
 func Version(ctx context.Context, c *app.RequestContext) {
 	c.JSON(consts.StatusOK, map[string]interface{}{
-		"code":    200,
-		"message": "v1.0.0",
+		"code":       200,
+		"message":    version.Version,
+		"version":    version.Version,
+		"commit":     version.BuildCommit,
+		"build_time": version.BuildTime,
+		"start_time": version.StartTime.Format(time.RFC3339),
 	})
 }
