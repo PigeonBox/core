@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/filescodebox/core/conf"
-	"github.com/filescodebox/core/repo/db/model"
 	"github.com/filescodebox/core/storage/opendal"
 )
 
@@ -30,6 +29,9 @@ const (
 	StorageTypeLocal  StorageType = "local"
 	StorageTypeS3     StorageType = "s3"
 	StorageTypeWebDAV StorageType = "webdav"
+	StorageTypeFTP    StorageType = "ftp"
+	StorageTypeSFTP   StorageType = "sftp"
+	StorageTypeGCS    StorageType = "gcs"
 )
 
 // FileOperationResult 文件操作结果
@@ -89,6 +91,11 @@ type StorageConfig struct {
 	WebDAVPassword string
 	// Root 远端根目录（webdav：所有对象挂其下，避免绝对路径写入；空 = "filecodebox"）
 	Root string
+
+	// FTP/SFTP/OneDrive 配置（W2-W4 存储驱动扩展；指针类型直接复用 conf 结构）
+	FTP      *conf.FTPConfig
+	SFTP     *conf.SFTPConfig
+	OneDrive *conf.OneDriveConfig
 }
 
 // ConfigFromConf 把 conf 的存储配置映射为 StorageConfig（bootstrap 与管理端切换共用）。
@@ -132,6 +139,9 @@ func ConfigFromConf(c *conf.StorageConfig, baseURL string) *StorageConfig {
 		cfg.WebDAVUsername = c.WebDAV.Username
 		cfg.WebDAVPassword = c.WebDAV.Password
 	}
+	cfg.FTP = c.FTP
+	cfg.SFTP = c.SFTP
+	cfg.OneDrive = c.OneDrive
 	return cfg
 }
 
@@ -243,16 +253,72 @@ func buildOperator(cfg *StorageConfig) (*opendal.Operator, error) {
 				"password": cfg.WebDAVPassword,
 			},
 		})
+	case StorageTypeFTP:
+		if cfg.FTP == nil || cfg.FTP.Host == "" {
+			return nil, fmt.Errorf("ftp 配置不完整：host 必填")
+		}
+		opts := map[string]string{
+			"host":     cfg.FTP.Host,
+			"username": cfg.FTP.Username,
+			"password": cfg.FTP.Password,
+			"tls":      cfg.FTP.TLS,
+			"root":     defaultRoot(cfg.FTP.Root, "filecodebox"),
+		}
+		return opendal.New(opendal.Config{Scheme: opendal.SchemeFTP, Options: opts})
+	case StorageTypeSFTP:
+		if cfg.SFTP == nil || cfg.SFTP.Host == "" || cfg.SFTP.Username == "" {
+			return nil, fmt.Errorf("sftp 配置不完整：host/username 必填")
+		}
+		return opendal.New(opendal.Config{
+			Scheme: opendal.SchemeSFTP,
+			Options: map[string]string{
+				"host":        cfg.SFTP.Host,
+				"username":    cfg.SFTP.Username,
+				"password":    cfg.SFTP.Password,
+				"private_key": cfg.SFTP.PrivateKey,
+				"host_key":    cfg.SFTP.HostKey,
+				"root":        defaultRoot(cfg.SFTP.Root, "filecodebox"),
+			},
+		})
+	case StorageTypeGCS:
+		// GCS 走其 S3 兼容 XML 端点（需 HMAC 密钥：GCS 控制台 Settings→Interoperability）
+		opts, err := ResolveCloudProvider(StorageTypeGCS, cfg.Region, cfg.Bucket,
+			cfg.AccessKey, cfg.SecretKey, cfg.Endpoint,
+			boolPtr(cfg.UseSSL), boolPtr(cfg.PathStyle))
+		if err != nil {
+			return nil, err
+		}
+		return opendal.New(opendal.Config{
+			Scheme: opendal.SchemeS3,
+			Root:   opts["bucket"],
+			Options: map[string]string{
+				"endpoint":   opts["endpoint"],
+				"access_key": opts["access_key"],
+				"secret_key": opts["secret_key"],
+				"bucket":     opts["bucket"],
+				"region":     opts["region"],
+				"use_ssl":    opts["use_ssl"],
+				"path_style": opts["path_style"],
+			},
+		})
 	default:
 		return nil, nil
 	}
+}
+
+// defaultRoot 远端根目录缺省值
+func defaultRoot(root, def string) string {
+	if strings.TrimSpace(root) == "" {
+		return def
+	}
+	return root
 }
 
 // ProbeConfig 认证级验证存储配置（管理端切换/保存前调用）。
 // s3：凭据有效且桶存在；webdav：根路径可达（401 在此暴露）；local：路径可创建可写。
 func ProbeConfig(ctx context.Context, cfg *StorageConfig) error {
 	switch cfg.Type {
-	case StorageTypeS3, StorageTypeWebDAV:
+	case StorageTypeS3, StorageTypeWebDAV, StorageTypeFTP, StorageTypeSFTP, StorageTypeGCS:
 		op, err := buildOperator(cfg)
 		if err != nil {
 			return err
@@ -646,16 +712,20 @@ func (s *StorageService) GetFileReader(ctx context.Context, filePath string) (io
 	return file, fileInfo.Size(), nil
 }
 
-// GenerateFilePath 生成文件路径
-func (s *StorageService) GenerateFilePath(fileCode *model.FileCode) string {
-	now := time.Now()
-	return filepath.Join(
-		"uploads",
-		now.Format("2006"),
-		now.Format("01"),
-		now.Format("02"),
-		fileCode.UUIDFileName,
-	)
+// GenerateFilePath 已删除：零调用方（上传路径统一走 pkg/utils.NewUploadRelPath）。
+
+// StoredFileEntry 已落存储的文件项（多文件分享/访客投递等跨域流转的统一载体）。
+// 语义约定：传输层保证物理文件已就位（直传保存/分片合并/presign 核实），
+// 业务层只做装配。定义在本包使 request 等域引用它时无需依赖具体业务域。
+type StoredFileEntry struct {
+	// RelPath 存储相对路径（含唯一文件名；local 下与合并写入路径一致）
+	RelPath string
+	// FileName 原始文件名（消毒后，仅展示）
+	FileName string
+	// Size 实际大小（handler 已复核）
+	Size int64
+	// FileHash SHA-256（可空：哈希失败不阻断分享）
+	FileHash string
 }
 
 // dataPath 读取当前 DataPath（local 分支内部使用）

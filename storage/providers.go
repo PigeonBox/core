@@ -89,6 +89,14 @@ var providerPresets = map[StorageType]ProviderPreset{
 		},
 		DisplayName: "华为云 OBS",
 	},
+	// Google Cloud Storage：S3 兼容 XML 端点 storage.googleapis.com（固定，region 无关；
+	// 需在 GCS 控制台 Settings→Interoperability 启用 HMAC 密钥作为 access/secret）。
+	// virtual-host 与 path-style 均支持；presign 直传直下随 S3 驱动生效。
+	StorageTypeGCS: {
+		DeriveEndpoint:   func(region string) string { return "storage.googleapis.com" },
+		DefaultPathStyle: false,
+		DisplayName:      "Google Cloud Storage",
+	},
 }
 
 // IsCloudProviderType type 是否为受支持的云厂商（S3 兼容）

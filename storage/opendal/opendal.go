@@ -50,6 +50,7 @@ const (
 	SchemeGCS    Scheme = "gcs"
 	SchemeWebDAV Scheme = "webdav"
 	SchemeSFTP   Scheme = "sftp"
+	SchemeFTP    Scheme = "ftp"
 	SchemeHDFS   Scheme = "hdfs"
 	SchemeMemory Scheme = "memory"
 )
@@ -66,7 +67,9 @@ var supportedSchemes = map[Scheme]bool{
 	SchemeFS:     true,
 	SchemeS3:     true,
 	SchemeWebDAV: true,
-	// azblob/gcs/sftp/hdfs/memory：未实现，需时实现 Driver 接口扩展
+	SchemeFTP:    true,
+	SchemeSFTP:   true,
+	// azblob/hdfs/memory：未实现，需时实现 Driver 接口扩展
 }
 
 // Driver 远端 scheme（s3/webdav 等）的底层驱动接口。
@@ -172,6 +175,18 @@ func New(cfg Config) (*Operator, error) {
 		op.driver = d
 	case SchemeWebDAV:
 		d, err := newWebDAVDriver(cfg.Options)
+		if err != nil {
+			return nil, err
+		}
+		op.driver = d
+	case SchemeFTP:
+		d, err := newFTPDriver(cfg.Options)
+		if err != nil {
+			return nil, err
+		}
+		op.driver = d
+	case SchemeSFTP:
+		d, err := newSFTPDriver(cfg.Options)
 		if err != nil {
 			return nil, err
 		}

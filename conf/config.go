@@ -234,6 +234,11 @@ type StorageConfig struct {
 	Quota       int64               `mapstructure:"quota"`
 	S3          *S3Config           `mapstructure:"s3"`
 	WebDAV      *WebDAVConfig       `mapstructure:"webdav"`
+	FTP         *FTPConfig          `mapstructure:"ftp"`
+	SFTP        *SFTPConfig         `mapstructure:"sftp"`
+	AzureBlob   *AzureBlobConfig    `mapstructure:"azureblob"`
+	HDFS        *HDFSConfig         `mapstructure:"hdfs"`
+	OneDrive    *OneDriveConfig     `mapstructure:"onedrive"`
 	OSS         *CloudStorageConfig `mapstructure:"oss"`
 	COS         *CloudStorageConfig `mapstructure:"cos"`
 	BOS         *CloudStorageConfig `mapstructure:"bos"`
@@ -269,6 +274,66 @@ type WebDAVConfig struct {
 	Endpoint string `mapstructure:"endpoint"`
 	Username string `mapstructure:"username"`
 	Password string `mapstructure:"password"`
+}
+
+// FTPConfig FTP/FTPS 存储配置
+type FTPConfig struct {
+	Host     string `mapstructure:"host"` // host[:port]（port 缺省 21）
+	Username string `mapstructure:"username"`
+	Password string `mapstructure:"password"`
+	// TLS "true" = 显式 FTPS（AUTH TLS）
+	TLS string `mapstructure:"tls"`
+	// Root 远端子目录（所有对象挂其下；目录需已存在或可创建）
+	Root string `mapstructure:"root"`
+}
+
+// SFTPConfig SFTP 存储配置（password 与 private_key 二选一，前者优先）
+type SFTPConfig struct {
+	Host     string `mapstructure:"host"` // host[:port]（port 缺省 22）
+	Username string `mapstructure:"username"`
+	Password string `mapstructure:"password"`
+	// PrivateKey PEM 私钥内容（多行，env 注入友好）
+	PrivateKey string `mapstructure:"private_key"`
+	// HostKey 可选；known_hosts 行或 base64 主机公钥（配置后严格校验，缺省宽松）
+	HostKey string `mapstructure:"host_key"`
+	Root    string `mapstructure:"root"`
+}
+
+// AzureBlobConfig Azure Blob 存储配置（共享密钥或 SAS 二选一）
+type AzureBlobConfig struct {
+	Account   string `mapstructure:"account"`
+	Container string `mapstructure:"container"`
+	// Key 共享密钥（account key）；SAS 非空时忽略
+	Key string `mapstructure:"key"`
+	// SAS 容器级或账户级 SAS token（以 ? 开头的查询串）
+	SAS      string `mapstructure:"sas"`
+	Endpoint string `mapstructure:"endpoint"` // 可选；Azurite/主权云（缺省 https://<account>.blob.core.windows.net）
+	Root     string `mapstructure:"root"`
+}
+
+// HDFSConfig HDFS 存储配置（WebHDFS REST，NameNode http(s) 端口）
+type HDFSConfig struct {
+	// Endpoint WebHDFS 根地址，如 http://namenode:9870
+	Endpoint string `mapstructure:"endpoint"`
+	// User HDFS 代理用户（doAs）
+	User string `mapstructure:"user"`
+	// Kerberos/Token 认证为扩展点（当前支持无认证/简单代理用户）
+	Root string `mapstructure:"root"`
+}
+
+// OneDriveConfig OneDrive（Microsoft Graph）存储配置。
+// 授权：在 Azure AD 注册应用（Files.ReadWrite.All + offline_access），
+// 走一次授权码流程拿 refresh_token 后配置至此，运行时自动刷新 access token。
+type OneDriveConfig struct {
+	ClientID     string `mapstructure:"client_id"`
+	ClientSecret string `mapstructure:"client_secret"`
+	// RefreshToken 一次性授权获得，长期有效（轮换由服务端自动处理）
+	RefreshToken string `mapstructure:"refresh_token"`
+	// Tenant common（个人+组织）或具体租户/消费者域
+	Tenant string `mapstructure:"tenant"` // 缺省 common
+	// DriveID 缺省 me/drive；站点/共享库填对应 drive id
+	DriveID string `mapstructure:"drive_id"`
+	Root    string `mapstructure:"root"`
 }
 
 // UIConfig 前端 UI 相关配置。
