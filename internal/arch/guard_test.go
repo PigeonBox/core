@@ -44,7 +44,7 @@ var appCrossDomainAllow = map[string]map[string]string{
 var transportRepoAllow = map[string]string{}
 
 // genDataAllow 规则 6：gen 适配层直连 dao/裸 gorm/storage 的文件白名单
-//（值为收口 TODO）。2026-10-04 收口后为空：notify(gorm)/preview(dao)/
+// （值为收口 TODO）。2026-10-04 收口后为空：notify(gorm)/preview(dao)/
 // share/chunk(storage) 全部下沉 app 域服务；repo/db/model 允许（共享词汇表）。
 var genDataAllow = map[string]string{}
 

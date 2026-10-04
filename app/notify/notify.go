@@ -433,11 +433,11 @@ func (s *Service) EmitShareFlagged(code, reason, ownerIP string) {
 		return
 	}
 	payload := map[string]interface{}{
-		"event":    "share.flagged",
-		"code":     code,
-		"reason":   reason,
-		"owner_ip": ownerIP,
-		"hint":     "share is set pending_review; approve via PUT /admin/files/:id/status",
+		"event":     "share.flagged",
+		"code":      code,
+		"reason":    reason,
+		"owner_ip":  ownerIP,
+		"hint":      "share is set pending_review; approve via PUT /admin/files/:id/status",
 		"timestamp": time.Now().Unix(),
 	}
 	body, err := json.Marshal(payload)

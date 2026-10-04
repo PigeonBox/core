@@ -13,13 +13,13 @@ func TestSanitizeFileName(t *testing.T) {
 		in   string
 		want string
 	}{
-		{"../../etc/passwd", "passwd"},                          // 路径穿越剥离
-		{`C:\Windows\evil.exe`, "evil.exe"},                     // Windows 路径
-		{"../../..", "file"},                                    // 纯路径段回退
-		{"  hello world.txt  ", "hello world.txt"},              // 首尾空白
-		{"con:test*?.txt", "con_test__.txt"},                    // Windows 保留字符
-		{"报告\x00\x1f终稿.docx", "报告终稿.docx"},                      // 控制字符
-		{"a.txt.", "a.txt"},                                     // 结尾点
+		{"../../etc/passwd", "passwd"},                                         // 路径穿越剥离
+		{`C:\Windows\evil.exe`, "evil.exe"},                                    // Windows 路径
+		{"../../..", "file"},                                                   // 纯路径段回退
+		{"  hello world.txt  ", "hello world.txt"},                             // 首尾空白
+		{"con:test*?.txt", "con_test__.txt"},                                   // Windows 保留字符
+		{"报告\x00\x1f终稿.docx", "报告终稿.docx"},                                     // 控制字符
+		{"a.txt.", "a.txt"},                                                    // 结尾点
 		{strings.Repeat("长", 200) + ".pdf", strings.Repeat("长", 116) + ".pdf"}, // 截断保扩展名
 		{"", "file"},
 	}

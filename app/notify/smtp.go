@@ -7,10 +7,10 @@ package notify
 // 端口语义：465 = 隐式 TLS；25/587 = 明文连接并在服务器支持时升级 STARTTLS。
 
 import (
-	"errors"
 	"context"
 	"crypto/tls"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"net"
 	"net/smtp"

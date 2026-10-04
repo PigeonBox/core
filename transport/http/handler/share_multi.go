@@ -1,6 +1,7 @@
 // 多文件分享创建端点（P0 多文件，手写路由不走 IDL）：
-//   POST /api/v1/share/multi-direct  multipart 多文件直传（小文件）
-//   POST /api/v1/share/multi-bind    绑定已上传的 chunk 会话/presign 对象为一个多文件分享
+//
+//	POST /api/v1/share/multi-direct  multipart 多文件直传（小文件）
+//	POST /api/v1/share/multi-bind    绑定已上传的 chunk 会话/presign 对象为一个多文件分享
 package handler
 
 import (
@@ -47,7 +48,7 @@ type multiCommonParams struct {
 	ExpireStyle  string
 	RequireAuth  bool
 	PasswordHash string
-	Encrypted    bool // E2E：客户端已加密（跳过魔数复检，密文头为随机字节）
+	Encrypted    bool   // E2E：客户端已加密（跳过魔数复检，密文头为随机字节）
 	CustomCode   string // 自定义取件码（P3；登录用户专属）
 	UserID       *uint
 	UploadType   string
@@ -234,10 +235,10 @@ func MultiShareDirect(ctx context.Context, c *app.RequestContext) {
 		"code":    200,
 		"message": "文件上传成功",
 		"data": map[string]interface{}{
-			"code":        shareResult.Code,
-			"url":         shareResult.FullShareURL,
-			"share_url":   fmt.Sprintf("/share/%s", shareResult.Code),
-			"file_count":  len(stored),
+			"code":       shareResult.Code,
+			"url":        shareResult.FullShareURL,
+			"share_url":  fmt.Sprintf("/share/%s", shareResult.Code),
+			"file_count": len(stored),
 		},
 	})
 }
@@ -401,10 +402,10 @@ func MultiShareBind(ctx context.Context, c *app.RequestContext) {
 		"code":    200,
 		"message": "分享创建成功",
 		"data": map[string]interface{}{
-			"code":        shareResult.Code,
-			"url":         shareResult.FullShareURL,
-			"share_url":   fmt.Sprintf("/share/%s", shareResult.Code),
-			"file_count":  len(bound),
+			"code":       shareResult.Code,
+			"url":        shareResult.FullShareURL,
+			"share_url":  fmt.Sprintf("/share/%s", shareResult.Code),
+			"file_count": len(bound),
 		},
 	})
 }

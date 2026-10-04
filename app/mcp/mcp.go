@@ -8,8 +8,9 @@
 // Authorization: Bearer <admin token> 接入。
 //
 // 工具集（对齐 legacy docs/mcp-server-guide.md）：
-//   share_text / get_share / list_shares / delete_share /
-//   get_system_status / get_storage_info / list_users / cleanup_expired
+//
+//	share_text / get_share / list_shares / delete_share /
+//	get_system_status / get_storage_info / list_users / cleanup_expired
 package mcp
 
 import (
@@ -201,8 +202,12 @@ func objSchema(props map[string]any, required []string) map[string]any {
 	}
 }
 
-func strProp(desc string) map[string]any { return map[string]any{"type": "string", "description": desc} }
-func intProp(desc string) map[string]any { return map[string]any{"type": "integer", "description": desc} }
+func strProp(desc string) map[string]any {
+	return map[string]any{"type": "string", "description": desc}
+}
+func intProp(desc string) map[string]any {
+	return map[string]any{"type": "integer", "description": desc}
+}
 
 func (s *Service) toolDefs() []toolDef {
 	return []toolDef{

@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/redis/go-redis/v9"
 	"github.com/filescodebox/core/conf"
+	"github.com/redis/go-redis/v9"
 )
 
 var Client *redis.Client

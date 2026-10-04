@@ -16,9 +16,9 @@ import (
 type Verdict int
 
 const (
-	VerdictAllow Verdict = iota // 放行
-	VerdictReject               // 拒绝（建分享前拦截）
-	VerdictPending              // 待审核（建分享后置 pending_review，取件拒绝）
+	VerdictAllow   Verdict = iota // 放行
+	VerdictReject                 // 拒绝（建分享前拦截）
+	VerdictPending                // 待审核（建分享后置 pending_review，取件拒绝）
 )
 
 func (v Verdict) String() string {
@@ -120,5 +120,5 @@ func (m *WordListModerator) InspectFile(_ context.Context, _ UploadMeta) Verdict
 // NoopModerator 空审核器（moderation.enabled=false 或未注入时的等价行为）。
 type NoopModerator struct{}
 
-func (NoopModerator) InspectText(context.Context, string) Verdict      { return VerdictAllow }
-func (NoopModerator) InspectFile(context.Context, UploadMeta) Verdict  { return VerdictAllow }
+func (NoopModerator) InspectText(context.Context, string) Verdict     { return VerdictAllow }
+func (NoopModerator) InspectFile(context.Context, UploadMeta) Verdict { return VerdictAllow }

@@ -41,8 +41,8 @@ func (schemaMigrations) TableName() string { return "schema_migrations" }
 
 // Migrator 版本化迁移器。
 type Migrator struct {
-	db       *gorm.DB
-	dialect  string // sqlite / mysql / postgres
+	db      *gorm.DB
+	dialect string // sqlite / mysql / postgres
 }
 
 // NewMigrator 创建迁移器并确保 schema_migrations 表存在。

@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
 
 	adminApp "github.com/filescodebox/core/app/admin"
@@ -26,15 +26,17 @@ type nopStorage struct{}
 func (nopStorage) SaveFile(_ context.Context, _ *multipart.FileHeader, _ string) (*storage.FileOperationResult, error) {
 	return &storage.FileOperationResult{Success: true}, nil
 }
-func (nopStorage) DeleteFile(_ context.Context, _ string) error    { return nil }
+func (nopStorage) DeleteFile(_ context.Context, _ string) error        { return nil }
 func (nopStorage) GetFile(_ context.Context, _ string) ([]byte, error) { return nil, nil }
-func (nopStorage) FileExists(_ context.Context, _ string) bool     { return true }
-func (nopStorage) SaveStream(_ context.Context, _ string, _ io.Reader, _ int64) (int64, error) { return 0, nil }
-func (nopStorage) SaveChunk(_ context.Context, _ string, _ int, _ []byte) error { return nil }
+func (nopStorage) FileExists(_ context.Context, _ string) bool         { return true }
+func (nopStorage) SaveStream(_ context.Context, _ string, _ io.Reader, _ int64) (int64, error) {
+	return 0, nil
+}
+func (nopStorage) SaveChunk(_ context.Context, _ string, _ int, _ []byte) error   { return nil }
 func (nopStorage) MergeChunks(_ context.Context, _ string, _ int, _ string) error { return nil }
-func (nopStorage) CleanChunks(_ context.Context, _ string) error   { return nil }
-func (nopStorage) GetFileSize(_ context.Context, _ string) (int64, error) { return 0, nil }
-func (nopStorage) GetFileURL(_ context.Context, _ string) (string, error) { return "", nil }
+func (nopStorage) CleanChunks(_ context.Context, _ string) error                  { return nil }
+func (nopStorage) GetFileSize(_ context.Context, _ string) (int64, error)         { return 0, nil }
+func (nopStorage) GetFileURL(_ context.Context, _ string) (string, error)         { return "", nil }
 func (nopStorage) GetFileReader(_ context.Context, _ string) (io.ReadCloser, int64, error) {
 	return nil, 0, nil
 }

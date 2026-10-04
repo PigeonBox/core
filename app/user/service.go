@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	usermodel "github.com/filescodebox/contracts/gen/user"
 	"github.com/filescodebox/contracts/errcode"
+	usermodel "github.com/filescodebox/contracts/gen/user"
 	"github.com/filescodebox/core/conf"
 	"github.com/filescodebox/core/pkg/auth"
 	"github.com/filescodebox/core/repo/db/dao"
@@ -318,8 +318,8 @@ func (s *Service) UpdateUserStats(userID uint, statsType string, value int64) er
 // QuotaExceededError 存储配额超限（handler 侧可断言后返回 CodeStorageQuota）
 type QuotaExceededError struct{ Msg string }
 
-func (e *QuotaExceededError) Error() string  { return e.Msg }
-func (e *QuotaExceededError) ErrCode() int   { return errcode.CodeStorageQuota }
+func (e *QuotaExceededError) Error() string { return e.Msg }
+func (e *QuotaExceededError) ErrCode() int  { return errcode.CodeStorageQuota }
 
 // CheckQuota 存储配额强制检查（上传前调用）。
 // 生效优先级：用户级 MaxStorageQuota > 系统默认 user.user_storage_quota；0 = 不限。

@@ -48,11 +48,11 @@ type FileCode struct {
 	UploadID  string `gorm:"size:36" json:"upload_id"`
 
 	// 新增：用户认证相关字段
-	UserID      *uint  `gorm:"index" json:"user_id"`                           // 上传用户ID，为null表示匿名上传
-	UploadType  string `gorm:"size:20;default:'anonymous'" json:"upload_type"` // anonymous, authenticated
-	RequireAuth bool   `gorm:"default:false" json:"require_auth"`              // 是否需要密码才能下载
+	UserID       *uint  `gorm:"index" json:"user_id"`                           // 上传用户ID，为null表示匿名上传
+	UploadType   string `gorm:"size:20;default:'anonymous'" json:"upload_type"` // anonymous, authenticated
+	RequireAuth  bool   `gorm:"default:false" json:"require_auth"`              // 是否需要密码才能下载
 	PasswordHash string `gorm:"size:255" json:"-"`                              // 取件密码的 bcrypt 哈希（json:"-" 不外泄）
-	OwnerIP     string `gorm:"size:45" json:"owner_ip"`                        // 上传者IP地址
+	OwnerIP      string `gorm:"size:45" json:"owner_ip"`                        // 上传者IP地址
 	// Encrypted 端到端客户端加密（P1 E2E）：true 时存储的是密文，密钥经分享链接
 	// #fragment 传递、从不落服务端；服务端零知识（预览/服务端 zip 打包不适用）
 	Encrypted bool `gorm:"default:false" json:"encrypted"`
@@ -120,12 +120,12 @@ func (f *FileCode) IsTextShare() bool {
 // FileCodeQuery 管理端文件列表过滤条件（DAO ListWithFilter 消费）。
 // 全字段可选，零值 = 不过滤。
 type FileCodeQuery struct {
-	Keyword       string     // 模糊匹配 code/prefix/suffix/uuid_file_name/text
-	UserID        *uint      // 上传者
-	UploadType    string     // anonymous/authenticated/presign_*
-	OwnerIP       string     // 上传者 IP（滥用定位）
-	Status        string     // normal/blocked/pending_review
-	MinSize       *int64     // 大小区间（字节）
+	Keyword       string // 模糊匹配 code/prefix/suffix/uuid_file_name/text
+	UserID        *uint  // 上传者
+	UploadType    string // anonymous/authenticated/presign_*
+	OwnerIP       string // 上传者 IP（滥用定位）
+	Status        string // normal/blocked/pending_review
+	MinSize       *int64 // 大小区间（字节）
 	MaxSize       *int64
 	CreatedAfter  *time.Time // 创建时间区间
 	CreatedBefore *time.Time

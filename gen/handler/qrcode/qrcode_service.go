@@ -4,8 +4,8 @@ package qrcode
 
 import (
 	"context"
-	"sync"
 	"fmt"
+	"sync"
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"

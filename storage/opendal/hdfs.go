@@ -161,10 +161,10 @@ func (d *hdfsDriver) Reader(ctx context.Context, key string) (io.ReadCloser, err
 
 // fileStatus WebHDFS FileStatus 结构
 type hdfsFileStatus struct {
-	PathSuffix string `json:"pathSuffix"`
-	Type       string `json:"type"`
-	Length     int64  `json:"length"`
-	ModificationTime int64 `json:"modificationTime"`
+	PathSuffix       string `json:"pathSuffix"`
+	Type             string `json:"type"`
+	Length           int64  `json:"length"`
+	ModificationTime int64  `json:"modificationTime"`
 }
 
 func (d *hdfsDriver) Stat(ctx context.Context, key string) (*Metadata, error) {

@@ -22,7 +22,7 @@ func withUploadConfig(t *testing.T, u conf.UploadConfig) {
 func TestIsBlockedExtension_Blocked(t *testing.T) {
 	bl := DefaultBlockedExtensions()
 	assert.True(t, IsBlockedExtension("malware.exe", bl))
-	assert.True(t, IsBlockedExtension("script.SH", bl))   // 大小写不敏感
+	assert.True(t, IsBlockedExtension("script.SH", bl)) // 大小写不敏感
 	assert.True(t, IsBlockedExtension("a.b.bat", bl))
 	assert.True(t, IsBlockedExtension("scr.scr", bl))
 }
@@ -56,8 +56,8 @@ func TestCheckUploadSize_NoLimit(t *testing.T) {
 func TestIsAllowedExtension_Semantics(t *testing.T) {
 	t.Run("未初始化配置", func(t *testing.T) {
 		withUploadConfig(t, conf.UploadConfig{})
-		assert.True(t, IsAllowedExtension("photo.jpg"))  // 非黑名单 → 允许
-		assert.False(t, IsAllowedExtension("app.exe"))   // 默认黑名单 → 拒绝
+		assert.True(t, IsAllowedExtension("photo.jpg")) // 非黑名单 → 允许
+		assert.False(t, IsAllowedExtension("app.exe"))  // 默认黑名单 → 拒绝
 	})
 	t.Run("白名单空=黑名单模式", func(t *testing.T) {
 		withUploadConfig(t, conf.UploadConfig{AllowedExtensions: nil})

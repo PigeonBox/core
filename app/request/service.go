@@ -77,11 +77,11 @@ func genToken() string {
 
 // CreateReq 创建投递链接入参
 type CreateReq struct {
-	Title        string
-	MaxFiles     int
-	MaxBytes     int64
-	ExpireValue  int
-	ExpireStyle  string // day/week/month/...；空 = 7 天
+	Title       string
+	MaxFiles    int
+	MaxBytes    int64
+	ExpireValue int
+	ExpireStyle string // day/week/month/...；空 = 7 天
 }
 
 // Create 创建投递链接
@@ -118,10 +118,10 @@ func (s *Service) Create(ctx context.Context, userID uint, req CreateReq) (*mode
 
 // PublicView 访客侧链接信息
 type PublicView struct {
-	Token    string     `json:"token"`
-	Title    string     `json:"title"`
-	MaxFiles int        `json:"max_files"`
-	MaxBytes int64      `json:"max_bytes"`
+	Token     string     `json:"token"`
+	Title     string     `json:"title"`
+	MaxFiles  int        `json:"max_files"`
+	MaxBytes  int64      `json:"max_bytes"`
 	ExpiredAt *time.Time `json:"expired_at"`
 }
 
@@ -135,10 +135,10 @@ func (s *Service) GetPublic(ctx context.Context, token string) (*PublicView, err
 		return nil, errors.New("投递链接已过期")
 	}
 	return &PublicView{
-		Token:    fr.Token,
-		Title:    fr.Title,
-		MaxFiles: fr.MaxFiles,
-		MaxBytes: fr.MaxBytes,
+		Token:     fr.Token,
+		Title:     fr.Title,
+		MaxFiles:  fr.MaxFiles,
+		MaxBytes:  fr.MaxBytes,
 		ExpiredAt: fr.ExpiredAt,
 	}, nil
 }

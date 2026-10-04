@@ -19,12 +19,12 @@ import (
 	"time"
 
 	"github.com/filescodebox/contracts/errcode"
-	"github.com/redis/go-redis/v9"
 	"github.com/filescodebox/core/pkg/logger"
 	"github.com/filescodebox/core/pkg/utils"
 	"github.com/filescodebox/core/repo/db/dao"
 	"github.com/filescodebox/core/repo/db/model"
 	"github.com/filescodebox/kit/uidgen"
+	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 )
 
@@ -355,15 +355,15 @@ func (s *Service) CreateAnonymousShare(ctx context.Context, p AnonymousSharePara
 	}
 
 	fc := &model.FileCode{
-		Code:          randomShareCode(),
-		FilePath:      p.FilePath,
-		UUIDFileName:  p.FileName,
-		Size:          p.FileSize,
-		ExpiredAt:     p.ExpireAt,
-		ExpiredCount:  maxCount,
-		RequireAuth:   p.Password != "",
-		PasswordHash:  hash,
-		UploadType:    "anonymous",
+		Code:         randomShareCode(),
+		FilePath:     p.FilePath,
+		UUIDFileName: p.FileName,
+		Size:         p.FileSize,
+		ExpiredAt:    p.ExpireAt,
+		ExpiredCount: maxCount,
+		RequireAuth:  p.Password != "",
+		PasswordHash: hash,
+		UploadType:   "anonymous",
 	}
 	if err := s.fileCodeRepo.Create(ctx, fc); err != nil {
 		return "", err

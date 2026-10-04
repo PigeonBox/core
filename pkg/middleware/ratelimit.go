@@ -342,12 +342,12 @@ func (rl *RateLimiter) Stats() map[string]interface{} {
 		}
 	}
 	return map[string]interface{}{
-		"enabled":            rl.cfg.Enabled,
-		"config":             rl.cfg,
-		"active_limiters":    active,
-		"blocked_current":    blockedActive,
-		"blocked_total":      rl.blockedTotal,
-		"backend":            backendName(rl.cfg.UseRedis, rl.rdb != nil),
+		"enabled":         rl.cfg.Enabled,
+		"config":          rl.cfg,
+		"active_limiters": active,
+		"blocked_current": blockedActive,
+		"blocked_total":   rl.blockedTotal,
+		"backend":         backendName(rl.cfg.UseRedis, rl.rdb != nil),
 	}
 }
 

@@ -7,9 +7,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/redis/go-redis/v9"
 	"github.com/filescodebox/contracts/errcode"
 	"github.com/filescodebox/core/conf"
+	"github.com/redis/go-redis/v9"
 )
 
 // redisLockCmds 失败锁定所需的最小 Redis 命令集（*redis.Client 天然满足；

@@ -41,26 +41,26 @@ import (
 type Scheme string
 
 const (
-	SchemeFS     Scheme = "fs"
-	SchemeS3     Scheme = "s3"
-	SchemeOSS    Scheme = "oss"
-	SchemeCOS    Scheme = "cos"
-	SchemeOBS    Scheme = "obs"
-	SchemeAzBlob Scheme = "azblob"
-	SchemeGCS    Scheme = "gcs"
-	SchemeWebDAV Scheme = "webdav"
-	SchemeSFTP   Scheme = "sftp"
-	SchemeFTP    Scheme = "ftp"
-	SchemeHDFS   Scheme = "hdfs"
+	SchemeFS       Scheme = "fs"
+	SchemeS3       Scheme = "s3"
+	SchemeOSS      Scheme = "oss"
+	SchemeCOS      Scheme = "cos"
+	SchemeOBS      Scheme = "obs"
+	SchemeAzBlob   Scheme = "azblob"
+	SchemeGCS      Scheme = "gcs"
+	SchemeWebDAV   Scheme = "webdav"
+	SchemeSFTP     Scheme = "sftp"
+	SchemeFTP      Scheme = "ftp"
+	SchemeHDFS     Scheme = "hdfs"
 	SchemeOneDrive Scheme = "onedrive"
-	SchemeMemory Scheme = "memory"
+	SchemeMemory   Scheme = "memory"
 )
 
 // supportedSchemes 当前 backend 实际支持的 scheme。
 //
 // 云厂商（oss/cos/bos/ks3/obs）不在此表、也不走本包的原生驱动扩展点：
 // 上层 storage.buildOperator 已将其统一映射为 SchemeS3 驱动
-//（各厂商官方提供 S3 兼容端点，endpoint 由 storage/providers.go 按厂商+region
+// （各厂商官方提供 S3 兼容端点，endpoint 由 storage/providers.go 按厂商+region
 // 推导）。因此本包只见 fs/s3/webdav 三种 scheme。
 // 原生驱动（oss.go/cos.go 用各厂商 native API）仍为可选扩展点：仅当需要
 // S3 兼容协议不覆盖的厂商私有功能时才值得实现。
@@ -93,11 +93,19 @@ type Driver interface {
 
 // 可选能力接口：驱动按需实现，Operator 做类型断言后增强行为。
 type (
-	mkdirAller interface{ MkdirAll(ctx context.Context, key string) error }
-	lister     interface{ List(ctx context.Context, key string) ([]*Metadata, error) }
-	copier     interface{ Copy(ctx context.Context, src, dst string) error }
-	renamer    interface{ Rename(ctx context.Context, src, dst string) error }
-	presigner  interface {
+	mkdirAller interface {
+		MkdirAll(ctx context.Context, key string) error
+	}
+	lister interface {
+		List(ctx context.Context, key string) ([]*Metadata, error)
+	}
+	copier interface {
+		Copy(ctx context.Context, src, dst string) error
+	}
+	renamer interface {
+		Rename(ctx context.Context, src, dst string) error
+	}
+	presigner interface {
 		Presign(ctx context.Context, method, key string, expire time.Duration) (*PresignedResult, error)
 	}
 )
@@ -465,7 +473,9 @@ func (op *Operator) Presign(ctx context.Context, req PresignedRequest) (*Presign
 // Probe 认证级连通性验证：s3 校验凭据+桶存在；webdav 校验根路径可达；
 // 其他 scheme（含 fs）直接通过。管理端切换/保存存储配置前调用。
 func Probe(ctx context.Context, op *Operator) error {
-	if p, ok := op.driver.(interface{ Probe(ctx context.Context) error }); ok {
+	if p, ok := op.driver.(interface {
+		Probe(ctx context.Context) error
+	}); ok {
 		return p.Probe(ctx)
 	}
 	return nil

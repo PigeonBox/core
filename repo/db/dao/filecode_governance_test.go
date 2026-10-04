@@ -129,7 +129,7 @@ func TestListWithFilter_ExpiredOrEscape(t *testing.T) {
 
 	uid := uint(7)
 	fixtures := []*model.FileCode{
-		{Code: "EXPRAAAA", UserID: &uid, OwnerIP: "9.9.9.9", Status: model.StatusNormal, ExpiredCount: 0},  // 次数耗尽
+		{Code: "EXPRAAAA", UserID: &uid, OwnerIP: "9.9.9.9", Status: model.StatusNormal, ExpiredCount: 0}, // 次数耗尽
 		{Code: "EXPRBBBB", OwnerIP: "8.8.8.8", Status: model.StatusBlocked, ExpiredCount: 0},              // 次数耗尽+blocked
 		{Code: "EXPRCCCC", UserID: &uid, OwnerIP: "9.9.9.9", Status: model.StatusNormal, ExpiredCount: 5}, // 正常次数
 	}

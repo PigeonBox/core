@@ -35,7 +35,7 @@ type onedriveDriver struct {
 	root         string
 	client       *http.Client
 
-	mu       sync.Mutex
+	mu          sync.Mutex
 	accessToken string
 	tokenExp    time.Time
 	// 新 refresh_token（滚动续期；是否落盘由上层存储配置域决定，v1 仅内存复用）
@@ -228,30 +228,30 @@ func (d *onedriveDriver) WriteStream(ctx context.Context, key string, r io.Reade
 		if _, err := io.ReadFull(r, buf); err != nil {
 			return fmt.Errorf("onedrive 读取分片 %d: %w", offset, err)
 		}
-	// 每片独立请求，至多 3 次（网络错误/非 2xx 重试；零延迟与原实现一致）
-	err := retry.Do(ctx, retry.Config{Attempts: 3}, func(attempt int) error {
-		req, err := http.NewRequestWithContext(ctx, http.MethodPut, sess.UploadURL, bytes.NewReader(buf))
+		// 每片独立请求，至多 3 次（网络错误/非 2xx 重试；零延迟与原实现一致）
+		err := retry.Do(ctx, retry.Config{Attempts: 3}, func(attempt int) error {
+			req, err := http.NewRequestWithContext(ctx, http.MethodPut, sess.UploadURL, bytes.NewReader(buf))
+			if err != nil {
+				return err
+			}
+			req.ContentLength = n
+			req.Header.Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", offset, end, size))
+			resp, err := d.client.Do(req)
+			if err != nil {
+				return err
+			}
+			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<12))
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusAccepted || resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusCreated {
+				return nil
+			}
+			// 会话过期则整体失败（v1 不做会话重建）
+			return fmt.Errorf("onedrive 分片上传 %s: %d", key, resp.StatusCode)
+		})
 		if err != nil {
 			return err
 		}
-		req.ContentLength = n
-		req.Header.Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", offset, end, size))
-		resp, err := d.client.Do(req)
-		if err != nil {
-			return err
-		}
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<12))
-		_ = resp.Body.Close()
-		if resp.StatusCode == http.StatusAccepted || resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusCreated {
-			return nil
-		}
-		// 会话过期则整体失败（v1 不做会话重建）
-		return fmt.Errorf("onedrive 分片上传 %s: %d", key, resp.StatusCode)
-	})
-	if err != nil {
-		return err
-	}
-	offset += n
+		offset += n
 	}
 	return nil
 }
@@ -291,9 +291,9 @@ func (d *onedriveDriver) Stat(ctx context.Context, key string) (*Metadata, error
 		return nil, d.errFromResp(key, resp)
 	}
 	var item struct {
-		Size               int64  `json:"size"`
-		LastModifiedDateTime string `json:"lastModifiedDateTime"`
-		Folder             *struct{} `json:"folder"`
+		Size                 int64     `json:"size"`
+		LastModifiedDateTime string    `json:"lastModifiedDateTime"`
+		Folder               *struct{} `json:"folder"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&item); err != nil {
 		return nil, err

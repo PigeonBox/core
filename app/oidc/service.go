@@ -32,11 +32,11 @@ import (
 
 // Config OIDC 配置（conf.SecurityConfig.OIDC）
 type Config struct {
-	Enabled      bool   `mapstructure:"enabled"`
-	Issuer       string `mapstructure:"issuer"`        // 如 https://idp.example.com/realms/fcb
-	ClientID     string `mapstructure:"client_id"`
-	ClientSecret string `mapstructure:"client_secret"`
-	Scopes       string `mapstructure:"scopes"`        // 默认 "openid profile email"
+	Enabled          bool   `mapstructure:"enabled"`
+	Issuer           string `mapstructure:"issuer"` // 如 https://idp.example.com/realms/fcb
+	ClientID         string `mapstructure:"client_id"`
+	ClientSecret     string `mapstructure:"client_secret"`
+	Scopes           string `mapstructure:"scopes"`            // 默认 "openid profile email"
 	FrontendCallback string `mapstructure:"frontend_callback"` // 默认 /#/oidc/callback
 }
 
@@ -52,10 +52,10 @@ type Service struct {
 	cfg    Config
 	client *http.Client
 
-	mu      sync.RWMutex
-	disc    *discovery
-	discAt  time.Time
-	discSF  *singleflight.Flight[*discovery] // 缓存过期时的并发拉取合并（防登录风暴打 IdP）
+	mu     sync.RWMutex
+	disc   *discovery
+	discAt time.Time
+	discSF *singleflight.Flight[*discovery] // 缓存过期时的并发拉取合并（防登录风暴打 IdP）
 
 	userRepo *dao.UserRepository
 }
@@ -293,12 +293,12 @@ func (s *Service) matchOrCreate(ctx context.Context, claims idClaims) (*model.Us
 	pw := make([]byte, 24)
 	_, _ = rand.Read(pw)
 	user := &model.User{
-		Username:    username,
-		Email:       claims.Email,
-		Nickname:    claims.Name,
-		Role:        "user",
-		Status:      "active",
-		OidcSub:     claims.Sub,
+		Username: username,
+		Email:    claims.Email,
+		Nickname: claims.Name,
+		Role:     "user",
+		Status:   "active",
+		OidcSub:  claims.Sub,
 	}
 	if claims.Email == "" {
 		// email 唯一索引不接受空串重复：以 sub 生成占位

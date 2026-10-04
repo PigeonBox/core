@@ -105,8 +105,8 @@ func userSettingsFromYAML() *UserSettings {
 }
 
 type Service struct {
-	reconfigurersMu sync.RWMutex
-	reconfigurers   *ReconfigureHooks
+	reconfigurersMu    sync.RWMutex
+	reconfigurers      *ReconfigureHooks
 	userRepo           *dao.UserRepository
 	fileCodeRepo       *dao.FileCodeRepository
 	transferLogRepo    *dao.TransferLogRepository
@@ -1129,7 +1129,7 @@ func (s *Service) GetSystemLogs(ctx context.Context, level string, page, pageSiz
 		total = 1
 	}
 
-	_ = page    // 参数已用于说明分页意图；当前实现为占位数据
+	_ = page // 参数已用于说明分页意图；当前实现为占位数据
 	_ = pageSize
 
 	return logs, total, nil

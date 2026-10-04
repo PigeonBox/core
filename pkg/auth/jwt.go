@@ -35,7 +35,7 @@ type Claims struct {
 
 // sessionExpiry 会话时长，默认 7 天。
 // 管理后台"用户配置→会话过期时间"通过 SetSessionExpiry 在线调整
-//（此前硬编码 168h，配置项形同虚设）。
+// （此前硬编码 168h，配置项形同虚设）。
 var sessionExpiry = 7 * 24 * time.Hour
 
 // SetSessionExpiry 设置会话时长；<=0 视为非法，保留原值。
