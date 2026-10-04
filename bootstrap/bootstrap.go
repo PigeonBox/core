@@ -1071,9 +1071,20 @@ func publicConfigHandler(ctx context.Context, c *app.RequestContext) {
 	if ok, err := publicSetupSvc.IsSystemInitialized(ctx); err == nil {
 		initialized = ok
 	}
+	// 站名/描述走生效值：管理后台"站点配置"持久化段优先，
+	// 无记录回退 yaml app 段（修复首页展示 yaml 旧品牌名的分裂）
+	name, description := config.App.Name, config.App.Description
+	if cfg, err := adminApp.Default().GetConfig(ctx); err == nil && cfg != nil {
+		if cfg.Base.Name != "" {
+			name = cfg.Base.Name
+		}
+		if cfg.Base.Description != "" {
+			description = cfg.Base.Description
+		}
+	}
 	resp.Success(c, map[string]interface{}{
-		"name":        config.App.Name,
-		"description": config.App.Description,
+		"name":        name,
+		"description": description,
 		"uploadSize":  config.Upload.UploadSize,
 		"enableChunk": config.Upload.EnableChunk,
 		"openUpload":  config.Upload.OpenUpload,
