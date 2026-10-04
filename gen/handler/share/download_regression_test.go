@@ -55,7 +55,9 @@ func newDownloadTestEnv(t *testing.T) {
 	db.SetDatabaseInstance(g)
 	t.Cleanup(func() { db.SetDatabaseInstance(nil) })
 	transfer.SetSink(daoTransferLogSink{})
-	t.Cleanup(func() { transfer.SetSink(nil) })
+	// 先排水再撤 sink/删 TempDir：Record 异步落盘持有 DB 句柄，直删目录会竞争
+	// （历史摇摆：readonly database / TempDir RemoveAll directory not empty）
+	t.Cleanup(func() { transfer.Flush(3 * time.Second); transfer.SetSink(nil) })
 
 	dataPath := t.TempDir()
 	fullPath := filepath.Join(dataPath, regRelPath)

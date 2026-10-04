@@ -37,7 +37,7 @@ func TestRecord_PersistsAttribution(t *testing.T) {
 	db.SetDatabaseInstance(g)
 	t.Cleanup(func() { db.SetDatabaseInstance(nil) })
 	SetSink(daoSink{})
-	t.Cleanup(func() { SetSink(nil) })
+	t.Cleanup(func() { Flush(3 * time.Second); SetSink(nil) })
 
 	uid, keyID := uint(9), uint(4)
 	Record(Entry{

@@ -10,6 +10,7 @@ package transfer
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"go.uber.org/zap"
@@ -25,8 +26,26 @@ type Sink interface {
 
 var sink Sink // nil = 未装配，记录丢弃（记录绝不影响主流程）
 
+// inFlight 在飞落盘计数；Flush 排水用（Record 与 Flush 一一配对）。
+var inFlight sync.WaitGroup
+
 // SetSink 注入落盘实现（bootstrap 装配调用；须先于任何服务流量）。
 func SetSink(s Sink) { sink = s }
+
+// Flush 等待在飞日志落盘，至多等待 d。优雅停机与测试清理用——
+// 异步 goroutine 持有 DB/文件句柄写盘，调用方（如测试的 TempDir 清理）
+// 必须先排水再释放底层资源，否则出现"readonly database/目录非空"竞争。
+func Flush(d time.Duration) {
+	done := make(chan struct{})
+	go func() {
+		inFlight.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(d):
+	}
+}
 
 // 操作类型常量（与 model.TransferLog.Operation 语义一致）
 const (
@@ -50,7 +69,9 @@ type Entry struct {
 
 // Record 异步记录一次传输（GoSafe 兜底 panic，不影响主流程）。
 func Record(e Entry) {
+	inFlight.Add(1)
 	async.GoSafe(func() {
+		defer inFlight.Done()
 		s := sink
 		if s == nil {
 			return
