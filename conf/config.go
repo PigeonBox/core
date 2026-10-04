@@ -36,7 +36,8 @@ type AppConfiguration struct {
 type FederationConfig struct {
 	// Enabled 总开关（默认 false）。env: FCB_FEDERATION_ENABLED
 	Enabled bool `mapstructure:"enabled"`
-	// RegistryURL 联邦注册中心基址，如 http://p2p:12346。env: FCB_FEDERATION_REGISTRY_URL
+	// RegistryURL 联邦注册中心基址，如 http://p2p:12346；支持逗号分隔多主备
+	// （写路径全推、读路径依次 failover）。env: FCB_FEDERATION_REGISTRY_URL
 	RegistryURL string `mapstructure:"registry_url"`
 	// PublicURL 本站对外可达基址（公告给取件方直连下载用；必须公网/局域网可达，
 	// 一般与 server.base_url 一致）。env: FCB_FEDERATION_PUBLIC_URL

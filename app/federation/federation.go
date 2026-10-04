@@ -19,6 +19,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/filescodebox/core/conf"
@@ -30,6 +31,8 @@ const (
 	// nodeTTL 节点租约时长；heartbeatInterval 为其一半，租约平滑续期。
 	nodeTTL           = time.Hour
 	heartbeatInterval = 30 * time.Minute
+	// retryBackoff 心跳失败后的短退避（registry 抖动/重启自愈窗口）。
+	retryBackoff = 15 * time.Second
 	// announceHorizon 公告滚动视界：registry 公告 max_ttl 默认 168h，
 	// 长效分享（含永久）按此视界滚动重公告，实际不过期。
 	announceHorizon = 24 * time.Hour
@@ -46,17 +49,20 @@ type entry struct {
 // Service federation 客户端服务。实现 share.FederationNotifier 窄接口
 // （ShareCreated/ShareDeleted），由 bootstrap 注入 share service。
 type Service struct {
-	cfg    conf.FederationConfig
-	regURL string
-	nodeID string
-	priv   ed25519.PrivateKey
-	name   string
-	client *registryClient
+	cfg conf.FederationConfig
+	// regURLs 主备 registry 列表(逗号分隔配置): 写路径全推,读路径依次
+	regURLs []string
+	nodeID  string
+	priv    ed25519.PrivateKey
+	name    string
+	clients []*registryClient
 
 	mu      sync.Mutex
 	entries map[string]*entry // code_hash → entry
 	stop    chan struct{}
 	stopped sync.Once
+
+	tickOK atomic.Bool // 最近一次心跳结果(退避调度依据)
 }
 
 // NewService 构造并加载/生成节点身份密钥。仅在 federation.enabled 时调用；
@@ -71,8 +77,20 @@ func NewService(cfg conf.FederationConfig, nodeName string) (*Service, error) {
 	if strings.TrimSpace(cfg.PublicURL) == "" {
 		return nil, errors.New("federation.public_url 不能为空（公告给取件方的本站可达地址）")
 	}
-	if u, err := url.Parse(cfg.RegistryURL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return nil, fmt.Errorf("federation.registry_url 非法: %q", cfg.RegistryURL)
+	var bases []string
+	for _, raw := range strings.Split(cfg.RegistryURL, ",") {
+		raw = strings.TrimSpace(strings.TrimRight(raw, "/"))
+		if raw == "" {
+			continue
+		}
+		u, err := url.Parse(raw)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return nil, fmt.Errorf("federation.registry_url 非法: %q", raw)
+		}
+		bases = append(bases, raw)
+	}
+	if len(bases) == 0 {
+		return nil, errors.New("federation.registry_url 不能为空")
 	}
 	if cfg.NodeKeyPath == "" {
 		cfg.NodeKeyPath = "data/federation.key"
@@ -84,18 +102,21 @@ func NewService(cfg conf.FederationConfig, nodeName string) (*Service, error) {
 	if err != nil {
 		return nil, fmt.Errorf("节点身份密钥: %w", err)
 	}
-	base := strings.TrimRight(cfg.RegistryURL, "/")
 	name := nodeName
 	if name == "" {
 		name = defaultName
 	}
+	clients := make([]*registryClient, 0, len(bases))
+	for _, b := range bases {
+		clients = append(clients, newRegistryClient(b))
+	}
 	return &Service{
 		cfg:     cfg,
-		regURL:  base,
+		regURLs: bases,
 		nodeID:  hex.EncodeToString(priv.Public().(ed25519.PublicKey)),
 		priv:    priv,
 		name:    name,
-		client:  newRegistryClient(base),
+		clients: clients,
 		entries: make(map[string]*entry),
 		stop:    make(chan struct{}),
 	}, nil
@@ -114,7 +135,8 @@ func (s *Service) Start() {
 
 func (s *Service) loop() {
 	s.tick()
-	t := time.NewTicker(heartbeatInterval)
+	next := heartbeatInterval
+	t := time.NewTimer(next)
 	defer t.Stop()
 	for {
 		select {
@@ -122,21 +144,42 @@ func (s *Service) loop() {
 			return
 		case <-t.C:
 			s.tick()
+			// 心跳失败短退避(15s)重试,成功恢复常规周期——
+			// 固定 30m tick 意味着 registry 抖动后联邦盲窗最长半小时(M4 故障演练修)
+			next = heartbeatInterval
+			if !s.lastTickOK() {
+				next = retryBackoff
+			}
+			t.Reset(next)
 		}
 	}
 }
 
-// tick 心跳续租 + 全量重公告。失败不致命：下一轮重试，registry 条目
-// 带 TTL 自动过期，最坏情况是联邦可见性延迟一个心跳周期。
+// tick 心跳续租 + 全量重公告。多 registry: 写路径全推（主备各自持有全量
+// 公告，任一存活即服务解析）；≥1 成功视为健康。失败不致命：短退避重试，
+// registry 条目带 TTL 自动过期，最坏情况是联邦可见性延迟一个退避周期。
 func (s *Service) tick() {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	if err := s.client.register(ctx, s.nodeID, s.priv, s.cfg.PublicURL, s.name, nodeTTL); err != nil {
-		logger.Warn("federation 注册/心跳失败(下轮重试)", zap.String("registry", s.regURL), zap.Error(err))
+	ok := 0
+	for i, cl := range s.clients {
+		if err := cl.register(ctx, s.nodeID, s.priv, s.cfg.PublicURL, s.name, nodeTTL); err != nil {
+			logger.Warn("federation 注册/心跳失败(15s 后重试)", zap.String("registry", s.regURLs[i]), zap.Error(err))
+			continue
+		}
+		ok++
+	}
+	if ok == 0 {
+		s.setLastTickOK(false)
 		return
 	}
+	s.setLastTickOK(true)
 	s.announceAll(ctx)
 }
+
+func (s *Service) setLastTickOK(ok bool) { s.tickOK.Store(ok) }
+
+func (s *Service) lastTickOK() bool { return s.tickOK.Load() }
 
 func (s *Service) announceAll(ctx context.Context) {
 	now := time.Now()
@@ -157,8 +200,15 @@ func (s *Service) announceAll(ctx context.Context) {
 		if d := time.Until(expires); d > announceHorizon {
 			expires = now.Add(announceHorizon)
 		}
-		if err := s.client.announce(ctx, s.nodeID, s.priv, hash, expires); err != nil {
-			logger.Warn("federation 公告待重推", zap.String("hash", shortHash(hash)), zap.Error(err))
+		delivered := 0
+		for _, cl := range s.clients {
+			if err := cl.announce(ctx, s.nodeID, s.priv, hash, expires); err != nil {
+				continue
+			}
+			delivered++
+		}
+		if delivered == 0 {
+			logger.Warn("federation 公告待重推", zap.String("hash", shortHash(hash)))
 			continue
 		}
 		// confirmed 写回必须持锁:live 里的 entry 指针与 ShareCreated 的异步
@@ -171,7 +221,7 @@ func (s *Service) announceAll(ctx context.Context) {
 		ok++
 	}
 	if len(live) > 0 {
-		logger.Info("federation 公告同步完成", zap.Int("total", len(live)), zap.Int("ok", ok))
+		logger.Info("federation 公告同步完成", zap.Int("total", len(live)), zap.Int("ok", ok), zap.Int("registries", len(s.clients)))
 	}
 }
 
@@ -194,8 +244,15 @@ func (s *Service) ShareCreated(code string, expiresAt *time.Time) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if err := s.client.announce(ctx, s.nodeID, s.priv, hash, expires); err != nil {
-			logger.Warn("federation 公告失败(心跳兜底重推)", zap.String("hash", shortHash(hash)), zap.Error(err))
+		delivered := 0
+		for _, cl := range s.clients {
+			if err := cl.announce(ctx, s.nodeID, s.priv, hash, expires); err != nil {
+				continue
+			}
+			delivered++
+		}
+		if delivered == 0 {
+			logger.Warn("federation 公告失败(心跳兜底重推)", zap.String("hash", shortHash(hash)))
 			return
 		}
 		s.mu.Lock()
@@ -217,8 +274,10 @@ func (s *Service) ShareDeleted(code string) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if err := s.client.revoke(ctx, s.nodeID, s.priv, hash); err != nil {
-			logger.Debug("federation 撤销失败(条目 TTL 自动过期)", zap.Error(err))
+		for _, cl := range s.clients {
+			if err := cl.revoke(ctx, s.nodeID, s.priv, hash); err != nil {
+				logger.Debug("federation 撤销失败(条目 TTL 自动过期)", zap.Error(err))
+			}
 		}
 	}()
 }
@@ -232,12 +291,22 @@ type ResolveInfo struct {
 	SizeHint  int64     `json:"size_hint"`
 }
 
-// Resolve 转查 registry。未接入联邦返回 (nil, nil)——调用方（resolve 代理
-// handler）以 available:false 回给前端，不区分"未启用/不存在"（降探测面）。
+// Resolve 转查 registry（读路径依次主→备,首个命中即返回）。
+// 全部未接入返回 (nil, nil)——调用方（resolve 代理 handler）以 available:false
+// 回给前端，不区分"未启用/不存在"（降探测面）。
 func (s *Service) Resolve(code string) (*ResolveInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	return s.client.resolve(ctx, code)
+	for _, cl := range s.clients {
+		info, err := cl.resolve(ctx, code)
+		if err != nil {
+			continue // 单 registry 故障不阻断,查下一家
+		}
+		if info != nil {
+			return info, nil
+		}
+	}
+	return nil, nil
 }
 
 // Stop 停止心跳循环并注销节点（best-effort；测试与优雅停机用）。
@@ -245,8 +314,10 @@ func (s *Service) Stop() {
 	s.stopped.Do(func() { close(s.stop) })
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	if err := s.client.deregister(ctx, s.nodeID, s.priv); err != nil {
-		logger.Debug("federation 注销失败(租约 TTL 自动过期)", zap.Error(err))
+	for _, cl := range s.clients {
+		if err := cl.deregister(ctx, s.nodeID, s.priv); err != nil {
+			logger.Debug("federation 注销失败(租约 TTL 自动过期)", zap.Error(err))
+		}
 	}
 }
 

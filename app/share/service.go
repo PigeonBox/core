@@ -927,13 +927,29 @@ func (s *Service) BatchDeleteUserShares(ctx context.Context, userID uint, codes 
 // BatchExtendUserShares 批量延期
 func (s *Service) BatchExtendUserShares(ctx context.Context, userID uint, codes []string, newExpireAt *time.Time) (int, error) {
 	s.ensureRepository()
-	return s.fileCodeRepo.BatchExtendByCodes(ctx, userID, codes, newExpireAt)
+	n, err := s.fileCodeRepo.BatchExtendByCodes(ctx, userID, codes, newExpireAt)
+	if err == nil && n > 0 {
+		// 联邦重公告(延期改变公告的 expires_at;误推未延期码由心跳按 entries 重新对齐)
+		for _, code := range codes {
+			s.federationCreated(code, newExpireAt)
+		}
+	}
+	return n, err
 }
 
 // RestoreUserShare 恢复软删除的分享
 func (s *Service) RestoreUserShare(ctx context.Context, userID uint, code string) error {
 	s.ensureRepository()
-	return s.fileCodeRepo.RestoreByCode(ctx, userID, code)
+	if err := s.fileCodeRepo.RestoreByCode(ctx, userID, code); err != nil {
+		return err
+	}
+	// 联邦重新公告(恢复=此前撤销的口令路由重新上线;查不到记录则跳过)
+	if s.federation != nil {
+		if file, err := s.fileCodeRepo.GetByCode(ctx, code); err == nil {
+			s.federationCreated(file.Code, file.ExpiredAt)
+		}
+	}
+	return nil
 }
 
 // HardDeleteUserShare 永久删除软删除的分享

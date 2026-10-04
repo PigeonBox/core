@@ -1,7 +1,9 @@
 package federation
 
 import (
+	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -51,6 +53,7 @@ type fakeRegistry struct {
 	nodes     map[string]registerReq
 	announces map[string]announceReq
 	revoked   []string
+	fail      bool // 置 true 时所有写入返回 500(模拟宕机)
 }
 
 func newFakeRegistry(t *testing.T) (*fakeRegistry, *httptest.Server) {
@@ -73,6 +76,10 @@ func newFakeRegistry(t *testing.T) (*fakeRegistry, *httptest.Server) {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/nodes/register", func(w http.ResponseWriter, r *http.Request) {
+		if f.fail {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
 		var req registerReq
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		verify(req.NodeID, req.Sig, req.NodeID, req.URL, req.Name, req.Version,
@@ -83,6 +90,10 @@ func newFakeRegistry(t *testing.T) (*fakeRegistry, *httptest.Server) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"node_id": req.NodeID})
 	})
 	mux.HandleFunc("POST /v1/announces", func(w http.ResponseWriter, r *http.Request) {
+		if f.fail {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
 		var req announceReq
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		verify(req.NodeID, req.Sig, req.NodeID, req.CodeHash, fmt.Sprint(req.ExpiresAt), fmt.Sprint(req.SizeHint), fmt.Sprint(req.TS))
@@ -328,4 +339,147 @@ func equalKeys(a, b ed25519.PrivateKey) bool {
 		}
 	}
 	return true
+}
+
+// TestRegistryRestartSelfHeal registry 重启丢态后,一次 tick 应重注册+全量补公告。
+func TestRegistryRestartSelfHeal(t *testing.T) {
+	fake, srv := newFakeRegistry(t)
+	s := newTestService(t, srv.URL)
+	code := "selfheal2-code-12345678"
+	s.ShareCreated(code, nil)
+	waitFor(t, 2*time.Second, func() bool {
+		fake.mu.Lock()
+		defer fake.mu.Unlock()
+		return len(fake.announces) == 1
+	})
+
+	// 模拟 registry 重启(内存态全丢)
+	fake.mu.Lock()
+	fake.nodes = map[string]registerReq{}
+	fake.announces = map[string]announceReq{}
+	fake.mu.Unlock()
+
+	s.tick()
+	fake.mu.Lock()
+	registered, announced := len(fake.nodes), len(fake.announces)
+	fake.mu.Unlock()
+	if registered != 1 || announced != 1 {
+		t.Fatalf("重启自愈失败: nodes=%d announces=%d", registered, announced)
+	}
+}
+
+// TestTickBackoffFlag 心跳失败置退避标志,成功清除(loop 依据它切 15s/30m 周期)。
+func TestTickBackoffFlag(t *testing.T) {
+	fake, srv := newFakeRegistry(t)
+	s := newTestService(t, srv.URL)
+
+	fake.mu.Lock()
+	fake.fail = true
+	fake.mu.Unlock()
+	s.tick()
+	if s.lastTickOK() {
+		t.Fatal("失败后 lastTickOK 应为 false")
+	}
+
+	fake.mu.Lock()
+	fake.fail = false
+	fake.mu.Unlock()
+	s.tick()
+	if !s.lastTickOK() {
+		t.Fatal("成功后 lastTickOK 应为 true")
+	}
+}
+
+// ---- 多 registry failover ----
+
+// TestMultiRegistryFailover 主备双 registry: 主宕机时公告/解析落在备；
+// 主恢复前 resolve 依次查（此处验证"主 500 → 备命中"路径）。
+func TestMultiRegistryFailover(t *testing.T) {
+	primary, srvP := newFakeRegistry(t)
+	secondary, srvS := newFakeRegistry(t)
+	s, err := NewService(conf.FederationConfig{
+		Enabled:                true,
+		RegistryURL:            srvP.URL + "," + srvS.URL,
+		PublicURL:              "https://node-a.example.com",
+		NodeKeyPath:            filepath.Join(t.TempDir(), "federation.key"),
+		AnnounceMinEntropyBits: 40,
+	}, "测试站")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.Stop)
+	if len(s.clients) != 2 {
+		t.Fatalf("应构造 2 个 registry 客户端,得到 %d", len(s.clients))
+	}
+
+	// 主宕机:公告只应落在备
+	primary.mu.Lock()
+	primary.fail = true
+	primary.mu.Unlock()
+	code := "failover-code-1234567890"
+	s.ShareCreated(code, nil)
+	waitFor(t, 2*time.Second, func() bool {
+		secondary.mu.Lock()
+		defer secondary.mu.Unlock()
+		return len(secondary.announces) == 1
+	})
+	primary.mu.Lock()
+	nP := len(primary.announces)
+	primary.mu.Unlock()
+	if nP != 0 {
+		t.Fatalf("主宕机期间不应有公告,实际 %d", nP)
+	}
+
+	// resolve 打到备:应命中(fake 的 resolve 依赖节点在册,tick 向备注册+补公告)
+	s.tick()
+	info, err := s.Resolve(code)
+	if err != nil || info == nil || info.URL != "https://node-a.example.com" {
+		t.Fatalf("备解析失败: info=%+v err=%v", info, err)
+	}
+
+	// tick: 主备都注册(主仍失败不阻断),公告补推到备
+	s.tick()
+	secondary.mu.Lock()
+	registered := len(secondary.nodes)
+	secondary.mu.Unlock()
+	if registered != 1 {
+		t.Fatalf("备应收到注册,实际 %d", registered)
+	}
+}
+
+// TestMultiRegistryResolveOrder 主备都健康且只有备有公告时,主 miss 应落到备命中。
+func TestMultiRegistryResolveOrder(t *testing.T) {
+	_, srvP := newFakeRegistry(t)
+	secondary, srvS := newFakeRegistry(t)
+	s, err := NewService(conf.FederationConfig{
+		Enabled:                true,
+		RegistryURL:            srvP.URL + "," + srvS.URL,
+		PublicURL:              "https://node-a.example.com",
+		NodeKeyPath:            filepath.Join(t.TempDir(), "federation.key"),
+		AnnounceMinEntropyBits: 40,
+	}, "测试站")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.Stop)
+
+	// 仅向备公告(直接操作其 client);fake 的 resolve 依赖节点在册,预置一条
+	secondary.mu.Lock()
+	secondary.nodes[s.nodeID] = registerReq{NodeID: s.nodeID, URL: "https://node-a.example.com"}
+	secondary.mu.Unlock()
+	hash := codeHashOf("order-code-1234567890")
+	expires := time.Now().Add(time.Hour)
+	if err := s.clients[1].announce(context.Background(), s.nodeID, s.priv, hash, expires); err != nil {
+		t.Fatal(err)
+	}
+	info, err := s.Resolve("order-code-1234567890")
+	if err != nil || info == nil {
+		t.Fatalf("主 miss 后应在备命中: info=%+v err=%v", info, err)
+	}
+}
+
+// codeHashOf 与 client 侧 SHA-256 契约一致(测试本地实现,避免依赖未导出符号)。
+func codeHashOf(code string) string {
+	sum := sha256.Sum256([]byte(code))
+	return hex.EncodeToString(sum[:])
 }
