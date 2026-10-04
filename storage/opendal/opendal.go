@@ -52,6 +52,7 @@ const (
 	SchemeSFTP   Scheme = "sftp"
 	SchemeFTP    Scheme = "ftp"
 	SchemeHDFS   Scheme = "hdfs"
+	SchemeOneDrive Scheme = "onedrive"
 	SchemeMemory Scheme = "memory"
 )
 
@@ -64,12 +65,15 @@ const (
 // 原生驱动（oss.go/cos.go 用各厂商 native API）仍为可选扩展点：仅当需要
 // S3 兼容协议不覆盖的厂商私有功能时才值得实现。
 var supportedSchemes = map[Scheme]bool{
-	SchemeFS:     true,
-	SchemeS3:     true,
-	SchemeWebDAV: true,
-	SchemeFTP:    true,
-	SchemeSFTP:   true,
-	// azblob/hdfs/memory：未实现，需时实现 Driver 接口扩展
+	SchemeFS:       true,
+	SchemeS3:       true,
+	SchemeWebDAV:   true,
+	SchemeFTP:      true,
+	SchemeSFTP:     true,
+	SchemeAzBlob:   true,
+	SchemeHDFS:     true,
+	SchemeOneDrive: true,
+	// memory：未实现，需时实现 Driver 接口扩展
 }
 
 // Driver 远端 scheme（s3/webdav 等）的底层驱动接口。
@@ -187,6 +191,24 @@ func New(cfg Config) (*Operator, error) {
 		op.driver = d
 	case SchemeSFTP:
 		d, err := newSFTPDriver(cfg.Options)
+		if err != nil {
+			return nil, err
+		}
+		op.driver = d
+	case SchemeAzBlob:
+		d, err := newAzBlobDriver(cfg.Options)
+		if err != nil {
+			return nil, err
+		}
+		op.driver = d
+	case SchemeHDFS:
+		d, err := newHDFSDriver(cfg.Options)
+		if err != nil {
+			return nil, err
+		}
+		op.driver = d
+	case SchemeOneDrive:
+		d, err := newOneDriveDriver(cfg.Options)
 		if err != nil {
 			return nil, err
 		}

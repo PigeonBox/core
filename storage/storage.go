@@ -32,6 +32,9 @@ const (
 	StorageTypeFTP    StorageType = "ftp"
 	StorageTypeSFTP   StorageType = "sftp"
 	StorageTypeGCS    StorageType = "gcs"
+	StorageTypeAzBlob StorageType = "azureblob"
+	StorageTypeHDFS   StorageType = "hdfs"
+	StorageTypeOneDrv StorageType = "onedrive"
 )
 
 // FileOperationResult 文件操作结果
@@ -92,9 +95,11 @@ type StorageConfig struct {
 	// Root 远端根目录（webdav：所有对象挂其下，避免绝对路径写入；空 = "filecodebox"）
 	Root string
 
-	// FTP/SFTP/OneDrive 配置（W2-W4 存储驱动扩展；指针类型直接复用 conf 结构）
+	// FTP/SFTP/Azure Blob/HDFS/OneDrive 配置（存储驱动扩展；指针复用 conf 结构）
 	FTP      *conf.FTPConfig
 	SFTP     *conf.SFTPConfig
+	Azure    *conf.AzureBlobConfig
+	HDFS     *conf.HDFSConfig
 	OneDrive *conf.OneDriveConfig
 }
 
@@ -141,6 +146,8 @@ func ConfigFromConf(c *conf.StorageConfig, baseURL string) *StorageConfig {
 	}
 	cfg.FTP = c.FTP
 	cfg.SFTP = c.SFTP
+	cfg.Azure = c.AzureBlob
+	cfg.HDFS = c.HDFS
 	cfg.OneDrive = c.OneDrive
 	return cfg
 }
@@ -280,6 +287,48 @@ func buildOperator(cfg *StorageConfig) (*opendal.Operator, error) {
 				"root":        defaultRoot(cfg.SFTP.Root, "filecodebox"),
 			},
 		})
+	case StorageTypeAzBlob:
+		if cfg.Azure == nil || cfg.Azure.Account == "" || cfg.Azure.Container == "" {
+			return nil, fmt.Errorf("azureblob 配置不完整：account/container 必填")
+		}
+		return opendal.New(opendal.Config{
+			Scheme: opendal.SchemeAzBlob,
+			Options: map[string]string{
+				"account":   cfg.Azure.Account,
+				"container": cfg.Azure.Container,
+				"key":       cfg.Azure.Key,
+				"sas":       cfg.Azure.SAS,
+				"endpoint":  cfg.Azure.Endpoint,
+				"root":      defaultRoot(cfg.Azure.Root, "filecodebox"),
+			},
+		})
+	case StorageTypeHDFS:
+		if cfg.HDFS == nil || cfg.HDFS.Endpoint == "" {
+			return nil, fmt.Errorf("hdfs 配置不完整：endpoint（WebHDFS 根地址）必填")
+		}
+		return opendal.New(opendal.Config{
+			Scheme: opendal.SchemeHDFS,
+			Options: map[string]string{
+				"endpoint": cfg.HDFS.Endpoint,
+				"user":     cfg.HDFS.User,
+				"root":     defaultRoot(cfg.HDFS.Root, "filecodebox"),
+			},
+		})
+	case StorageTypeOneDrv:
+		if cfg.OneDrive == nil || cfg.OneDrive.ClientID == "" || cfg.OneDrive.RefreshToken == "" {
+			return nil, fmt.Errorf("onedrive 配置不完整：client_id/refresh_token 必填")
+		}
+		return opendal.New(opendal.Config{
+			Scheme: opendal.SchemeOneDrive,
+			Options: map[string]string{
+				"client_id":     cfg.OneDrive.ClientID,
+				"client_secret": cfg.OneDrive.ClientSecret,
+				"refresh_token": cfg.OneDrive.RefreshToken,
+				"tenant":        cfg.OneDrive.Tenant,
+				"drive_id":      cfg.OneDrive.DriveID,
+				"root":          defaultRoot(cfg.OneDrive.Root, "filecodebox"),
+			},
+		})
 	case StorageTypeGCS:
 		// GCS 走其 S3 兼容 XML 端点（需 HMAC 密钥：GCS 控制台 Settings→Interoperability）
 		opts, err := ResolveCloudProvider(StorageTypeGCS, cfg.Region, cfg.Bucket,
@@ -318,7 +367,8 @@ func defaultRoot(root, def string) string {
 // s3：凭据有效且桶存在；webdav：根路径可达（401 在此暴露）；local：路径可创建可写。
 func ProbeConfig(ctx context.Context, cfg *StorageConfig) error {
 	switch cfg.Type {
-	case StorageTypeS3, StorageTypeWebDAV, StorageTypeFTP, StorageTypeSFTP, StorageTypeGCS:
+	case StorageTypeS3, StorageTypeWebDAV, StorageTypeFTP, StorageTypeSFTP, StorageTypeGCS,
+		StorageTypeAzBlob, StorageTypeHDFS, StorageTypeOneDrv:
 		op, err := buildOperator(cfg)
 		if err != nil {
 			return err
