@@ -9,7 +9,7 @@ package bootstrap
 //	)
 //
 // 兼容性:Bootstrap(configPath) 等价于无选项的 BootstrapWithOptions,
-// 既有调用方(server、filecodebox-fnos)不受影响。
+// 既有调用方(server、fnos)不受影响。
 type Option func(*Options)
 
 // Options 控制 Bootstrap 的行为。零值字段取默认。
@@ -17,7 +17,7 @@ type Options struct {
 	// StaticDir 是前端构建产物的根目录。
 	// 该目录需包含 index.html 与 assets/(Vite 构建产物布局)。
 	// 默认 "./static"(相对进程工作目录)。
-	// 典型消费者:filecodebox-fnos 单容器部署时把前端内嵌到自定义路径。
+	// 典型消费者:fnos 单容器部署时把前端内嵌到自定义路径。
 	StaticDir string
 }
 

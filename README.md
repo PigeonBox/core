@@ -3,7 +3,7 @@
 FileCodeBox 业务核心库:10 个域服务 + 数据访问 + 存储抽象 + HTTP/RPC 装配(bootstrap)。**不含 main、不含静态资源、不含配置文件**——本模块定位是**被复用的库**,消费方:
 
 - [`filescodebox/server`](https://github.com/filescodebox/server) —— 标准独立部署(自托管)
-- `filecodebox-fnos` —— 飞牛 fnOS 应用(单容器库式调用)
+- `fnos` —— 飞牛 fnOS 应用(单容器库式调用)
 
 ## 结构
 
