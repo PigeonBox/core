@@ -1,0 +1,106 @@
+// files.go — 直传落盘与下载取流的存储收口（share 域存储接缝）。
+//
+// HTTP 适配层（gen handler）不得直连 storage：磁盘布局（UUID 名 + 日期目录）、
+// 「本地后端可绝对路径直传」「s3 可预签名直下」的分支知识全部封在本文件，
+// 适配层只拿到 FilePayload（读流或本地绝对路径）与最终路径/大小。
+package share
+
+import (
+	"context"
+	"errors"
+	"io"
+	"mime/multipart"
+	"time"
+
+	"github.com/filescodebox/core/pkg/utils"
+	"github.com/filescodebox/core/repo/db/model"
+	"github.com/filescodebox/core/storage"
+)
+
+// FilePayload 下载取流载荷。LocalAbs 非空表示本地后端，调用方可走绝对路径
+// 直传（原生 Range/断点续传）；否则经 ReadCloser 流式中转（读至 EOF 关闭）。
+type FilePayload struct {
+	ReadCloser io.ReadCloser
+	Size       int64
+	LocalAbs   string
+}
+
+// ErrShareFileNotFound 分享或其子文件不存在（调用方统一 404 语义，防探测）。
+var ErrShareFileNotFound = errors.New("share file not found")
+
+// SaveUploadFile 直传文件落盘。originalFilename 仅用于扩展名推导，
+// 磁盘名由 UploadObjectRelPath 统一生成；返回落盘路径、实际大小与存储层
+// 计算的文件哈希（供秒传/去重，可能为空），调用方据此创建分享记录。
+func (s *Service) SaveUploadFile(ctx context.Context, fh *multipart.FileHeader, originalFilename string) (string, int64, string, error) {
+	st, err := s.storageClient()
+	if err != nil {
+		return "", 0, "", err
+	}
+	result, err := st.SaveFile(ctx, fh, utils.UploadObjectRelPath(originalFilename))
+	if err != nil {
+		return "", 0, "", err
+	}
+	return result.FilePath, result.FileSize, result.FileHash, nil
+}
+
+// OpenShareDownload 单文件下载取流（鉴权与扣次由调用方先行完成）。
+func (s *Service) OpenShareDownload(ctx context.Context, filePath string) (*FilePayload, error) {
+	st, err := s.storageClient()
+	if err != nil {
+		return nil, err
+	}
+	if concrete, ok := st.(*storage.StorageService); ok {
+		if abs := concrete.LocalAbsPath(filePath); abs != "" {
+			return &FilePayload{LocalAbs: abs}, nil
+		}
+	}
+	rc, size, err := st.GetFileReader(ctx, filePath)
+	if err != nil {
+		return nil, err
+	}
+	return &FilePayload{ReadCloser: rc, Size: size}, nil
+}
+
+// OpenChildDownload 多文件分享的子文件取流。不存在/不属于该分享返回
+// ErrShareFileNotFound；读流失败原样返回（调用方区分 404 与 500）。
+func (s *Service) OpenChildDownload(ctx context.Context, code string, fileID uint) (*model.FileCode, *model.FileCodeFile, *FilePayload, error) {
+	fc, child, err := s.GetShareChild(ctx, code, fileID)
+	if err != nil || fc == nil || child == nil {
+		return nil, nil, nil, ErrShareFileNotFound
+	}
+	payload, err := s.OpenShareDownload(ctx, child.FilePath)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return fc, child, payload, nil
+}
+
+// PresignDownloadURL s3 直下预签名 GET（download.s3_direct_download 开关的
+// 执行段）。后端不支持预签名或签发失败返回 error，调用方回退服务端中转。
+func (s *Service) PresignDownloadURL(ctx context.Context, filePath string, ttl time.Duration) (string, error) {
+	st, err := s.storageClient()
+	if err != nil {
+		return "", err
+	}
+	concrete, ok := st.(*storage.StorageService)
+	if !ok {
+		return "", errors.New("presign not supported by current backend")
+	}
+	return concrete.PresignGetURL(ctx, filePath, ttl)
+}
+
+// storageClient 取统一存储实例。未注入（测试/降级路径）时懒加载本地后端兜底，
+// 参数与历史 handler 兜底一致（./data/uploads），保证行为不漂移。
+func (s *Service) storageClient() (storage.StorageInterface, error) {
+	if s.storage != nil {
+		return s.storage, nil
+	}
+	s.fallbackOnce.Do(func() {
+		s.fallbackStorage = storage.NewStorageService(&storage.StorageConfig{
+			Type:     storage.StorageTypeLocal,
+			DataPath: "./data/uploads",
+			BaseURL:  "http://localhost:12345",
+		})
+	})
+	return s.fallbackStorage, nil
+}

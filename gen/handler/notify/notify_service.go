@@ -8,20 +8,14 @@ import (
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
-	"gorm.io/gorm"
 
+	"github.com/filescodebox/contracts/errcode"
 	notifymodel "github.com/filescodebox/contracts/gen/notify"
 	notifyapp "github.com/filescodebox/core/app/notify"
-	"github.com/filescodebox/contracts/errcode"
 	"github.com/filescodebox/core/pkg/resp"
 )
 
 var notifySvc *notifyapp.Service
-
-// SetDB 注入 DB（bootstrap 时调用；保留签名兼容，内部走全局 db.GetDB()）
-func SetDB(db *gorm.DB) {
-	notifySvc = notifyapp.NewService()
-}
 
 func getService() *notifyapp.Service {
 	if notifySvc == nil {

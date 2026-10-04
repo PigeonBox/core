@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"html"
 	"io"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -26,23 +25,12 @@ import (
 	"github.com/filescodebox/core/pkg/transfer"
 	"github.com/filescodebox/core/pkg/utils"
 	"github.com/filescodebox/core/repo/db/model"
-	"github.com/filescodebox/core/storage"
-	"github.com/google/uuid"
 )
 
 var shareSvc *shareService.Service
-var storageSvc storage.StorageInterface
 
 // 配置常量（应从配置读取，这里使用默认值）
-const (
-	defaultStoragePath = "./data/uploads"
-	defaultBaseURL     = "http://localhost:12345"
-)
-
-// SetStorage 注入统一存储实例（bootstrap 调用；消除与 chunk 单例的路径基分歧）
-func SetStorage(st storage.StorageInterface) {
-	storageSvc = st
-}
+const defaultBaseURL = "http://localhost:12345"
 
 // SetShareService 注入共享的 share service 实例（bootstrap 调用）。
 // 回归（治理 2026-10-03）：此前未注入，/share/text|file|select|download 走
@@ -52,20 +40,10 @@ func SetShareService(s *shareService.Service) {
 	shareSvc = s
 }
 
-func getStorageService() storage.StorageInterface {
-	if storageSvc == nil {
-		storageSvc = storage.NewStorageService(&storage.StorageConfig{
-			Type:     storage.StorageTypeLocal,
-			DataPath: defaultStoragePath,
-			BaseURL:  defaultBaseURL,
-		})
-	}
-	return storageSvc
-}
-
 func getShareService() *shareService.Service {
 	if shareSvc == nil {
-		shareSvc = shareService.NewService(defaultBaseURL, getStorageService())
+		// 兜底实例仅测试/降级路径可达：未注入存储时由 app 层懒加载本地后端
+		shareSvc = shareService.NewService(defaultBaseURL, nil)
 	}
 	return shareSvc
 }
@@ -278,8 +256,6 @@ func ShareFile(ctx context.Context, c *app.RequestContext) {
 
 	// 4. 生成唯一文件名（原始文件名消毒后仅作展示存储，磁盘名用 UUID）
 	originalFilename := utils.SanitizeFileName(file.Filename)
-	fileExt := filepath.Ext(originalFilename)
-	uuidFileName := uuid.New().String() + fileExt
 
 	// 4.5 内容安全校验：黑名单 + 白名单优先 + 魔数（修复：直传分享此前完全绕过
 	// 扩展名检查，与 chunk/presign 通道防护不一致；魔数拦截"改扩展名"伪装）
@@ -304,19 +280,8 @@ func ShareFile(ctx context.Context, c *app.RequestContext) {
 		}
 	}
 
-	// 5. 生成存储路径（按日期分目录）
-	now := time.Now()
-	relativePath := filepath.Join(
-		"uploads",
-		now.Format("2006"),
-		now.Format("01"),
-		now.Format("02"),
-	)
-	savePath := filepath.Join(relativePath, uuidFileName)
-
-	// 6. 保存文件到存储
-	storageSvc := getStorageService()
-	result, err := storageSvc.SaveFile(ctx, file, savePath)
+	// 5+6. 落盘（磁盘布局与存储操作收口 app/share，HTTP 适配层不直连 storage）
+	filePath, fileSize, fileHash, err := getShareService().SaveUploadFile(ctx, file, originalFilename)
 	if err != nil {
 		c.JSON(consts.StatusInternalServerError, map[string]interface{}{
 			"code":    500,
@@ -377,8 +342,8 @@ func ShareFile(ctx context.Context, c *app.RequestContext) {
 	// 11. 构建分享请求（encrypted 于 4.5 处解析；E2E 密文分享）
 	shareReq := &shareService.ShareFileReq{
 		Channel:      "direct",
-		FilePath:     result.FilePath,
-		Size:         result.FileSize,
+		FilePath:     filePath,
+		Size:         fileSize,
 		Text:         originalFilename, // 存储原始文件名
 		ExpiredAt:    expireTime,
 		ExpiredCount: expireCount,
@@ -387,7 +352,7 @@ func ShareFile(ctx context.Context, c *app.RequestContext) {
 		UserID:       userID,
 		UploadType:   uploadType,
 		OwnerIP:      ownerIP,
-		FileHash:     result.FileHash,
+		FileHash:     fileHash,
 		Encrypted:    encryptedEarly,
 		CustomCode:   customCode,
 	}
@@ -893,13 +858,11 @@ func DownloadFile(ctx context.Context, c *app.RequestContext) {
 	// 真预签名时 302 到短时效预签名 GET，下载流量不经过服务器。
 	// 访问校验/密码/次数扣减均已在上方完成；不支持或签发失败则回退服务端中转。
 	if s3DirectDownloadEnabled() {
-		if concrete, ok := getStorageService().(*storage.StorageService); ok {
-			if u, perr := concrete.PresignGetURL(ctx, filePath, 10*time.Minute); perr == nil {
-				logTransfer()
-				c.Header("Cache-Control", "no-store")
-				c.Redirect(consts.StatusFound, []byte(u))
-				return
-			}
+		if u, perr := getShareService().PresignDownloadURL(ctx, filePath, 10*time.Minute); perr == nil {
+			logTransfer()
+			c.Header("Cache-Control", "no-store")
+			c.Redirect(consts.StatusFound, []byte(u))
+			return
 		}
 	}
 
@@ -912,17 +875,7 @@ func DownloadFile(ctx context.Context, c *app.RequestContext) {
 
 	// 本地后端：直接 c.File（原生 Range/断点续传/MIME 推断；P3 下载断点续传）。
 	// 远端后端无本地路径，回退下方流式中转（S3 直下开关可用时流量不经服务器）。
-	if concrete, ok := getStorageService().(*storage.StorageService); ok {
-		if abs := concrete.LocalAbsPath(filePath); abs != "" {
-			logTransfer()
-			c.Header("Content-Type", "application/octet-stream")
-			c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, fileName))
-			c.File(abs)
-			return
-		}
-	}
-
-	reader, fileSize, err := getStorageService().GetFileReader(ctx, filePath)
+	payload, err := getShareService().OpenShareDownload(ctx, filePath)
 	if err != nil {
 		c.JSON(consts.StatusInternalServerError, map[string]interface{}{
 			"code":    500,
@@ -930,17 +883,24 @@ func DownloadFile(ctx context.Context, c *app.RequestContext) {
 		})
 		return
 	}
+	if payload.LocalAbs != "" {
+		logTransfer()
+		c.Header("Content-Type", "application/octet-stream")
+		c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, fileName))
+		c.File(payload.LocalAbs)
+		return
+	}
 
 	logTransfer()
 	c.Header("Content-Type", "application/octet-stream")
 	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, fileName))
-	c.Header("Content-Length", fmt.Sprintf("%d", fileSize))
+	c.Header("Content-Length", fmt.Sprintf("%d", payload.Size))
 
 	// 流式传输文件内容。
 	// 回归要点（P0）：Hertz 的 SetBodyStream 在 handler 返回后才真正写出 body，
 	// 因此绝不能 defer reader.Close()——读到的是已关闭 reader（0 字节空文件），
 	// 文件下载分支曾因此长期不可用。改为读到 EOF 即自动关闭。
-	c.SetBodyStream(newCloseOnEOFReader(reader), int(fileSize))
+	c.SetBodyStream(newCloseOnEOFReader(payload.ReadCloser), int(payload.Size))
 }
 
 // closeOnEOFReader 包装 ReadCloser：读至 EOF 时自动 Close。

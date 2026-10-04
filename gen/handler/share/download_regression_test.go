@@ -16,9 +16,9 @@ import (
 
 	"github.com/cloudwego/hertz/pkg/app/server"
 	"github.com/cloudwego/hertz/pkg/common/ut"
+	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
 
 	shareService "github.com/filescodebox/core/app/share"
@@ -64,13 +64,11 @@ func newDownloadTestEnv(t *testing.T) {
 
 	// 同包直接注入 handler 懒加载单例；关闭下载令牌（conf 零值 Enabled=false）
 	conf.SetGlobalConfig(&conf.AppConfiguration{})
-	storageSvc = storage.NewStorageService(&storage.StorageConfig{
+	shareSvc = shareService.NewService("http://test.local", storage.NewStorageService(&storage.StorageConfig{
 		Type:     storage.StorageTypeLocal,
 		DataPath: dataPath,
-	})
-	shareSvc = shareService.NewService("http://test.local", storageSvc)
+	}))
 	t.Cleanup(func() {
-		storageSvc = nil
 		shareSvc = nil
 		conf.SetGlobalConfig(nil)
 	})

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/filescodebox/contracts/errcode"
@@ -72,7 +73,7 @@ type ShareResp struct {
 	RequireAuth  bool       `json:"require_auth"`
 	Encrypted    bool       `json:"encrypted"` // E2E 客户端加密标记（P1）
 	OwnerIP      string     `json:"owner_ip"`
-	Status       string     `json:"status"` // 管控状态（normal/blocked/pending_review）
+	Status       string     `json:"status"`         // 管控状态（normal/blocked/pending_review）
 	ShareURL     string     `json:"share_url"`      // 相对分享链接
 	FullShareURL string     `json:"full_share_url"` // 完整分享链接
 }
@@ -87,6 +88,10 @@ type Service struct {
 	quotaChecker QuotaChecker
 	moderator    moderation.Moderator // 内容审核钩子（nil = 不审核）
 	flagEmitter  FlagEventEmitter     // share.flagged webhook（nil = 不推送）
+
+	// 存储兜底（storageClient 惰性本地后端，仅未注入时使用；见 files.go）
+	fallbackOnce    sync.Once
+	fallbackStorage storage.StorageInterface
 }
 
 // NotifyServiceInterface 取件通知接口（避免 share → notify 直接依赖）
@@ -804,7 +809,7 @@ type UserShareListItem struct {
 	ViewerCount  int        `json:"viewer_count"`
 	IsExpired    bool       `json:"is_expired"`
 	IsTextShare  bool       `json:"is_text_share"`
-	Status       string     `json:"status"` // 管控状态：owner 有权知道自己被禁用/待审
+	Status       string     `json:"status"`     // 管控状态：owner 有权知道自己被禁用/待审
 	FileCount    int        `json:"file_count"` // P0 多文件：子文件数（0=旧单文件无子表行）
 }
 

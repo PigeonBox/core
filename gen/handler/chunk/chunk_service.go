@@ -12,10 +12,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
@@ -30,19 +28,14 @@ import (
 	"github.com/filescodebox/core/pkg/security"
 	"github.com/filescodebox/core/pkg/utils"
 	"github.com/filescodebox/core/repo/db/model"
-	"github.com/filescodebox/core/storage"
 	"github.com/google/uuid"
 )
 
 var chunkSvc *chunkService.Service
 var shareSvc *shareService.Service
-var storageSvc storage.StorageInterface
 
 // 配置常量（应从配置读取，这里使用默认值）
-const (
-	defaultStoragePath = "./data"
-	defaultBaseURL     = "http://localhost:12345"
-)
+const defaultBaseURL = "http://localhost:12345"
 
 func getChunkService() *chunkService.Service {
 	if chunkSvc == nil {
@@ -51,12 +44,10 @@ func getChunkService() *chunkService.Service {
 	return chunkSvc
 }
 
-// SetStorage 注入统一存储实例（bootstrap 调用）。
-// 回归要点：此前 chunk（DataPath=./data）与 share（./data/uploads）两个懒加载
-// 单例路径基不一致，分片合并写入 `data/uploads/<rel>`、下载却找
-// `data/uploads/uploads/<rel>` → 跨 handler 写读必然 500。
-func SetStorage(st storage.StorageInterface) {
-	storageSvc = st
+// SetChunkService 注入共享的 chunk service 实例（bootstrap 调用，存储随
+// app service 注入——分片写读合并的物理操作收口 app/chunk/storage.go）。
+func SetChunkService(s *chunkService.Service) {
+	chunkSvc = s
 }
 
 // SetShareService 注入共享的 share service 实例（bootstrap 调用）。
@@ -66,20 +57,10 @@ func SetShareService(s *shareService.Service) {
 	shareSvc = s
 }
 
-func getStorageService() storage.StorageInterface {
-	if storageSvc == nil {
-		storageSvc = storage.NewStorageService(&storage.StorageConfig{
-			Type:     storage.StorageTypeLocal,
-			DataPath: defaultStoragePath,
-			BaseURL:  defaultBaseURL,
-		})
-	}
-	return storageSvc
-}
-
 func getShareService() *shareService.Service {
 	if shareSvc == nil {
-		shareSvc = shareService.NewService(defaultBaseURL, getStorageService())
+		// 兜底实例仅测试/降级路径可达：未注入存储时由 app 层懒加载本地后端
+		shareSvc = shareService.NewService(defaultBaseURL, nil)
 	}
 	return shareSvc
 }
@@ -313,7 +294,7 @@ func ChunkUpload(ctx context.Context, c *app.RequestContext) {
 	}
 
 	// 保存分片到存储
-	err = getStorageService().SaveChunk(ctx, uploadID, chunkIndex, data)
+	err = getChunkService().SaveChunkData(ctx, uploadID, chunkIndex, data)
 	if err != nil {
 		c.JSON(consts.StatusInternalServerError, map[string]interface{}{
 			"code":    500,
@@ -525,20 +506,8 @@ func ChunkUploadComplete(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
-	// 合并分片
-	now := time.Now()
-	fileExt := filepath.Ext(info.FileName)
-	uuidFileName := uuid.New().String() + fileExt
-
-	relativePath := filepath.Join(
-		"uploads",
-		now.Format("2006"),
-		now.Format("01"),
-		now.Format("02"),
-		uuidFileName,
-	)
-
-	err = getStorageService().MergeChunks(ctx, uploadID, info.TotalChunks, relativePath)
+	// 合并分片（磁盘布局与合并操作收口 app/chunk，与直传落盘同源）
+	relativePath, err := getChunkService().MergeUpload(ctx, uploadID, info.TotalChunks, info.FileName)
 	if err != nil {
 		c.JSON(consts.StatusInternalServerError, map[string]interface{}{
 			"code":    500,
@@ -554,7 +523,7 @@ func ChunkUploadComplete(ctx context.Context, c *app.RequestContext) {
 	var head []byte
 	fileHash := ""
 	var actualSize int64
-	if rc, fsize, rerr := getStorageService().GetFileReader(ctx, relativePath); rerr == nil {
+	if rc, fsize, rerr := getChunkService().OpenMerged(ctx, relativePath); rerr == nil {
 		actualSize = fsize
 		// 先读 512 字节做魔数复检，再以 MultiReader 把头部拼回流算整文件哈希
 		//（ReadCloser 不保证可 Seek，不能回卷）
@@ -583,7 +552,7 @@ func ChunkUploadComplete(ctx context.Context, c *app.RequestContext) {
 	// 魔数+扩展名复检（首分片可能绕过 init 校验；E2E 密文跳过）
 	if !encrypted && head != nil {
 		if err := utils.CheckUploadContent(info.FileName, head); err != nil {
-			_ = getStorageService().DeleteFile(ctx, relativePath)
+			getChunkService().DeleteMergedFile(ctx, relativePath)
 			_ = getChunkService().DeleteUpload(ctx, uploadID)
 			c.JSON(consts.StatusBadRequest, map[string]interface{}{
 				"code":    errcode.CodeFileTypeDenied,
@@ -597,7 +566,7 @@ func ChunkUploadComplete(ctx context.Context, c *app.RequestContext) {
 	// 可申报 1KB 实传任意大文件绕过 max_file_size；申报不符说明分片丢失或被篡改）
 	if actualSize > 0 {
 		if maxFile := utils.GetMaxFileSize(); maxFile > 0 && actualSize > maxFile {
-			_ = getStorageService().DeleteFile(ctx, relativePath)
+			getChunkService().DeleteMergedFile(ctx, relativePath)
 			_ = getChunkService().DeleteUpload(ctx, uploadID)
 			c.JSON(consts.StatusBadRequest, map[string]interface{}{
 				"code":    errcode.CodeTooLarge,
@@ -606,7 +575,7 @@ func ChunkUploadComplete(ctx context.Context, c *app.RequestContext) {
 			return
 		}
 		if info.FileSize > 0 && actualSize != info.FileSize {
-			_ = getStorageService().DeleteFile(ctx, relativePath)
+			getChunkService().DeleteMergedFile(ctx, relativePath)
 			_ = getChunkService().DeleteUpload(ctx, uploadID)
 			c.JSON(consts.StatusBadRequest, map[string]interface{}{
 				"code":    errcode.CodeChunkInvalid,
@@ -784,7 +753,7 @@ func ChunkUploadCancel(ctx context.Context, c *app.RequestContext) {
 	}
 
 	// 删除分片存储
-	err := getStorageService().CleanChunks(ctx, uploadID)
+	err := getChunkService().CleanSessionFiles(ctx, uploadID)
 	if err != nil {
 		fmt.Printf("清理分片文件失败: %v\n", err)
 	}

@@ -8,47 +8,43 @@ import (
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
+	shareService "github.com/filescodebox/core/app/share"
 	"github.com/filescodebox/core/pkg/middleware"
 	"github.com/filescodebox/core/pkg/transfer"
 	"github.com/filescodebox/core/repo/db/model"
-	"github.com/filescodebox/core/storage"
 )
 
 // streamChildFile 子文件单流下载（/share/download?file=<id>）。
 // 写出响应返回 true；文件不存在/不属于该分享返回 false（调用方 404）。
 func streamChildFile(ctx context.Context, c *app.RequestContext, code string, fileID uint, viewerIP string) bool {
-	fc, child, err := getShareService().GetShareChild(ctx, code, fileID)
-	if err != nil || child == nil || fc == nil {
+	fc, child, payload, err := getShareService().OpenChildDownload(ctx, code, fileID)
+	if err == shareService.ErrShareFileNotFound {
 		return false
+	}
+	if err != nil {
+		c.JSON(consts.StatusInternalServerError, map[string]interface{}{
+			"code":    500,
+			"message": fmt.Sprintf("获取文件失败: %v", err),
+		})
+		return true
 	}
 	name := child.DisplayName()
 
 	// 本地后端：c.File 原生 Range/断点续传（P3）
-	if concrete, ok := getStorageService().(*storage.StorageService); ok {
-		if abs := concrete.LocalAbsPath(child.FilePath); abs != "" {
-			logDownload(ctx, fc, code, name, child.Size, viewerIP)
-			c.Header("Content-Type", "application/octet-stream")
-			c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, name))
-			c.File(abs)
-			return true
-		}
-	}
-
-	rc, fileSize, rerr := getStorageService().GetFileReader(ctx, child.FilePath)
-	if rerr != nil {
-		c.JSON(consts.StatusInternalServerError, map[string]interface{}{
-			"code":    500,
-			"message": fmt.Sprintf("获取文件失败: %v", rerr),
-		})
+	if payload.LocalAbs != "" {
+		logDownload(ctx, fc, code, name, child.Size, viewerIP)
+		c.Header("Content-Type", "application/octet-stream")
+		c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, name))
+		c.File(payload.LocalAbs)
 		return true
 	}
 
 	logDownload(ctx, fc, code, name, child.Size, viewerIP)
 	c.Header("Content-Type", "application/octet-stream")
 	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, name))
-	c.Header("Content-Length", fmt.Sprintf("%d", fileSize))
+	c.Header("Content-Length", fmt.Sprintf("%d", payload.Size))
 	// Hertz 延迟流式写出：读至 EOF 自动关闭（不能 defer Close，回归要点见 DownloadFile）
-	c.SetBodyStream(newCloseOnEOFReader(rc), int(fileSize))
+	c.SetBodyStream(newCloseOnEOFReader(payload.ReadCloser), int(payload.Size))
 	return true
 }
 

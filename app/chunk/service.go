@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 
 	"github.com/filescodebox/core/pkg/utils"
 	"github.com/filescodebox/core/repo/db/dao"
 	"github.com/filescodebox/core/repo/db/model"
+	"github.com/filescodebox/core/storage"
 )
 
 type InitiateUploadReq struct {
@@ -51,6 +53,11 @@ type ProgressResp struct {
 type Service struct {
 	chunkRepo    *dao.ChunkRepository
 	fileCodeRepo *dao.FileCodeRepository
+
+	// 统一存储实例（bootstrap 注入；未注入时 storageClient 懒加载本地兜底，见 storage.go）
+	storage         storage.StorageInterface
+	fallbackOnce    sync.Once
+	fallbackStorage storage.StorageInterface
 }
 
 func NewService() *Service {
