@@ -227,113 +227,113 @@ type DownloadConfig struct {
 // ks3(金山云) / obs(华为云) / webdav。云厂商均走 S3 兼容协议（endpoint 可由
 // region 自动推导），各自配置段字段同 CloudStorageConfig。
 type StorageConfig struct {
-	Type        string `mapstructure:"type"` // local, s3, oss, cos, bos, ks3, obs, webdav
-	StoragePath string `mapstructure:"storage_path"`
+	Type        string `mapstructure:"type" json:"type"` // local, s3, oss, cos, bos, ks3, obs, webdav
+	StoragePath string `mapstructure:"storage_path" json:"storage_path"`
 	// Quota 站点级全局存储配额（字节，0=不限）。统计口径=存活 file_codes 尺寸合计；
 	// 全通道统一闸口（直传/分片完成/预签名完成/本地导入/多文件）。env: FCB_STORAGE_QUOTA
-	Quota       int64               `mapstructure:"quota"`
-	S3          *S3Config           `mapstructure:"s3"`
-	WebDAV      *WebDAVConfig       `mapstructure:"webdav"`
-	FTP         *FTPConfig          `mapstructure:"ftp"`
-	SFTP        *SFTPConfig         `mapstructure:"sftp"`
-	AzureBlob   *AzureBlobConfig    `mapstructure:"azureblob"`
-	HDFS        *HDFSConfig         `mapstructure:"hdfs"`
-	OneDrive    *OneDriveConfig     `mapstructure:"onedrive"`
-	OSS         *CloudStorageConfig `mapstructure:"oss"`
-	COS         *CloudStorageConfig `mapstructure:"cos"`
-	BOS         *CloudStorageConfig `mapstructure:"bos"`
-	KS3         *CloudStorageConfig `mapstructure:"ks3"`
-	OBS         *CloudStorageConfig `mapstructure:"obs"`
+	Quota       int64               `mapstructure:"quota" json:"quota"`
+	S3          *S3Config           `mapstructure:"s3" json:"s3"`
+	WebDAV      *WebDAVConfig       `mapstructure:"webdav" json:"webdav"`
+	FTP         *FTPConfig          `mapstructure:"ftp" json:"ftp"`
+	SFTP        *SFTPConfig         `mapstructure:"sftp" json:"sftp"`
+	AzureBlob   *AzureBlobConfig    `mapstructure:"azureblob" json:"azureblob"`
+	HDFS        *HDFSConfig         `mapstructure:"hdfs" json:"hdfs"`
+	OneDrive    *OneDriveConfig     `mapstructure:"onedrive" json:"onedrive"`
+	OSS         *CloudStorageConfig `mapstructure:"oss" json:"oss"`
+	COS         *CloudStorageConfig `mapstructure:"cos" json:"cos"`
+	BOS         *CloudStorageConfig `mapstructure:"bos" json:"bos"`
+	KS3         *CloudStorageConfig `mapstructure:"ks3" json:"ks3"`
+	OBS         *CloudStorageConfig `mapstructure:"obs" json:"obs"`
 }
 
 // CloudStorageConfig 云厂商对象存储通用配置（S3 兼容协议）。
 // Endpoint 留空时按厂商 + Region 自动推导。
 type CloudStorageConfig struct {
-	Region    string `mapstructure:"region"` // 厂商地域，如 ap-guangzhou / cn-hangzhou
-	Bucket    string `mapstructure:"bucket"`
-	AccessKey string `mapstructure:"access_key"`
-	SecretKey string `mapstructure:"secret_key"`
-	Endpoint  string `mapstructure:"endpoint"`   // 空 = 按厂商+Region 推导
-	UseSSL    *bool  `mapstructure:"use_ssl"`    // 缺省 true
-	PathStyle *bool  `mapstructure:"path_style"` // 缺省 false（各厂商均为 virtual-host 风格）
+	Region    string `mapstructure:"region" json:"region"` // 厂商地域，如 ap-guangzhou / cn-hangzhou
+	Bucket    string `mapstructure:"bucket" json:"bucket"`
+	AccessKey string `mapstructure:"access_key" json:"access_key"`
+	SecretKey string `mapstructure:"secret_key" json:"secret_key"`
+	Endpoint  string `mapstructure:"endpoint" json:"endpoint"`   // 空 = 按厂商+Region 推导
+	UseSSL    *bool  `mapstructure:"use_ssl" json:"use_ssl"`    // 缺省 true
+	PathStyle *bool  `mapstructure:"path_style" json:"path_style"` // 缺省 false（各厂商均为 virtual-host 风格）
 }
 
 // S3Config S3 兼容对象存储配置（AWS S3 / 阿里云 OSS / 腾讯云 COS 等）
 type S3Config struct {
-	Endpoint  string `mapstructure:"endpoint"`
-	Region    string `mapstructure:"region"`
-	Bucket    string `mapstructure:"bucket"`
-	AccessKey string `mapstructure:"access_key"`
-	SecretKey string `mapstructure:"secret_key"`
-	UseSSL    bool   `mapstructure:"use_ssl"`
-	PathStyle bool   `mapstructure:"path_style"`
+	Endpoint  string `mapstructure:"endpoint" json:"endpoint"`
+	Region    string `mapstructure:"region" json:"region"`
+	Bucket    string `mapstructure:"bucket" json:"bucket"`
+	AccessKey string `mapstructure:"access_key" json:"access_key"`
+	SecretKey string `mapstructure:"secret_key" json:"secret_key"`
+	UseSSL    bool   `mapstructure:"use_ssl" json:"use_ssl"`
+	PathStyle bool   `mapstructure:"path_style" json:"path_style"`
 }
 
 // WebDAVConfig WebDAV 存储配置
 type WebDAVConfig struct {
-	Endpoint string `mapstructure:"endpoint"`
-	Username string `mapstructure:"username"`
-	Password string `mapstructure:"password"`
+	Endpoint string `mapstructure:"endpoint" json:"endpoint"`
+	Username string `mapstructure:"username" json:"username"`
+	Password string `mapstructure:"password" json:"password"`
 }
 
 // FTPConfig FTP/FTPS 存储配置
 type FTPConfig struct {
-	Host     string `mapstructure:"host"` // host[:port]（port 缺省 21）
-	Username string `mapstructure:"username"`
-	Password string `mapstructure:"password"`
+	Host     string `mapstructure:"host" json:"host"` // host[:port]（port 缺省 21）
+	Username string `mapstructure:"username" json:"username"`
+	Password string `mapstructure:"password" json:"password"`
 	// TLS "true" = 显式 FTPS（AUTH TLS）
-	TLS string `mapstructure:"tls"`
+	TLS string `mapstructure:"tls" json:"tls"`
 	// Root 远端子目录（所有对象挂其下；目录需已存在或可创建）
-	Root string `mapstructure:"root"`
+	Root string `mapstructure:"root" json:"root"`
 }
 
 // SFTPConfig SFTP 存储配置（password 与 private_key 二选一，前者优先）
 type SFTPConfig struct {
-	Host     string `mapstructure:"host"` // host[:port]（port 缺省 22）
-	Username string `mapstructure:"username"`
-	Password string `mapstructure:"password"`
+	Host     string `mapstructure:"host" json:"host"` // host[:port]（port 缺省 22）
+	Username string `mapstructure:"username" json:"username"`
+	Password string `mapstructure:"password" json:"password"`
 	// PrivateKey PEM 私钥内容（多行，env 注入友好）
-	PrivateKey string `mapstructure:"private_key"`
+	PrivateKey string `mapstructure:"private_key" json:"private_key"`
 	// HostKey 可选；known_hosts 行或 base64 主机公钥（配置后严格校验，缺省宽松）
-	HostKey string `mapstructure:"host_key"`
-	Root    string `mapstructure:"root"`
+	HostKey string `mapstructure:"host_key" json:"host_key"`
+	Root    string `mapstructure:"root" json:"root"`
 }
 
 // AzureBlobConfig Azure Blob 存储配置（共享密钥或 SAS 二选一）
 type AzureBlobConfig struct {
-	Account   string `mapstructure:"account"`
-	Container string `mapstructure:"container"`
+	Account   string `mapstructure:"account" json:"account"`
+	Container string `mapstructure:"container" json:"container"`
 	// Key 共享密钥（account key）；SAS 非空时忽略
-	Key string `mapstructure:"key"`
+	Key string `mapstructure:"key" json:"key"`
 	// SAS 容器级或账户级 SAS token（以 ? 开头的查询串）
-	SAS      string `mapstructure:"sas"`
-	Endpoint string `mapstructure:"endpoint"` // 可选；Azurite/主权云（缺省 https://<account>.blob.core.windows.net）
-	Root     string `mapstructure:"root"`
+	SAS      string `mapstructure:"sas" json:"sas"`
+	Endpoint string `mapstructure:"endpoint" json:"endpoint"` // 可选；Azurite/主权云（缺省 https://<account>.blob.core.windows.net）
+	Root     string `mapstructure:"root" json:"root"`
 }
 
 // HDFSConfig HDFS 存储配置（WebHDFS REST，NameNode http(s) 端口）
 type HDFSConfig struct {
 	// Endpoint WebHDFS 根地址，如 http://namenode:9870
-	Endpoint string `mapstructure:"endpoint"`
+	Endpoint string `mapstructure:"endpoint" json:"endpoint"`
 	// User HDFS 代理用户（doAs）
-	User string `mapstructure:"user"`
+	User string `mapstructure:"user" json:"user"`
 	// Kerberos/Token 认证为扩展点（当前支持无认证/简单代理用户）
-	Root string `mapstructure:"root"`
+	Root string `mapstructure:"root" json:"root"`
 }
 
 // OneDriveConfig OneDrive（Microsoft Graph）存储配置。
 // 授权：在 Azure AD 注册应用（Files.ReadWrite.All + offline_access），
 // 走一次授权码流程拿 refresh_token 后配置至此，运行时自动刷新 access token。
 type OneDriveConfig struct {
-	ClientID     string `mapstructure:"client_id"`
-	ClientSecret string `mapstructure:"client_secret"`
+	ClientID     string `mapstructure:"client_id" json:"client_id"`
+	ClientSecret string `mapstructure:"client_secret" json:"client_secret"`
 	// RefreshToken 一次性授权获得，长期有效（轮换由服务端自动处理）
-	RefreshToken string `mapstructure:"refresh_token"`
+	RefreshToken string `mapstructure:"refresh_token" json:"refresh_token"`
 	// Tenant common（个人+组织）或具体租户/消费者域
-	Tenant string `mapstructure:"tenant"` // 缺省 common
+	Tenant string `mapstructure:"tenant" json:"tenant"` // 缺省 common
 	// DriveID 缺省 me/drive；站点/共享库填对应 drive id
-	DriveID string `mapstructure:"drive_id"`
-	Root    string `mapstructure:"root"`
+	DriveID string `mapstructure:"drive_id" json:"drive_id"`
+	Root    string `mapstructure:"root" json:"root"`
 }
 
 // UIConfig 前端 UI 相关配置。

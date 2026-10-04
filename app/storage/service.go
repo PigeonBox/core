@@ -66,6 +66,26 @@ func (s *Service) candidateFor(t string) *conf.StorageConfig {
 		cp := *s.config.Storage.WebDAV
 		c.WebDAV = &cp
 	}
+	if s.config.Storage.FTP != nil {
+		cp := *s.config.Storage.FTP
+		c.FTP = &cp
+	}
+	if s.config.Storage.SFTP != nil {
+		cp := *s.config.Storage.SFTP
+		c.SFTP = &cp
+	}
+	if s.config.Storage.AzureBlob != nil {
+		cp := *s.config.Storage.AzureBlob
+		c.AzureBlob = &cp
+	}
+	if s.config.Storage.HDFS != nil {
+		cp := *s.config.Storage.HDFS
+		c.HDFS = &cp
+	}
+	if s.config.Storage.OneDrive != nil {
+		cp := *s.config.Storage.OneDrive
+		c.OneDrive = &cp
+	}
 	// 云厂商段（oss/cos/bos/ks3/obs）随 type 归属复制
 	for _, seg := range []**conf.CloudStorageConfig{
 		&c.OSS, &c.COS, &c.BOS, &c.KS3, &c.OBS,
@@ -108,6 +128,16 @@ func validateEndpoints(c *conf.StorageConfig) error {
 			return fmt.Errorf("WebDAV endpoint 校验失败: %w", err)
 		}
 	}
+	if c.HDFS != nil && c.HDFS.Endpoint != "" {
+		if err := security.ValidateEndpointURL(c.HDFS.Endpoint); err != nil {
+			return fmt.Errorf("HDFS endpoint 校验失败: %w", err)
+		}
+	}
+	if c.AzureBlob != nil && c.AzureBlob.Endpoint != "" {
+		if err := security.ValidateEndpointURL(c.AzureBlob.Endpoint); err != nil {
+			return fmt.Errorf("AzureBlob endpoint 校验失败: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -141,7 +171,10 @@ func (s *Service) activate(ctx context.Context, candidate *conf.StorageConfig) e
 // GetStorageInfo 获取存储信息
 func (s *Service) GetStorageInfo(ctx context.Context) (*StorageInfo, error) {
 	// 获取可用存储类型
-	availableStorages := []string{"local", "s3", "oss", "cos", "bos", "ks3", "obs", "webdav"}
+	availableStorages := []string{
+		"local", "s3", "oss", "cos", "bos", "ks3", "obs", "gcs", "webdav",
+		"ftp", "sftp", "azureblob", "hdfs", "onedrive",
+	}
 	if s.config.Storage.Type != "" {
 		availableStorages = append(availableStorages, "local")
 	}
@@ -185,8 +218,8 @@ func (s *Service) GetStorageInfo(ctx context.Context) (*StorageInfo, error) {
 // → 更新全局配置 → 持久化到 system_configs（重启不丢）。
 func (s *Service) SwitchStorage(ctx context.Context, storageType string) error {
 	switch storageType {
-	case "local", "s3", "webdav",
-		"oss", "cos", "bos", "ks3", "obs":
+	case "local", "s3", "webdav", "oss", "cos", "bos", "ks3", "obs", "gcs",
+		"ftp", "sftp", "azureblob", "hdfs", "onedrive":
 	default:
 		return fmt.Errorf("不支持的存储类型: %s", storageType)
 	}
@@ -200,50 +233,25 @@ func (s *Service) TestStorageConnection(ctx context.Context, storageType string)
 	if storageType == "" {
 		return fmt.Errorf("存储类型不能为空")
 	}
-
-	switch storageType {
-	case "local":
+	if storageType == "local" {
 		path := s.getStoragePath()
 		if path == "" {
 			return fmt.Errorf("存储路径未配置")
 		}
-		// 检查目录是否存在并可写
 		if _, err := os.Stat(path); os.IsNotExist(err) {
 			return fmt.Errorf("存储路径不存在: %s", path)
 		}
-		// 测试可写
 		testFile := path + "/.test_write"
 		if err := os.WriteFile(testFile, []byte("test"), 0644); err != nil {
-			return fmt.Errorf("存储路径不可写: %s", err)
+			return fmt.Errorf("存储路径不可写: %w", err)
 		}
 		_ = os.Remove(testFile)
 		return nil
-
-	case "s3":
-		s3cfg := s.getS3Config()
-		endpoint := s3cfg.EndpointURL
-		if endpoint == "" {
-			return fmt.Errorf("S3 endpoint 未配置")
-		}
-		if err := security.ValidateEndpointURL(endpoint); err != nil {
-			return err
-		}
-		return probeHTTP(ctx, endpoint)
-
-	case "webdav":
-		webdavCfg := s.getWebDAVConfig()
-		endpoint := webdavCfg.URL
-		if endpoint == "" {
-			return fmt.Errorf("WebDAV URL 未配置")
-		}
-		if err := security.ValidateEndpointURL(endpoint); err != nil {
-			return err
-		}
-		return probeWebDAV(ctx, endpoint, webdavCfg.Username, webdavCfg.Password)
-
-	default:
-		return fmt.Errorf("不支持的存储类型: %s", storageType)
 	}
+	// 远端类型：按既有配置构造驱动，走认证级 Probe（凭据/可达性在此暴露，
+	// 自动覆盖 s3/webdav/ftp/sftp/gcs/azureblob/hdfs/onedrive 与云厂商预设）
+	candidate := s.candidateFor(storageType)
+	return corestorage.BuildAndProbe(ctx, corestorage.ConfigFromConf(candidate, s.baseURL()))
 }
 
 // probeHTTP 通用端点探测：能建立 TLS/HTTP 连接即视为可达（401/403/404 都算通）。
@@ -292,11 +300,31 @@ func probeWebDAV(ctx context.Context, endpoint, username, password string) error
 	return nil
 }
 
+// hasFlatStorageFields 是否携带扁平形态的顶层存储字段（内嵌字段除去 Type 本身）
+func hasFlatStorageFields(sc conf.StorageConfig) bool {
+	return sc.Quota > 0 || sc.WebDAV != nil || sc.FTP != nil || sc.SFTP != nil ||
+		sc.AzureBlob != nil || sc.HDFS != nil || sc.OneDrive != nil || sc.S3 != nil ||
+		sc.OSS != nil || sc.COS != nil || sc.BOS != nil || sc.KS3 != nil || sc.OBS != nil
+}
+
 // UpdateStorageConfig 更新存储配置。
 // 流程与 SwitchStorage 一致：SSRF 校验 → 认证级 Probe → 热重载 → 更新内存
 // → 持久化到 system_configs（管理端配置记录，重启后由 bootstrap 恢复）。
 // 注：use_ssl/path_style 未随请求传入时保留现值（use_ssl 缺省 true，与管理端历史行为一致）。
 func (s *Service) UpdateStorageConfig(ctx context.Context, req *UpdateConfigRequest) error {
+	// 扁平形态（新）：请求体即完整候选配置——校验 → Probe → 热切换 → 持久化。
+	// 判定须看「顶层实质字段」而非 Type（内嵌提升使 Type 与旧形态同名，
+	// 旧调用 {type, config:{...}} 不带任何顶层字段，须走原分支保持兼容语义）
+	if req.StorageConfig.Type != "" && hasFlatStorageFields(req.StorageConfig) {
+		candidate := req.StorageConfig
+		if candidate.StoragePath == "" {
+			candidate.StoragePath = s.config.Storage.StoragePath
+		}
+		if err := validateEndpoints(&candidate); err != nil {
+			return err
+		}
+		return s.activate(ctx, &candidate)
+	}
 	switch req.Type {
 	case "local":
 		if req.Config.StoragePath != "" {
@@ -495,6 +523,10 @@ type NFSConfig struct {
 }
 
 // UpdateConfigRequest 更新配置请求
+// UpdateConfigRequest 存储配置更新请求。
+// 新形态（扁平）：直接给 conf.StorageConfig 同构 JSON（type/storage_path/quota/
+// s3/webdav/ftp/sftp/azureblob/hdfs/onedrive/oss..obs），后端整体校验+Probe+切换；
+// 旧嵌套形态 {type, config:{storage_path/webdav/s3}} 仍兼容（走既有局部更新逻辑）。
 type UpdateConfigRequest struct {
 	Type   string `json:"type"`
 	Config struct {
@@ -503,4 +535,7 @@ type UpdateConfigRequest struct {
 		S3          *S3Config     `json:"s3"`
 		NFS         *NFSConfig    `json:"nfs"`
 	} `json:"config"`
+
+	// 扁平形态（新）：内嵌 conf.StorageConfig，JSON 字段同名绑定
+	conf.StorageConfig
 }

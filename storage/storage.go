@@ -363,6 +363,19 @@ func defaultRoot(root, def string) string {
 	return root
 }
 
+// BuildAndProbe 构造 Operator 并做认证级探测（管理端「测试连接」用）。
+// local 返回 nil operator（无需探测）。
+func BuildAndProbe(ctx context.Context, cfg *StorageConfig) error {
+	op, err := buildOperator(cfg)
+	if err != nil {
+		return err
+	}
+	if op == nil {
+		return nil
+	}
+	return opendal.Probe(ctx, op)
+}
+
 // ProbeConfig 认证级验证存储配置（管理端切换/保存前调用）。
 // s3：凭据有效且桶存在；webdav：根路径可达（401 在此暴露）；local：路径可创建可写。
 func ProbeConfig(ctx context.Context, cfg *StorageConfig) error {

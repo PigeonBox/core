@@ -5,6 +5,7 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/filescodebox/contracts/errcode"
@@ -70,7 +71,32 @@ func TestStorageConnection(ctx context.Context, c *app.RequestContext) {
 
 // UpdateStorageConfig .
 // @router /admin/storage/config [PUT]
+// 支持两种请求形态：
+//   - 旧嵌套（IDL）：{type, config:{storage_path/webdav/s3}}
+//   - 扁平（新契约，v0.7.x）：请求体即 conf.StorageConfig 同构 JSON
+//     （type/storage_path/quota/s3/webdav/ftp/sftp/azureblob/hdfs/onedrive/oss..obs），
+//     服务端整体校验 → Probe → 热切换 → 持久化。IDL thrift 模型将 config 标为
+//     required 会先拒扁平体，故此处先按顶层字段探测分派。
 func UpdateStorageConfig(ctx context.Context, c *app.RequestContext) {
+	// 扁平形态探测：body 为 JSON 对象、无 config 字段、有 type 字段
+	bodyBytes := string(c.Request.Body())
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(bodyBytes), &raw); err == nil {
+		_, hasCfg := raw["config"]
+		_, hasType := raw["type"]
+		if hasType && !hasCfg {
+			flat := &storageapp.UpdateConfigRequest{}
+			if err := json.Unmarshal([]byte(bodyBytes), flat); err == nil && flat.Type != "" {
+				if err := getService().UpdateStorageConfig(ctx, flat); err != nil {
+					resp.NewTypedError(c, err)
+					return
+				}
+				resp.SuccessWithMessage(c, "存储已切换并持久化", nil)
+				return
+			}
+		}
+	}
+
 	var req storage.UpdateStorageConfigReq
 	if err := c.BindAndValidate(&req); err != nil {
 		resp.NewErrorWithMessage(c, errcode.CodeInvalidParam, err.Error())
