@@ -161,7 +161,13 @@ func (s *Service) announceAll(ctx context.Context) {
 			logger.Warn("federation 公告待重推", zap.String("hash", shortHash(hash)), zap.Error(err))
 			continue
 		}
-		e.confirmed = true
+		// confirmed 写回必须持锁:live 里的 entry 指针与 ShareCreated 的异步
+		// 确认 goroutine 共享,这里无锁写与下方锁内写构成数据竞争(-race 实测)
+		s.mu.Lock()
+		if cur := s.entries[hash]; cur != nil {
+			cur.confirmed = true
+		}
+		s.mu.Unlock()
 		ok++
 	}
 	if len(live) > 0 {
