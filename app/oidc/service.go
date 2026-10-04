@@ -27,6 +27,7 @@ import (
 	"github.com/filescodebox/core/repo/db/dao"
 	"github.com/filescodebox/core/repo/db/model"
 	"github.com/filescodebox/kit/httpjson"
+	"github.com/filescodebox/kit/singleflight"
 )
 
 // Config OIDC 配置（conf.SecurityConfig.OIDC）
@@ -54,6 +55,7 @@ type Service struct {
 	mu      sync.RWMutex
 	disc    *discovery
 	discAt  time.Time
+	discSF  *singleflight.Flight[*discovery] // 缓存过期时的并发拉取合并（防登录风暴打 IdP）
 
 	userRepo *dao.UserRepository
 }
@@ -69,6 +71,7 @@ func NewService(cfg Config) *Service {
 	return &Service{
 		cfg:      cfg,
 		client:   &http.Client{Timeout: 15 * time.Second},
+		discSF:   singleflight.New[*discovery](),
 		userRepo: dao.NewUserRepository(),
 	}
 }
@@ -90,30 +93,45 @@ func (s *Service) FrontendCallback() string {
 	return s.cfg.FrontendCallback + sep + "token="
 }
 
-// discover 发现端点（缓存 1 小时）
+// discover 发现端点（缓存 1 小时；过期后并发回调经 singleflight 合并为一次拉取）
 func (s *Service) discover(ctx context.Context) (*discovery, error) {
-	s.mu.RLock()
-	if s.disc != nil && time.Since(s.discAt) < time.Hour {
-		d := s.disc
-		s.mu.RUnlock()
+	if d := s.cachedDiscovery(); d != nil {
 		return d, nil
 	}
-	s.mu.RUnlock()
+	d, err := s.discSF.Do(ctx, "discovery", func(ctx context.Context) (*discovery, error) {
+		// 双检:排队等待期间可能已被同批调用刷新
+		if d := s.cachedDiscovery(); d != nil {
+			return d, nil
+		}
+		issuer := strings.TrimSuffix(s.cfg.Issuer, "/")
+		wellKnown := issuer + "/.well-known/openid-configuration"
+		var d discovery
+		if err := httpjson.DoJSON(ctx, s.client, httpjson.Request{URL: wellKnown}, &d); err != nil {
+			return nil, fmt.Errorf("OIDC discovery 失败: %w", err)
+		}
+		if d.AuthorizationEndpoint == "" || d.TokenEndpoint == "" {
+			return nil, errors.New("OIDC discovery 缺少必要端点")
+		}
+		s.mu.Lock()
+		s.disc = &d
+		s.discAt = time.Now()
+		s.mu.Unlock()
+		return &d, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return d, nil
+}
 
-	issuer := strings.TrimSuffix(s.cfg.Issuer, "/")
-	wellKnown := issuer + "/.well-known/openid-configuration"
-	var d discovery
-	if err := httpjson.DoJSON(ctx, s.client, httpjson.Request{URL: wellKnown}, &d); err != nil {
-		return nil, fmt.Errorf("OIDC discovery 失败: %w", err)
+// cachedDiscovery 返回未过期的缓存发现结果（nil = 未命中）。
+func (s *Service) cachedDiscovery() *discovery {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.disc != nil && time.Since(s.discAt) < time.Hour {
+		return s.disc
 	}
-	if d.AuthorizationEndpoint == "" || d.TokenEndpoint == "" {
-		return nil, errors.New("OIDC discovery 缺少必要端点")
-	}
-	s.mu.Lock()
-	s.disc = &d
-	s.discAt = time.Now()
-	s.mu.Unlock()
-	return &d, nil
+	return nil
 }
 
 // TestDiscovery 管理端「测试连接」：验证 issuer 的 discovery 端点可达且合法。

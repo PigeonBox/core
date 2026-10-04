@@ -1,6 +1,7 @@
 package security
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"net/url"
@@ -8,15 +9,20 @@ import (
 	"time"
 
 	"github.com/filescodebox/core/conf"
+	"github.com/filescodebox/kit/singleflight"
 )
 
 // ErrEndpointURL 存储端点 URL 不合法
 var ErrEndpointURL = fmt.Errorf("存储端点 URL 不合法")
 
-// dnsCache 端点解析结果短缓存，避免每次校验都打 DNS（5 分钟 TTL）
+// dnsCache 端点解析结果短缓存，避免每次校验都打 DNS（5 分钟 TTL）。
+// 未命中的并发解析经 singleflight 合并：同 host 共享一次 LookupIP，
+// 不同 host 并行互不阻塞（历史实现持全局锁横跨 DNS 调用，会把全部
+// 校验串行化在一次慢解析之后）。
 var (
-	dnsCacheMu sync.Mutex
 	dnsCache   = map[string]dnsCacheEntry{}
+	dnsCacheMu sync.Mutex
+	dnsFlight  = singleflight.New[[]net.IP]()
 )
 
 type dnsCacheEntry struct {
@@ -67,19 +73,40 @@ func ValidateEndpointURL(rawURL string) error {
 	return nil
 }
 
-// resolveHost 带缓存的 DNS 解析（解析结果按"是否含私网"缓存 5 分钟）
+// resolveHost 带缓存的 DNS 解析（结果缓存 5 分钟；解析失败不缓存，下次重试）。
 func resolveHost(host string) []net.IP {
+	if ips, ok := dnsCacheLookup(host); ok {
+		return ips
+	}
+	ips, _ := dnsFlight.Do(context.Background(), host, func(ctx context.Context) ([]net.IP, error) {
+		// 双检:等待合并期间可能已被同批调用写入缓存
+		if ips, ok := dnsCacheLookup(host); ok {
+			return ips, nil
+		}
+		addrs, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+		if err != nil {
+			return nil, err
+		}
+		ips := make([]net.IP, len(addrs))
+		for i, a := range addrs {
+			ips[i] = a.IP
+		}
+		dnsCacheMu.Lock()
+		dnsCache[host] = dnsCacheEntry{ips: ips, at: time.Now()}
+		dnsCacheMu.Unlock()
+		return ips, nil
+	})
+	return ips
+}
+
+// dnsCacheLookup 读取未过期的缓存解析结果（ok=false = 未命中/已过期）。
+func dnsCacheLookup(host string) ([]net.IP, bool) {
 	dnsCacheMu.Lock()
 	defer dnsCacheMu.Unlock()
 	if e, ok := dnsCache[host]; ok && time.Since(e.at) < 5*time.Minute {
-		return e.ips
+		return e.ips, true
 	}
-	ips, err := net.LookupIP(host)
-	if err != nil {
-		return nil
-	}
-	dnsCache[host] = dnsCacheEntry{ips: ips, at: time.Now()}
-	return ips
+	return nil, false
 }
 
 func isPrivateOrLocal(ip net.IP) bool {
