@@ -37,18 +37,18 @@ import (
 	"gorm.io/gorm"
 
 	adminApp "github.com/filescodebox/core/app/admin"
+	chunkApp "github.com/filescodebox/core/app/chunk"
 	mcpApp "github.com/filescodebox/core/app/mcp"
 	moderationApp "github.com/filescodebox/core/app/moderation"
 	notifyAppService "github.com/filescodebox/core/app/notify"
 	oidcApp "github.com/filescodebox/core/app/oidc"
+	previewApp "github.com/filescodebox/core/app/preview"
 	requestApp "github.com/filescodebox/core/app/request"
 	setupApp "github.com/filescodebox/core/app/setup"
 	shareService "github.com/filescodebox/core/app/share"
 	storageApp "github.com/filescodebox/core/app/storage"
 	userService "github.com/filescodebox/core/app/user"
-	adminHandler "github.com/filescodebox/core/gen/handler/admin"
 	chunkHandler "github.com/filescodebox/core/gen/handler/chunk"
-	notifyHandler "github.com/filescodebox/core/gen/handler/notify"
 	presignHandler "github.com/filescodebox/core/gen/handler/presign"
 	previewHandler "github.com/filescodebox/core/gen/handler/preview"
 	ratelimitHandler "github.com/filescodebox/core/gen/handler/ratelimit"
@@ -1201,7 +1201,6 @@ func initThriftIDLServices(database *gorm.DB) {
 
 	// 1. notify service（走 DAO，内部用全局 db.GetDB()）
 	notifyApp := notifyAppService.NewService()
-	notifyHandler.SetDB(database)
 	// 1.1 注入定制路由的 notify service
 	customHandler.SetNotifyService(notifyApp)
 
@@ -1320,15 +1319,20 @@ func initThriftIDLServices(database *gorm.DB) {
 		logger.Error("Failed to migrate file_requests table", zap.Error(err))
 	}
 
-	// 6. 注入 storage 到 admin handler 的 service（过期清理删物理文件）
+	// 6. 注入 storage 到 admin service（过期清理删物理文件；app 服务直注，
+	//    gen handler 不再作为存储注入的透传层）
 	bootstrapStorage := getBootstrapStorageService()
-	adminHandler.SetStorage(bootstrapStorage)
+	adminSvc.SetStorage(bootstrapStorage)
 
-	// 6.5 统一存储实例注入 chunk/share handler（消除懒加载单例路径基分歧：
-	// 分片合并写入 data/uploads/<rel>，下载却找 data/uploads/uploads/<rel>）
-	chunkHandler.SetStorage(bootstrapStorage)
-	shareHandler.SetStorage(bootstrapStorage)
-	previewHandler.SetStorage(bootstrapStorage)
+	// 6.5 统一存储实例注入（消除懒加载单例路径基分歧：分片合并写入
+	// data/uploads/<rel>，下载却找 data/uploads/uploads/<rel>）。
+	// chunk：存储随 app service 注入，gen handler 只持服务句柄；
+	// share：存储由 app service 持有（shareSvc 构造时注入），不经 gen handler；
+	// preview：业务流已下沉 app/preview，存储随 service 注入。
+	chunkSvc := chunkApp.NewService()
+	chunkSvc.SetStorage(bootstrapStorage)
+	chunkHandler.SetChunkService(chunkSvc)
+	previewHandler.SetService(previewApp.NewService(bootstrapStorage))
 
 	// 6.5 MCP server（AI 客户端集成）：统计/维护走全站唯一 admin 实例，
 	//     分享创建走 share service（复用配额/审计链路）——经窄接口适配器注入
@@ -1600,6 +1604,38 @@ func restoreRuntimeStorage() {
 	}
 	if rs.WebDAV != nil {
 		config.Storage.WebDAV = rs.WebDAV
+	}
+	// 全段恢复（历史代码只回填 Type/StoragePath/S3/WebDAV，新类型段丢失会导致
+	// 重启后构建失败 → 静默降级 local，与管理端已切换的状态不一致）
+	if rs.FTP != nil {
+		config.Storage.FTP = rs.FTP
+	}
+	if rs.SFTP != nil {
+		config.Storage.SFTP = rs.SFTP
+	}
+	if rs.AzureBlob != nil {
+		config.Storage.AzureBlob = rs.AzureBlob
+	}
+	if rs.HDFS != nil {
+		config.Storage.HDFS = rs.HDFS
+	}
+	if rs.OneDrive != nil {
+		config.Storage.OneDrive = rs.OneDrive
+	}
+	if rs.OSS != nil {
+		config.Storage.OSS = rs.OSS
+	}
+	if rs.COS != nil {
+		config.Storage.COS = rs.COS
+	}
+	if rs.BOS != nil {
+		config.Storage.BOS = rs.BOS
+	}
+	if rs.KS3 != nil {
+		config.Storage.KS3 = rs.KS3
+	}
+	if rs.OBS != nil {
+		config.Storage.OBS = rs.OBS
 	}
 	// env 优先级最高：显式注入的环境变量覆盖 DB 恢复值
 	if v := os.Getenv("FCB_STORAGE_TYPE"); v != "" {
