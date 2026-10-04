@@ -129,6 +129,37 @@ func (s *Service) discover(ctx context.Context) (*discovery, error) {
 	return &d, nil
 }
 
+// TestDiscovery 管理端「测试连接」：验证 issuer 的 discovery 端点可达且合法。
+func (s *Service) TestDiscovery(ctx context.Context) error {
+	if s.cfg.Issuer == "" {
+		return errors.New("issuer 未配置")
+	}
+	wellKnown := strings.TrimSuffix(s.cfg.Issuer, "/") + "/.well-known/openid-configuration"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, wellKnown, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("discovery 不可达: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("discovery 返回 %d", resp.StatusCode)
+	}
+	var d struct {
+		AuthorizationEndpoint string `json:"authorization_endpoint"`
+		TokenEndpoint         string `json:"token_endpoint"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&d); err != nil {
+		return fmt.Errorf("discovery 解析失败: %w", err)
+	}
+	if d.AuthorizationEndpoint == "" || d.TokenEndpoint == "" {
+		return errors.New("discovery 缺少 authorization/token 端点")
+	}
+	return nil
+}
+
 // signState HMAC 签名时间戳（1 小时有效；无需服务端会话）
 func (s *Service) signState(ts int64) string {
 	mac := hmac.New(sha256.New, []byte(s.cfg.ClientSecret))

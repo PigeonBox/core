@@ -820,20 +820,20 @@ func customizedRegister(r *server.Hertz) {
 	// ===== NAS 本地文件免上传导入（P3；upload.local_import.enabled 开关在 service 内校验）=====
 	r.POST("/api/v1/user/shares/import-local", middleware.UserOrAPIKey(), customHandler.UserImportLocal)
 
-	// ===== OIDC 单点登录（P2，手写路由；启用时 /api/config 下发 oidcEnabled）=====
-	// 读 bootstrap 包级 config（与 MCP 开关同源；轻量测试环境为最小 config）
-	if config != nil && config.Security.OIDC.Enabled {
+	// ===== OIDC 单点登录（常注册+运行时门控：handler 按 Enabled() 响应，
+	// 管理端在线改 OIDC 段经 ReconfigureHooks 热重建 service，无需重启）=====
+	if config != nil {
 		customHandler.SetOIDCService(oidcApp.NewService(oidcApp.Config{
-			Enabled:          true,
+			Enabled:          config.Security.OIDC.Enabled,
 			Issuer:           config.Security.OIDC.Issuer,
 			ClientID:         config.Security.OIDC.ClientID,
 			ClientSecret:     config.Security.OIDC.ClientSecret,
 			Scopes:           config.Security.OIDC.Scopes,
 			FrontendCallback: config.Security.OIDC.FrontendCallback,
 		}))
-		r.GET("/api/v1/user/oidc/login", customHandler.OIDCLogin)
-		r.GET("/api/v1/user/oidc/callback", customHandler.OIDCCallback)
 	}
+	r.GET("/api/v1/user/oidc/login", customHandler.OIDCLogin)
+	r.GET("/api/v1/user/oidc/callback", customHandler.OIDCCallback)
 
 	// ===== check-auth 端点（前端启动时校验 token 有效性并取回用户信息）=====
 	r.GET("/api/v1/user/check-auth", customMw.UserAuth(), func(ctx context.Context, c *app.RequestContext) {
@@ -859,6 +859,9 @@ func customizedRegister(r *server.Hertz) {
 		adminAPI.GET("/local-files", customHandler.AdminListLocalFiles)
 		adminAPI.DELETE("/local-files", customHandler.AdminDeleteLocalFile)
 		adminAPI.POST("/local-files/import", customHandler.AdminImportLocalFile)
+		// 设置测试端点（SMTP 发信 / OIDC discovery）
+		adminAPI.POST("/notify/smtp/test", customHandler.AdminTestSMTP)
+		adminAPI.POST("/oidc/test", customHandler.AdminTestOIDC)
 		adminAPI.GET("/activities", func(ctx context.Context, c *app.RequestContext) {
 			page, pageSize := 1, 20
 			if v, err := strconv.Atoi(c.Query("page")); err == nil && v > 0 {
@@ -1198,6 +1201,7 @@ func initPreviewService() error {
 func initThriftIDLServices(database *gorm.DB) {
 	// 0. 恢复 DB 持久化的运行时存储配置（管理端在线切换的后端类型/s3/webdav）
 	restoreRuntimeStorage()
+	adminApp.Default().RestoreAdminSettings()
 
 	// 1. notify service（走 DAO，内部用全局 db.GetDB()）
 	notifyApp := notifyAppService.NewService()
@@ -1251,19 +1255,28 @@ func initThriftIDLServices(database *gorm.DB) {
 		shareSvc.SetModerator(mod)
 	}
 	shareSvc.SetFlagEventEmitter(notifyApp) // *Service 已实现 EmitShareFlagged（webhook 未配置时内部短路）
-	// 2.3.1 外部 Webhook 推送渠道（notify.created 事件；空 = 禁用）
-	notifyApp.SetWebhookURL(config.Notify.WebhookURL)
-	// 2.3.2 SMTP 邮件渠道（P2；notify.smtp.host 空 = 禁用）
-	if config.Notify.SMTP.Host != "" {
-		notifyApp.SetMailer(notifyAppService.NewSMTPMailer(
-			config.Notify.SMTP.Host,
-			config.Notify.SMTP.Port,
-			config.Notify.SMTP.Username,
-			config.Notify.SMTP.Password,
-			config.Notify.SMTP.From,
-		))
-		logger.Info("SMTP mail notifications enabled", zap.String("host", config.Notify.SMTP.Host))
-	}
+	// 2.3.1/2.3.2 Webhook + SMTP 渠道装配（抽 applyNotifyConfig 供运行时热重建复用）
+	applyNotifyConfig(notifyApp, &config.Notify)
+	// 管理端通知/OIDC 设置保存 → 组件热重建（SystemConfig 新段）
+	adminApp.Default().SetReconfigureHooks(&adminApp.ReconfigureHooks{
+		OnNotifyChanged: func(n *conf.NotifyConfig) {
+			applyNotifyConfig(notifyApp, n)
+		},
+		OnOIDCChanged: func(o *conf.OIDCConfig) {
+			if o == nil {
+				return
+			}
+			config.Security.OIDC = *o
+			customHandler.SetOIDCService(oidcApp.NewService(oidcApp.Config{
+				Enabled:          o.Enabled,
+				Issuer:           o.Issuer,
+				ClientID:         o.ClientID,
+				ClientSecret:     o.ClientSecret,
+				Scopes:           o.Scopes,
+				FrontendCallback: o.FrontendCallback,
+			}))
+		},
+	})
 	// 2.4 注入 user service：上传统计（此前从未接线，用户统计恒为 0）
 	// + 存储配额强制检查（user_quota / 用户级 max_storage_quota）
 	userSvc := userService.NewService()
@@ -1425,6 +1438,27 @@ var (
 	bootstrapStorageOnce sync.Once
 	bootstrapStorageSvc  *storage.StorageService
 )
+
+// applyNotifyConfig 通知渠道装配：Webhook + SMTP mailer（host 空 = 卸载 mailer）。
+// 启动装配与运行时热重建（管理端通知设置保存）共用。
+func applyNotifyConfig(target *notifyAppService.Service, cfg *conf.NotifyConfig) {
+	if cfg == nil {
+		return
+	}
+	target.SetWebhookURL(cfg.WebhookURL)
+	if cfg.SMTP.Host != "" {
+		target.SetMailer(notifyAppService.NewSMTPMailer(
+			cfg.SMTP.Host,
+			cfg.SMTP.Port,
+			cfg.SMTP.Username,
+			cfg.SMTP.Password,
+			cfg.SMTP.From,
+		))
+		logger.Info("SMTP mail notifications enabled", zap.String("host", cfg.SMTP.Host))
+	} else {
+		target.SetMailer(nil)
+	}
+}
 
 // getBootstrapStorageService bootstrap 用的 storage 单例。
 // 配置来自 conf（DB 持久化的 runtime_storage 已由 restoreRuntimeStorage 恢复进 conf）；

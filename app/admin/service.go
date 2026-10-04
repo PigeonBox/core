@@ -56,6 +56,25 @@ type SystemConfig struct {
 	// nil 表示从未在线保存过 → 运行时回退 yaml 全局配置（EffectiveUserSettings）。
 	// JSON 键沿用前端 configForm.user 的既有键名，读写端点直传免转换。
 	User *UserSettings `json:"user,omitempty"`
+
+	// ===== v0.7.3 扩容的在线设置段（同 User 语义：nil = 未在线设置 → yaml 生效；
+	// 非 nil = 保存时整体 overlay 到全局 conf 并热应用，重启由 restoreAdminSettings 恢复）=====
+	// 外观（背景图/主题色/管理入口可见性）
+	UI *conf.UIConfig `json:"ui,omitempty"`
+	// 上传细项（文本上限/扩展名白黑名单/匿名日配额/整文件上限/全局过期上限/过期样式裁剪）
+	UploadEx *conf.UploadConfig `json:"upload_ex,omitempty"`
+	// 下载（S3 直下/超时/需登录）
+	Download *conf.DownloadConfig `json:"download,omitempty"`
+	// 通知（Webhook + SMTP；保存经 Reconfigurers 热重建 mailer）
+	Notify *conf.NotifyConfig `json:"notify,omitempty"`
+	// 本地导入（enabled/roots）
+	LocalImport *conf.LocalImportConfig `json:"local_import,omitempty"`
+	// OIDC 单点登录
+	OIDC *conf.OIDCConfig `json:"oidc,omitempty"`
+	// API Key 认证总开关与 per-Key 限流
+	APIToken *conf.APITokenConfig `json:"api_token,omitempty"`
+
+	// 新段是否发生变化的标记由「非 nil」即涵盖；保存走 UpdateConfig 既有持久化通道
 }
 
 // UserSettings 管理后台"用户配置"标签页的在线设置。
@@ -86,6 +105,8 @@ func userSettingsFromYAML() *UserSettings {
 }
 
 type Service struct {
+	reconfigurersMu sync.RWMutex
+	reconfigurers   *ReconfigureHooks
 	userRepo           *dao.UserRepository
 	fileCodeRepo       *dao.FileCodeRepository
 	transferLogRepo    *dao.TransferLogRepository
@@ -634,6 +655,28 @@ func (s *Service) UpdateConfig(ctx context.Context, newConfig *SystemConfig) err
 	if newConfig.User == nil && s.config != nil {
 		newConfig.User = s.config.User
 	}
+	// v0.7.3 扩容段同规则：请求未携带的段保留旧值（前端按 tab 分批提交）
+	if newConfig.UI == nil && s.config != nil {
+		newConfig.UI = s.config.UI
+	}
+	if newConfig.UploadEx == nil && s.config != nil {
+		newConfig.UploadEx = s.config.UploadEx
+	}
+	if newConfig.Download == nil && s.config != nil {
+		newConfig.Download = s.config.Download
+	}
+	if newConfig.Notify == nil && s.config != nil {
+		newConfig.Notify = s.config.Notify
+	}
+	if newConfig.LocalImport == nil && s.config != nil {
+		newConfig.LocalImport = s.config.LocalImport
+	}
+	if newConfig.OIDC == nil && s.config != nil {
+		newConfig.OIDC = s.config.OIDC
+	}
+	if newConfig.APIToken == nil && s.config != nil {
+		newConfig.APIToken = s.config.APIToken
+	}
 	s.configMu.RUnlock()
 	data, err := json.Marshal(newConfig)
 	if err != nil {
@@ -650,11 +693,87 @@ func (s *Service) UpdateConfig(ctx context.Context, newConfig *SystemConfig) err
 	}
 	s.applyUserSideEffects(newConfig.User)
 	s.configMu.Lock()
-	defer s.configMu.Unlock()
 	s.config = newConfig
 	s.configLoaded = true
+	// 新段热应用：整体 overlay 到全局 conf（所有 conf.GetGlobalConfig() 读取点即刻生效）
+	s.applySystemConfigOverlayLocked(newConfig)
+	notifyCfg, oidcCfg := newConfig.Notify, newConfig.OIDC
+	s.configMu.Unlock()
+
+	// 组件热重建（bootstrap 注册的钩子；nil 段不触发）
+	s.reconfigurersMu.RLock()
+	hooks := s.reconfigurers
+	s.reconfigurersMu.RUnlock()
+	if hooks != nil {
+		if notifyCfg != nil && hooks.OnNotifyChanged != nil {
+			hooks.OnNotifyChanged(notifyCfg)
+		}
+		if oidcCfg != nil && hooks.OnOIDCChanged != nil {
+			hooks.OnOIDCChanged(oidcCfg)
+		}
+	}
+
 	s.logAdminOperation(ctx, "config.update", "system config persisted to database", true)
 	return nil
+}
+
+// ReconfigureHooks 存储域之外的组件热重建钩子（bootstrap 注册；SMTP mailer / OIDC service）。
+// 参数为合并后的新段；nil 段表示维持现状。
+type ReconfigureHooks struct {
+	// OnNotifyChanged Webhook+SMTP 热重建（mailer 按新 SMTP 段重建，host 空=卸载）
+	OnNotifyChanged func(n *conf.NotifyConfig)
+	// OnOIDCChanged OIDC service 热重建（按新段；Enabled=false 时 handler 走未启用响应）
+	OnOIDCChanged func(o *conf.OIDCConfig)
+}
+
+func (s *Service) SetReconfigureHooks(h *ReconfigureHooks) {
+	s.reconfigurersMu.Lock()
+	defer s.reconfigurersMu.Unlock()
+	s.reconfigurers = h
+}
+
+// applySystemConfigOverlayLocked 把新段 overlay 到全局 conf（调用方持 configMu）。
+// 全局 conf 是几乎所有读取点（utils/gate/handler/middleware）的真相源，
+// 原地改写即全站热生效；重启后由 restoreAdminSettings 从 system_configs 恢复。
+func (s *Service) applySystemConfigOverlayLocked(sc *SystemConfig) {
+	g := conf.GetGlobalConfig()
+	if g == nil {
+		return
+	}
+	if sc.UI != nil {
+		g.UI = *sc.UI
+	}
+	if sc.UploadEx != nil {
+		g.Upload = *sc.UploadEx
+	}
+	if sc.Download != nil {
+		g.Download = *sc.Download
+	}
+	if sc.Notify != nil {
+		g.Notify = *sc.Notify
+	}
+	if sc.LocalImport != nil {
+		g.Upload.LocalImport = *sc.LocalImport
+	}
+	if sc.OIDC != nil {
+		g.Security.OIDC = *sc.OIDC
+	}
+	if sc.APIToken != nil {
+		g.Security.APIToken = *sc.APIToken
+	}
+}
+
+// RestoreAdminSettings 启动时把持久化的新段 overlay 回全局 conf（DB 先于服务启动就绪）。
+// 由 bootstrap 在 restoreRuntimeStorage 同相位调用。
+func (s *Service) RestoreAdminSettings() {
+	s.ensureConfigLoaded(context.Background())
+	s.configMu.RLock()
+	sc := s.config
+	s.configMu.RUnlock()
+	if sc == nil {
+		return
+	}
+	s.applySystemConfigOverlayLocked(sc)
 }
 
 // UpdateUserSettings 在线更新"用户配置"段：读改写当前配置，仅替换 User，

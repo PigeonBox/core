@@ -7,6 +7,7 @@ package notify
 // 端口语义：465 = 隐式 TLS；25/587 = 明文连接并在服务器支持时升级 STARTTLS。
 
 import (
+	"errors"
 	"context"
 	"crypto/tls"
 	"encoding/base64"
@@ -77,6 +78,14 @@ func (m *SMTPMailer) SendToUser(userID uint, subject, body string) {
 }
 
 // send 发送单封邮件
+// SendTo 导出发信（管理端 SMTP 测试端点用；mail 未启用时报错）
+func (m *SMTPMailer) SendTo(to, subject, body string) error {
+	if !m.Enabled() {
+		return errors.New("SMTP 未启用（host 为空）")
+	}
+	return m.send(to, subject, body)
+}
+
 func (m *SMTPMailer) send(to, subject, body string) error {
 	m.mu.RLock()
 	host, port, username, password, from := m.host, m.port, m.username, m.password, m.from

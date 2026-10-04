@@ -49,6 +49,8 @@ func TestRegisteredRoutesMatchContract(t *testing.T) {
 		"GET /admin/activities",
 		// 本地文件管理（对标上游 2.7.0 data/local 管理）
 		"GET /admin/local-files", "DELETE /admin/local-files", "POST /admin/local-files/import",
+		// 设置测试端点
+		"POST /admin/notify/smtp/test", "POST /admin/oidc/test",
 		"POST /admin/users", "PUT /admin/users/:id", "DELETE /admin/users/:id",
 		"POST /admin/users/:id/reset-password", "GET /admin/users/filter",
 		"GET /admin/files/:id", "PUT /admin/files/:id",

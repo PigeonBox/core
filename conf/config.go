@@ -66,18 +66,18 @@ type ClamAVConfig struct {
 type NotifyConfig struct {
 	// WebhookURL 外部推送地址：notify.created 事件以 JSON POST 推送（空 = 禁用）。
 	// env: FCB_WEBHOOK_URL
-	WebhookURL string `mapstructure:"webhook_url"`
+	WebhookURL string `mapstructure:"webhook_url" json:"webhook_url"`
 	// SMTP 邮件通知（站内信创建后对登记邮箱异步补发；空 host = 禁用）
-	SMTP SMTPConfig `mapstructure:"smtp"`
+	SMTP SMTPConfig `mapstructure:"smtp" json:"smtp"`
 }
 
 // SMTPConfig SMTP 邮件配置（P2；默认禁用）
 type SMTPConfig struct {
-	Host     string `mapstructure:"host"`     // env: FCB_SMTP_HOST
-	Port     int    `mapstructure:"port"`     // 465=隐式 TLS；25/587=STARTTLS；env: FCB_SMTP_PORT
-	Username string `mapstructure:"username"` // env: FCB_SMTP_USERNAME
-	Password string `mapstructure:"password"` // env: FCB_SMTP_PASSWORD
-	From     string `mapstructure:"from"`     // 发件地址，空 = 取 Username；env: FCB_SMTP_FROM
+	Host     string `mapstructure:"host" json:"host"`     // env: FCB_SMTP_HOST
+	Port     int    `mapstructure:"port" json:"port"`     // 465=隐式 TLS；25/587=STARTTLS；env: FCB_SMTP_PORT
+	Username string `mapstructure:"username" json:"username"` // env: FCB_SMTP_USERNAME
+	Password string `mapstructure:"password" json:"password"` // env: FCB_SMTP_PASSWORD
+	From     string `mapstructure:"from" json:"from"`     // 发件地址，空 = 取 Username；env: FCB_SMTP_FROM
 }
 
 // SetGlobalConfig 设置全局配置
@@ -172,53 +172,53 @@ type UserConfig struct {
 
 // UploadConfig 上传配置
 type UploadConfig struct {
-	OpenUpload     bool  `mapstructure:"open_upload"`
-	UploadSize     int64 `mapstructure:"upload_size"`
-	EnableChunk    bool  `mapstructure:"enable_chunk"`
-	ChunkSize    int64 `mapstructure:"chunk_size"`
-	RequireLogin bool  `mapstructure:"require_login"`
+	OpenUpload     bool  `mapstructure:"open_upload" json:"open_upload"`
+	UploadSize     int64 `mapstructure:"upload_size" json:"upload_size"`
+	EnableChunk    bool  `mapstructure:"enable_chunk" json:"enable_chunk"`
+	ChunkSize    int64 `mapstructure:"chunk_size" json:"chunk_size"`
+	RequireLogin bool  `mapstructure:"require_login" json:"require_login"`
 	// TextMaxBytes 文本分享大小上限（字节）。<=0 时用默认 222KB（对齐上游）。
-	TextMaxBytes int64 `mapstructure:"text_max_bytes"`
+	TextMaxBytes int64 `mapstructure:"text_max_bytes" json:"text_max_bytes"`
 	// AllowedExtensions 扩展名白名单（如 [".jpg",".png",".pdf"]）。
 	// 非空时白名单优先：未命中的扩展名直接拒绝；空 = 黑名单模式。
-	AllowedExtensions []string `mapstructure:"allowed_extensions"`
+	AllowedExtensions []string `mapstructure:"allowed_extensions" json:"allowed_extensions"`
 	// BlockedExtensions 扩展名黑名单（如 [".exe",".bat"]）。
 	// 非空时覆盖内置默认黑名单；空 = 使用内置默认（可执行文件类）。
-	BlockedExtensions []string `mapstructure:"blocked_extensions"`
+	BlockedExtensions []string `mapstructure:"blocked_extensions" json:"blocked_extensions"`
 	// EnableMagicCheck 是否启用魔数校验（默认 true）。
-	EnableMagicCheck bool `mapstructure:"enable_magic_check"`
+	EnableMagicCheck bool `mapstructure:"enable_magic_check" json:"enable_magic_check"`
 	// AllowedExpireStyles 允许用户选择的过期样式（minute/hour/day/week/month/year/forever）。
 	// 空 = 全部允许；管理员可裁剪（对标上游白名单裁剪能力）。
-	AllowedExpireStyles []string `mapstructure:"allowed_expire_styles"`
+	AllowedExpireStyles []string `mapstructure:"allowed_expire_styles" json:"allowed_expire_styles"`
 	// MaxSaveSecondsCap 全局过期时间上限（秒），0 = 不限（对标上游 max_save_seconds）。
-	MaxSaveSecondsCap int64 `mapstructure:"max_save_seconds_cap"`
+	MaxSaveSecondsCap int64 `mapstructure:"max_save_seconds_cap" json:"max_save_seconds_cap"`
 	// MaxFileSize 单个文件大小上限（字节），适用于分片/预签名/匿名登记等
 	// "整文件"语义的通道；0 = 不限。upload_size 是"单请求体"上限，两者语义不同
 	// （回归：分片 init 曾误用 upload_size，48MB 文件被 10MB 单请求限制拦截）。
-	MaxFileSize int64 `mapstructure:"max_file_size"`
+	MaxFileSize int64 `mapstructure:"max_file_size" json:"max_file_size"`
 	// AnonymousDailyCount 匿名上传 per-IP 日配额（次数），0 = 不限。
 	// 仅约束匿名请求（登录用户走存储配额）；Redis 可用时多实例共享计数。
-	AnonymousDailyCount int64 `mapstructure:"anonymous_daily_count"`
+	AnonymousDailyCount int64 `mapstructure:"anonymous_daily_count" json:"anonymous_daily_count"`
 	// AnonymousDailyBytes 匿名上传 per-IP 日配额（字节），0 = 不限。
-	AnonymousDailyBytes int64 `mapstructure:"anonymous_daily_bytes"`
+	AnonymousDailyBytes int64 `mapstructure:"anonymous_daily_bytes" json:"anonymous_daily_bytes"`
 	// LocalImport NAS 本地文件免上传导入（P3：服务器本地白名单目录内的文件
 	// 直接登记为分享，服务端拷贝入存储；默认关闭）
-	LocalImport LocalImportConfig `mapstructure:"local_import"`
+	LocalImport LocalImportConfig `mapstructure:"local_import" json:"local_import"`
 }
 
 // LocalImportConfig 本地文件导入配置
 type LocalImportConfig struct {
-	Enabled bool     `mapstructure:"enabled"` // env: FCB_LOCAL_IMPORT_ENABLED
-	Roots   []string `mapstructure:"roots"`   // 允许导入的绝对目录白名单；env: FCB_LOCAL_IMPORT_ROOTS（逗号分隔）
+	Enabled bool     `mapstructure:"enabled" json:"enabled"` // env: FCB_LOCAL_IMPORT_ENABLED
+	Roots   []string `mapstructure:"roots" json:"roots"`   // 允许导入的绝对目录白名单；env: FCB_LOCAL_IMPORT_ROOTS（逗号分隔）
 }
 
 // DownloadConfig 下载配置
 type DownloadConfig struct {
-	DownloadTimeout int  `mapstructure:"download_timeout"`
-	RequireLogin             bool `mapstructure:"require_login"`
+	DownloadTimeout int  `mapstructure:"download_timeout" json:"download_timeout"`
+	RequireLogin             bool `mapstructure:"require_login" json:"require_login"`
 	// S3DirectDownload s3 直下：存储后端为 s3 且开启时，文件下载 302 到短时效
 	// 预签名 GET URL（下载流量不经过服务器）。env: FCB_DOWNLOAD_S3_DIRECT
-	S3DirectDownload bool `mapstructure:"s3_direct_download"`
+	S3DirectDownload bool `mapstructure:"s3_direct_download" json:"s3_direct_download"`
 }
 
 // StorageConfig 存储配置
@@ -342,10 +342,10 @@ type OneDriveConfig struct {
 // background 配置的 CSS 注入面（上游 2.6.0 同类修复）。showAdminAddr：公开页脚
 // 是否展示管理后台入口（默认隐藏；/admin 始终可直达，此键仅控制入口可见性）。
 type UIConfig struct {
-	RobotsText    string `mapstructure:"robots_text"`
-	ShowAdminAddr bool   `mapstructure:"show_admin_addr"`
-	Background    string `mapstructure:"background"`
-	AccentColor   string `mapstructure:"accent_color"`
+	RobotsText    string `mapstructure:"robots_text" json:"robots_text"`
+	ShowAdminAddr bool   `mapstructure:"show_admin_addr" json:"show_admin_addr"`
+	Background    string `mapstructure:"background" json:"background"`
+	AccentColor   string `mapstructure:"accent_color" json:"accent_color"`
 }
 
 // ObservabilityConfig 可观测性配置（metrics；分布式追踪见路线图，未实现前不暴露配置）
@@ -378,21 +378,21 @@ type SecurityConfig struct {
 // OIDCConfig OIDC 单点登录配置（P2；默认关闭。启用需 issuer/client_id/client_secret，
 // 回调地址 <base_url>/api/v1/user/oidc/callback）
 type OIDCConfig struct {
-	Enabled          bool   `mapstructure:"enabled"`            // env: FCB_OIDC_ENABLED
-	Issuer           string `mapstructure:"issuer"`             // env: FCB_OIDC_ISSUER
-	ClientID         string `mapstructure:"client_id"`          // env: FCB_OIDC_CLIENT_ID
-	ClientSecret     string `mapstructure:"client_secret"`      // env: FCB_OIDC_CLIENT_SECRET
-	Scopes           string `mapstructure:"scopes"`             // 默认 "openid profile email"；env: FCB_OIDC_SCOPES
-	FrontendCallback string `mapstructure:"frontend_callback"`  // 默认 /#/oidc/callback
+	Enabled          bool   `mapstructure:"enabled" json:"enabled"`            // env: FCB_OIDC_ENABLED
+	Issuer           string `mapstructure:"issuer" json:"issuer"`             // env: FCB_OIDC_ISSUER
+	ClientID         string `mapstructure:"client_id" json:"client_id"`          // env: FCB_OIDC_CLIENT_ID
+	ClientSecret     string `mapstructure:"client_secret" json:"client_secret"`      // env: FCB_OIDC_CLIENT_SECRET
+	Scopes           string `mapstructure:"scopes" json:"scopes"`             // 默认 "openid profile email"；env: FCB_OIDC_SCOPES
+	FrontendCallback string `mapstructure:"frontend_callback" json:"frontend_callback"`  // 默认 /#/oidc/callback
 }
 
 // APITokenConfig 用户级 API Key（个人访问令牌，fcb_sk_）。
 // Enabled 为认证总开关（env FCB_API_TOKEN_ENABLED）：false 时携带 Key 的请求一律 401。
 // PerKeyQPS 为单 Key 独立限流（令牌桶，进程内）：0 = 不限（默认 20，burst 默认 2×QPS）。
 type APITokenConfig struct {
-	Enabled     bool `mapstructure:"enabled"`       // 默认 true
-	PerKeyQPS   int  `mapstructure:"per_key_qps"`   // 默认 20；显式 0 = 不限
-	PerKeyBurst int  `mapstructure:"per_key_burst"` // 默认 0 = 2×QPS
+	Enabled     bool `mapstructure:"enabled" json:"enabled"`       // 默认 true
+	PerKeyQPS   int  `mapstructure:"per_key_qps" json:"per_key_qps"`   // 默认 20；显式 0 = 不限
+	PerKeyBurst int  `mapstructure:"per_key_burst" json:"per_key_burst"` // 默认 0 = 2×QPS
 }
 
 // DownloadTokenConfig 取件下载令牌（时间窗 HMAC）。
