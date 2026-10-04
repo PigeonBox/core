@@ -19,6 +19,7 @@ import (
 	"github.com/filescodebox/core/pkg/logger"
 	"github.com/filescodebox/core/repo/db/dao"
 	"github.com/filescodebox/core/repo/db/model"
+	"github.com/filescodebox/kit/async"
 	"github.com/filescodebox/kit/httpjson"
 )
 
@@ -444,8 +445,7 @@ func (s *Service) EmitShareFlagged(code, reason, ownerIP string) {
 		return
 	}
 	event := "share.flagged"
-	go func() {
-		defer func() { _ = recover() }()
+	async.GoSafe(func() {
 		err := httpjson.DoJSON(context.Background(), webhookHTTPClient, httpjson.Request{
 			Method: http.MethodPost,
 			URL:    s.webhookURL,
@@ -458,7 +458,7 @@ func (s *Service) EmitShareFlagged(code, reason, ownerIP string) {
 		if err != nil {
 			logger.Warn("webhook push failed", zap.String("url", s.webhookURL), zap.Error(err))
 		}
-	}()
+	})
 }
 
 // dispatchWebhook 异步推送（5s 超时，失败静默记日志）
@@ -479,8 +479,7 @@ func (s *Service) dispatchWebhook(ctx context.Context, userID uint, title, conte
 	if err != nil {
 		return
 	}
-	go func() {
-		defer func() { _ = recover() }()
+	async.GoSafe(func() {
 		err := httpjson.DoJSON(ctx, webhookHTTPClient, httpjson.Request{
 			Method: http.MethodPost,
 			URL:    s.webhookURL,
@@ -493,5 +492,5 @@ func (s *Service) dispatchWebhook(ctx context.Context, userID uint, title, conte
 		if err != nil {
 			logger.Warn("webhook push failed", zap.String("url", s.webhookURL), zap.Error(err))
 		}
-	}()
+	})
 }

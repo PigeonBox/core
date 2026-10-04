@@ -15,6 +15,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/filescodebox/core/pkg/logger"
+	"github.com/filescodebox/kit/async"
 )
 
 // Sink 传输日志落盘能力（repo/db/dao 的仓储实现，bootstrap 装配注入）。
@@ -47,10 +48,9 @@ type Entry struct {
 	DurationMs int64
 }
 
-// Record 异步记录一次传输。
+// Record 异步记录一次传输（GoSafe 兜底 panic，不影响主流程）。
 func Record(e Entry) {
-	go func() {
-		defer func() { _ = recover() }()
+	async.GoSafe(func() {
 		s := sink
 		if s == nil {
 			return
@@ -61,5 +61,5 @@ func Record(e Entry) {
 			logger.Warn("transfer log write failed",
 				zap.String("operation", e.Operation), zap.String("code", e.Code), zap.Error(err))
 		}
-	}()
+	})
 }

@@ -17,6 +17,7 @@ import (
 	"github.com/filescodebox/core/repo/db/dao"
 	"github.com/filescodebox/core/repo/db/model"
 	"github.com/filescodebox/core/storage"
+	"github.com/filescodebox/kit/async"
 	"github.com/filescodebox/kit/retry"
 	"github.com/filescodebox/kit/uidgen"
 	"go.uber.org/zap"
@@ -760,11 +761,10 @@ func (s *Service) GetFileWithUsage(ctx context.Context, code, password, viewerIP
 		}
 	}
 
-	// 记录取件人 + 通知 owner（fire-and-forget，recover 防 panic 影响进程）
-	go func() {
-		defer func() { _ = recover() }()
+	// 记录取件人 + 通知 owner（fire-and-forget，GoSafe 兜底 panic 不影响进程）
+	async.GoSafe(func() {
 		_ = s.RecordViewerAndNotify(context.Background(), code, viewerIP, "")
-	}()
+	})
 
 	return fileCode, nil
 }

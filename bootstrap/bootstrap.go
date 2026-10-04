@@ -29,6 +29,7 @@ import (
 	"github.com/filescodebox/core/repo/db/model"
 	"github.com/filescodebox/core/repo/redis"
 	"github.com/filescodebox/core/storage"
+	"github.com/filescodebox/kit/async"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/common/expfmt"
 	"github.com/spf13/viper"
@@ -557,6 +558,13 @@ func BootstrapWithOptions(configPath string, opts ...Option) (*server.Hertz, err
 	}
 	logger.Info("JWT secret loaded from configuration",
 		zap.Bool("production", config.IsProduction()))
+
+	// 2.1 goroutine panic 兜底接 zap：async.GoSafe 恢复的 panic 带堆栈进结构化日志
+	// （默认走 stdlib log；须在最早的业务 goroutine 之前设置，此处为进程内唯一设置点）
+	async.SetPanicHandler(func(msg string, stack []byte) {
+		logger.Error("goroutine panic recovered",
+			zap.String("error", msg), zap.ByteString("stack", stack))
+	})
 
 	// 3. 初始化数据库
 	database, err = InitDatabase(&config.Database)
