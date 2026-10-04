@@ -122,10 +122,13 @@ func (s *Service) Get(ctx context.Context, id uint) (*ListItem, error) {
 	return &item, nil
 }
 
-// Active 当前活跃通知（公开 API）
+// Active 当前活跃通知（公开 API，供全站横幅）。
+// 仅广播（target_user_id 空/0）：定向站内信绝不能从无认证端点泄露，
+// 否则取件码/投递详情会广播给匿名访客；定向通知走 /api/v1/notifies/mine。
 func (s *Service) Active(ctx context.Context, typ string) ([]ListItem, error) {
 	tx := s.notifyRepo.Query(ctx).
 		Where("status = ?", 1).
+		Where("target_user_id IS NULL OR target_user_id = ?", 0).
 		Where("start_at IS NULL OR start_at <= ?", time.Now()).
 		Where("end_at IS NULL OR end_at >= ?", time.Now())
 	if typ != "" {

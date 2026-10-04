@@ -263,6 +263,23 @@ func TestActive_FilterByType(t *testing.T) {
 	assert.Equal(t, "M", active[0].Title)
 }
 
+// TestActive_ExcludesTargeted 定向站内信（TargetUserID>0）不得进入公开活跃列表：
+// /notifies/active 无认证，泄露会把取件码/投递详情广播给匿名访客（P0 隐私）。
+func TestActive_ExcludesTargeted(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+	_, err := svc.Create(ctx, CreateReq{Title: "广播公告", Content: "x", Status: 1})
+	require.NoError(t, err)
+	// 模拟 share/request 域的取件通知（Status=1 + 定向用户）
+	_, err = svc.CreateForUser(ctx, 42, "您的分享已被取件", "分享码: abc", "share_retrieved", "info")
+	require.NoError(t, err)
+
+	active, err := svc.Active(ctx, "")
+	require.NoError(t, err)
+	require.Len(t, active, 1)
+	assert.Equal(t, "广播公告", active[0].Title)
+}
+
 // TestParseID 解析 path 中的 id
 func TestParseID(t *testing.T) {
 	id, err := ParseID("42")
