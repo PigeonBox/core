@@ -77,7 +77,6 @@ func (m *SMTPMailer) SendToUser(userID uint, subject, body string) {
 	}
 }
 
-// send 发送单封邮件
 // SendTo 导出发信（管理端 SMTP 测试端点用；mail 未启用时报错）
 func (m *SMTPMailer) SendTo(to, subject, body string) error {
 	if !m.Enabled() {
