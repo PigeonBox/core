@@ -121,11 +121,13 @@ func ResolveCloudProvider(t StorageType, region, bucket, accessKey, secretKey, e
 
 	ep := strings.TrimSpace(endpoint)
 	if ep == "" {
-		if region == "" {
-			return nil, fmt.Errorf("%s: region 与 endpoint 至少配置一项", t)
-		}
+		// 端点可由厂商预设推导（GCS 固定端点 region 无关；其余按 region 模板；
+		// AWS S3 模板返回空 → 走下方 region 默认端点）
 		ep = preset.DeriveEndpoint(region)
 		if ep == "" {
+			if region == "" {
+				return nil, fmt.Errorf("%s: region 与 endpoint 至少配置一项", t)
+			}
 			// AWS S3：无静态端点模板，region 交给 minio-go 签名解析
 			ep = fmt.Sprintf("s3.%s.amazonaws.com", region)
 		}
