@@ -30,6 +30,21 @@ type fakeDriver struct {
 
 func newFakeDriver() *fakeDriver { return &fakeDriver{data: map[string][]byte{}} }
 
+// get/len 带锁读取：测试断言侧禁止裸读 f.data——MergeChunks 会异步触发
+// CleanChunks goroutine，裸读与其持锁删除构成数据竞争（-race 偶发红）。
+func (f *fakeDriver) get(key string) ([]byte, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	d, ok := f.data[key]
+	return append([]byte(nil), d...), ok
+}
+
+func (f *fakeDriver) size() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.data)
+}
+
 func (f *fakeDriver) record(call string) { f.calls = append(f.calls, call) }
 
 func (f *fakeDriver) hasCall(prefix string) bool {
@@ -176,7 +191,7 @@ func TestRemoteDispatchSaveFile(t *testing.T) {
 	sum := sha256.Sum256(content)
 	require.Equal(t, hex.EncodeToString(sum[:]), res.FileHash)
 
-	stored, ok := fd.data["uploads/2026/10/03/a.bin"]
+	stored, ok := fd.get("uploads/2026/10/03/a.bin")
 	require.True(t, ok)
 	require.Equal(t, content, stored)
 }
@@ -190,17 +205,18 @@ func TestRemoteChunkFlow(t *testing.T) {
 	for i, p := range parts {
 		require.NoError(t, s.SaveChunk(ctx, "u1", i, p))
 	}
-	require.Len(t, fd.data, 3)
+	require.Equal(t, 3, fd.size())
 
 	require.NoError(t, s.MergeChunks(ctx, "u1", 3, "uploads/m.bin"))
-	merged := fd.data["uploads/m.bin"]
+	merged, ok := fd.get("uploads/m.bin")
+	require.True(t, ok)
 	require.Equal(t, []byte("AAABBBCCC"), merged)
 	require.True(t, fd.hasCall("WriteStream:uploads/m.bin:9"))
 
 	// CleanChunks（异步 goroutine + 显式调用都安全：fakeDriver 并发安全）
 	require.NoError(t, s.CleanChunks(ctx, "u1"))
-	_, ok := fd.data["chunks/u1/chunk_0"]
-	require.False(t, ok)
+	_, ok2 := fd.get("chunks/u1/chunk_0")
+	require.False(t, ok2)
 }
 
 func TestRemoteDownload(t *testing.T) {
