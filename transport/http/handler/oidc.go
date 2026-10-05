@@ -9,6 +9,8 @@ import (
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
 	oidcApp "github.com/filescodebox/core/app/oidc"
 	"github.com/filescodebox/core/conf"
+	"github.com/filescodebox/core/pkg/auth"
+	"github.com/filescodebox/core/pkg/middleware"
 )
 
 var oidcSvc *oidcApp.Service
@@ -70,6 +72,9 @@ func OIDCCallback(ctx context.Context, c *app.RequestContext) {
 		redirectOIDCError(c, err.Error())
 		return
 	}
+	// HttpOnly 会话 Cookie 承载会话；回跳不再携带 token（2026-10-05 遗留修复：
+	// 令牌不入浏览器历史/剪贴板同步）
+	middleware.SetSessionCookie(c, token, int(auth.SessionExpiry().Seconds()))
 	c.Header("Cache-Control", "no-store")
-	c.Redirect(consts.StatusFound, []byte(svc.FrontendCallback()+token))
+	c.Redirect(consts.StatusFound, []byte(svc.FrontendCallback()))
 }

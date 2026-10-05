@@ -180,3 +180,53 @@ func TestIdentityFreshEnforcement(t *testing.T) {
 	assert.DeepEqual(t, http.StatusForbidden, ut.PerformRequest(h2.Engine, http.MethodGet, "/admin/x", nil,
 		ut.Header{Key: "Authorization", Value: "Bearer " + adminClaimToken}).Result().StatusCode())
 }
+
+// 会话 Cookie 认证回归（2026-10-05 遗留修复）：Cookie 可认证；Cookie 认证的
+// 写请求须带 CSRF 头（X-Requested-With）；Bearer 认证不受 CSRF 门禁影响。
+func TestSessionCookieAuthAndCSRF(t *testing.T) {
+	auth.SetJWTSecret("test-secret-for-cookie-auth-32char")
+	t.Cleanup(func() { auth.SetJWTSecret("") })
+
+	token, err := auth.GenerateToken(9, "dave", "user")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	h := server.New(server.WithHostPorts("127.0.0.1:0"))
+	ok := func(ctx context.Context, c *app.RequestContext) {
+		c.JSON(http.StatusOK, map[string]string{})
+	}
+	h.GET("/me", AuthMiddleware(), ok)
+	h.POST("/act", AuthMiddleware(), ok)
+
+	// Cookie GET：放行
+	w := ut.PerformRequest(h.Engine, http.MethodGet, "/me", nil,
+		ut.Header{Key: "Cookie", Value: SessionCookieName + "=" + token})
+	assert.DeepEqual(t, http.StatusOK, w.Result().StatusCode())
+
+	// Cookie POST 无 CSRF 头：403
+	w = ut.PerformRequest(h.Engine, http.MethodPost, "/act", nil,
+		ut.Header{Key: "Cookie", Value: SessionCookieName + "=" + token})
+	assert.DeepEqual(t, http.StatusForbidden, w.Result().StatusCode())
+
+	// Cookie POST 带正确 CSRF 头：200
+	w = ut.PerformRequest(h.Engine, http.MethodPost, "/act", nil,
+		ut.Header{Key: "Cookie", Value: SessionCookieName + "=" + token},
+		ut.Header{Key: CSRFHeaderName, Value: CSRFHeaderValue})
+	assert.DeepEqual(t, http.StatusOK, w.Result().StatusCode())
+
+	// Cookie POST 带错误值：403
+	w = ut.PerformRequest(h.Engine, http.MethodPost, "/act", nil,
+		ut.Header{Key: "Cookie", Value: SessionCookieName + "=" + token},
+		ut.Header{Key: CSRFHeaderName, Value: "evil"})
+	assert.DeepEqual(t, http.StatusForbidden, w.Result().StatusCode())
+
+	// Bearer POST 无 CSRF 头：200（门禁只针对 Cookie 通道）
+	w = ut.PerformRequest(h.Engine, http.MethodPost, "/act", nil,
+		ut.Header{Key: "Authorization", Value: "Bearer " + token})
+	assert.DeepEqual(t, http.StatusOK, w.Result().StatusCode())
+
+	// 无身份 GET：401
+	w = ut.PerformRequest(h.Engine, http.MethodGet, "/me", nil)
+	assert.DeepEqual(t, http.StatusUnauthorized, w.Result().StatusCode())
+}

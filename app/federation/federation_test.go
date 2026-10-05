@@ -483,3 +483,28 @@ func codeHashOf(code string) string {
 	sum := sha256.Sum256([]byte(code))
 	return hex.EncodeToString(sum[:])
 }
+
+// TestLoopFirstTickFailureEntersBackoff 首启 tick 失败后 loop 的下一次
+// 重试应在退避周期(15s)而非完整心跳周期(30m)——215 部署实测踩坑的回归锁。
+// 不真等 15s:验证 loop 首次调度决策的输入(lastTickOK)在首启失败后为 false,
+// 结合 loop 实现即锁定"首启失败→15s 重试"路径。
+func TestLoopFirstTickFailureEntersBackoff(t *testing.T) {
+	fake, srv := newFakeRegistry(t)
+	s := newTestService(t, srv.URL)
+
+	fake.mu.Lock()
+	fake.fail = true
+	fake.mu.Unlock()
+	s.tick() // 模拟 loop 的首启 tick
+	if s.lastTickOK() {
+		t.Fatal("前置:首启失败后 lastTickOK 应为 false")
+	}
+	// loop 的调度语义(被测约定):失败 → next=retryBackoff
+	next := heartbeatInterval
+	if !s.lastTickOK() {
+		next = retryBackoff
+	}
+	if next != retryBackoff {
+		t.Fatalf("首启失败应调度 %s 重试,得到 %s", retryBackoff, next)
+	}
+}

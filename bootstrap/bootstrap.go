@@ -792,18 +792,25 @@ func customizedRegister(r *server.Hertz) {
 	r.PUT("/api/v1/presign/upload-direct/:uploadID", presignHandler.UploadDirect)
 
 	// ===== token 刷新端点（前端 401 拦截器调用，换发新 token）=====
+	// 令牌来源：Bearer 头或会话 Cookie；轮换同时下发新 Cookie（2026-10-05
+	// 遗留修复：浏览器会话迁 HttpOnly Cookie）。Cookie 认证时须带 CSRF 头。
 	r.POST("/api/v1/user/refresh", func(ctx context.Context, c *app.RequestContext) {
-		authHeader := string(c.GetHeader("Authorization"))
-		if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
+		oldToken, viaCookie := middleware.SessionToken(c)
+		if oldToken == "" {
 			c.JSON(consts.StatusUnauthorized, map[string]interface{}{"code": 401, "message": "missing token"})
 			return
 		}
-		oldToken := strings.TrimPrefix(authHeader, "Bearer ")
+		if !middleware.CSRFAllowed(c, viaCookie) {
+			c.JSON(consts.StatusForbidden, map[string]interface{}{"code": 403, "message": "缺少 CSRF 头"})
+			return
+		}
 		newToken, err := auth.RefreshToken(ctx, oldToken)
 		if err != nil {
+			middleware.ClearSessionCookie(c)
 			c.JSON(consts.StatusUnauthorized, map[string]interface{}{"code": 401, "message": "token invalid or expired"})
 			return
 		}
+		middleware.SetSessionCookie(c, newToken, int(auth.SessionExpiry().Seconds()))
 		c.JSON(consts.StatusOK, map[string]interface{}{
 			"code": 200, "message": "ok",
 			"data": map[string]string{"token": newToken},
@@ -851,18 +858,19 @@ func customizedRegister(r *server.Hertz) {
 	}
 
 	// ===== logout 端点（补齐基准 P1 缺口：显式注销 + token 黑名单）=====
+	// 令牌来源：Bearer 头或会话 Cookie；同时清除 Cookie。
 	r.POST("/api/v1/user/logout", func(ctx context.Context, c *app.RequestContext) {
-		authHeader := string(c.GetHeader("Authorization"))
-		if !strings.HasPrefix(authHeader, "Bearer ") {
+		token, _ := middleware.SessionToken(c)
+		if token == "" {
 			c.JSON(consts.StatusUnauthorized, map[string]interface{}{"code": 401, "message": "missing token"})
 			return
 		}
-		token := strings.TrimPrefix(authHeader, "Bearer ")
 		// 黑名单 TTL = token 剩余有效期（过期后自然失效，无需清理任务）
 		if claims, err := auth.ParseToken(token); err == nil {
 			remaining := time.Until(claims.ExpiresAt.Time)
 			auth.RevokeToken(ctx, token, remaining)
 		}
+		middleware.ClearSessionCookie(c)
 		c.JSON(consts.StatusOK, map[string]interface{}{"code": 200, "message": "已退出登录"})
 	})
 

@@ -135,7 +135,13 @@ func (s *Service) Start() {
 
 func (s *Service) loop() {
 	s.tick()
+	// 初始 timer 按首次 tick 结果:进程启动时 registry 尚不可用是常态
+	// (compose 启动顺序/registry 重部署),首启失败必须立即进入 15s 退避,
+	// 否则要干等 30m(215 部署实测踩坑)。
 	next := heartbeatInterval
+	if !s.lastTickOK() {
+		next = retryBackoff
+	}
 	t := time.NewTimer(next)
 	defer t.Stop()
 	for {

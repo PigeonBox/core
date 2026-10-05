@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
@@ -184,32 +183,23 @@ func identityFresh(ctx context.Context, claims *auth.Claims) bool {
 }
 
 // AuthMiddleware JWT认证中间件
+//
+// 令牌来源：Authorization: Bearer 头或会话 Cookie（fcb_token，浏览器端默认；
+// Cookie 认证的非安全方法另有 CSRF 头门禁，见 session.go）。
 func AuthMiddleware() app.HandlerFunc {
 	return func(ctx context.Context, c *app.RequestContext) {
-		// 获取Authorization头
-		authHeader := string(c.GetHeader("Authorization"))
-		if authHeader == "" {
+		token, viaCookie := SessionToken(c)
+		if token == "" {
 			c.JSON(http.StatusUnauthorized, map[string]interface{}{
 				"code":    http.StatusUnauthorized,
-				"message": "Authorization header is required",
-			})
-			c.Abort()
-			return
-		}
-
-		// 验证Bearer token格式
-		parts := strings.SplitN(authHeader, " ", 2)
-		if len(parts) != 2 || parts[0] != "Bearer" {
-			c.JSON(http.StatusUnauthorized, map[string]interface{}{
-				"code":    http.StatusUnauthorized,
-				"message": "Authorization header format must be Bearer {token}",
+				"message": "未认证（缺少 Bearer 头或会话 Cookie）",
 			})
 			c.Abort()
 			return
 		}
 
 		// 解析JWT token
-		claims, err := auth.ParseToken(parts[1])
+		claims, err := auth.ParseToken(token)
 		if err != nil {
 			c.JSON(http.StatusUnauthorized, map[string]interface{}{
 				"code":    http.StatusUnauthorized,
@@ -220,10 +210,20 @@ func AuthMiddleware() app.HandlerFunc {
 		}
 
 		// 注销黑名单检查（logout 端点写入；已注销 token 即刻失效）
-		if auth.IsTokenRevoked(ctx, parts[1]) {
+		if auth.IsTokenRevoked(ctx, token) {
 			c.JSON(http.StatusUnauthorized, map[string]interface{}{
 				"code":    http.StatusUnauthorized,
 				"message": "Token has been revoked",
+			})
+			c.Abort()
+			return
+		}
+
+		// CSRF 门禁（仅 Cookie 认证的非安全方法）
+		if !CSRFAllowed(c, viaCookie) {
+			c.JSON(http.StatusForbidden, map[string]interface{}{
+				"code":    http.StatusForbidden,
+				"message": "缺少 CSRF 头（Cookie 认证的写请求须携带 X-Requested-With: XMLHttpRequest）",
 			})
 			c.Abort()
 			return
@@ -269,18 +269,18 @@ func AdminMiddleware() app.HandlerFunc {
 			return
 		}
 
-		authHeader := string(c.GetHeader("Authorization"))
-		parts := strings.SplitN(authHeader, " ", 2)
-		if len(parts) != 2 || parts[0] != "Bearer" {
+		// 认证+授权内联完成（令牌来源：Bearer 头或会话 Cookie）
+		token, viaCookie := SessionToken(c)
+		if token == "" {
 			c.JSON(http.StatusUnauthorized, map[string]interface{}{
 				"code":    http.StatusUnauthorized,
-				"message": "Authorization header format must be Bearer {token}",
+				"message": "未认证（缺少 Bearer 头或会话 Cookie）",
 			})
 			c.Abort()
 			return
 		}
 
-		claims, err := auth.ParseToken(parts[1])
+		claims, err := auth.ParseToken(token)
 		if err != nil {
 			c.JSON(http.StatusUnauthorized, map[string]interface{}{
 				"code":    http.StatusUnauthorized,
@@ -291,10 +291,20 @@ func AdminMiddleware() app.HandlerFunc {
 		}
 
 		// 注销黑名单检查（与 AuthMiddleware 同语义：已注销 token 即刻失效）
-		if auth.IsTokenRevoked(ctx, parts[1]) {
+		if auth.IsTokenRevoked(ctx, token) {
 			c.JSON(http.StatusUnauthorized, map[string]interface{}{
 				"code":    http.StatusUnauthorized,
 				"message": "Token has been revoked",
+			})
+			c.Abort()
+			return
+		}
+
+		// CSRF 门禁（仅 Cookie 认证的非安全方法）
+		if !CSRFAllowed(c, viaCookie) {
+			c.JSON(http.StatusForbidden, map[string]interface{}{
+				"code":    http.StatusForbidden,
+				"message": "缺少 CSRF 头（Cookie 认证的写请求须携带 X-Requested-With: XMLHttpRequest）",
 			})
 			c.Abort()
 			return
@@ -331,22 +341,16 @@ func AdminMiddleware() app.HandlerFunc {
 // OptionalAuthMiddleware 可选认证中间件（不强制要求登录）
 func OptionalAuthMiddleware() app.HandlerFunc {
 	return func(ctx context.Context, c *app.RequestContext) {
-		// 获取Authorization头
-		authHeader := string(c.GetHeader("Authorization"))
-		if authHeader == "" {
-			c.Next(ctx)
-			return
-		}
-
-		// 验证Bearer token格式
-		parts := strings.SplitN(authHeader, " ", 2)
-		if len(parts) != 2 || parts[0] != "Bearer" {
+		// 令牌来源：Bearer 头或会话 Cookie（可选路径不做 CSRF 门禁：
+		// 身份在此仅影响配额归属/审计归因，非授权边界）
+		token, _ := SessionToken(c)
+		if token == "" {
 			c.Next(ctx)
 			return
 		}
 
 		// 解析JWT token
-		claims, err := auth.ParseToken(parts[1])
+		claims, err := auth.ParseToken(token)
 		if err != nil {
 			c.Next(ctx)
 			return
@@ -355,7 +359,7 @@ func OptionalAuthMiddleware() app.HandlerFunc {
 		// 已注销 token 一律按匿名放行（2026-10-05 审计 P1 修复）：可选身份路径
 		// 也要尊重吊销语义，否则 logout 后旧 JWT 仍在分享/chunk/presign 等路由
 		// 注入 user_id（配额、归属、审计归因全部按"已登录"处理）
-		if auth.IsTokenRevoked(ctx, parts[1]) {
+		if auth.IsTokenRevoked(ctx, token) {
 			c.Next(ctx)
 			return
 		}

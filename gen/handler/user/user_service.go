@@ -14,6 +14,7 @@ import (
 	usermodel "github.com/filescodebox/contracts/gen/user"
 	admin "github.com/filescodebox/core/app/admin"
 	userservice "github.com/filescodebox/core/app/user"
+	"github.com/filescodebox/core/pkg/auth"
 	"github.com/filescodebox/core/pkg/middleware"
 )
 
@@ -111,6 +112,10 @@ func Login(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 	lock.Reset(ctx, lockKey)
+
+	// HttpOnly 会话 Cookie（2026-10-05 遗留修复：浏览器端令牌移出 localStorage；
+	// 响应体 token 保留，API 消费方仍可走 Bearer）
+	middleware.SetSessionCookie(c, token, int(auth.SessionExpiry().Seconds()))
 
 	resp := &usermodel.LoginResp{
 		Code:    200,

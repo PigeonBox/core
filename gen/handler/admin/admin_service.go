@@ -12,6 +12,7 @@ import (
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
 	admin "github.com/filescodebox/contracts/gen/admin"
 	adminsvc "github.com/filescodebox/core/app/admin"
+	"github.com/filescodebox/core/pkg/auth"
 	"github.com/filescodebox/core/pkg/middleware"
 )
 
@@ -67,6 +68,9 @@ func AdminLogin(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 	lock.Reset(ctx, lockKey)
+
+	// HttpOnly 会话 Cookie（浏览器端令牌移出 localStorage；Token 体保留兼容）
+	middleware.SetSessionCookie(c, token, int(auth.SessionExpiry().Seconds()))
 
 	// 返回成功响应
 	resp := &admin.AdminLoginResp{
