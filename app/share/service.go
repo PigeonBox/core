@@ -952,11 +952,20 @@ func (s *Service) RestoreUserShare(ctx context.Context, userID uint, code string
 	return nil
 }
 
+// ErrNotInRecycleBin 分享不在回收站（未软删或不存在），无法永久删除。
+// 直接 hard 活跃分享此前为 200 静默 no-op（0 行删除也返回成功），
+// 运维/集成误判已清理（v0.11.1 修复：改为显式 400）。
+var ErrNotInRecycleBin = errors.New("分享不在回收站中，请先删除（软删除）后再永久删除")
+
 // HardDeleteUserShare 永久删除软删除的分享
 func (s *Service) HardDeleteUserShare(ctx context.Context, userID uint, code string) error {
 	s.ensureRepository()
-	if err := s.fileCodeRepo.HardDeleteByCode(ctx, userID, code); err != nil {
+	n, err := s.fileCodeRepo.HardDeleteByCode(ctx, userID, code)
+	if err != nil {
 		return err
+	}
+	if n == 0 {
+		return ErrNotInRecycleBin
 	}
 	s.federationDeleted(code)
 	return nil

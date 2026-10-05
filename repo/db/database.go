@@ -104,6 +104,9 @@ func SetDatabaseInstance(db *gorm.DB) {
 
 // autoMigrate 自动迁移数据库表
 func autoMigrate() error {
+	// 注意：新增领域模型必须同步登记于此——版本化迁移(migrations/*.sql)对已应用
+	// 过的库不会重放，漏登记的表在升级路径老库上永远缺失（v0.11.1 前漏登
+	// FilePreview，导致所有升级库预览域整体 404）。
 	return DB.AutoMigrate(
 		&model.User{},
 		&model.FileCode{},
@@ -114,5 +117,6 @@ func autoMigrate() error {
 		&model.AdminOperationLog{},
 		&model.UserAPIKey{},
 		&model.SystemConfigRecord{},
+		&model.FilePreview{},
 	)
 }

@@ -300,6 +300,23 @@ func (s *Service) Complete(ctx context.Context, uploadID, token, ownerIP string)
 		// 为空则该分享不参与秒传指纹库）
 	}
 
+	// 3.6 self 方案存在性核实（v0.11.1）：对象存在性此前只有 s3 路径核实，
+	// 本地中转不检查——init 后未 PUT 直接 Complete 会创建孤儿分享（记录在、
+	// 对象无，公开访问 500）。此处以读能力核实对象存在并采信服务端实际大小。
+	if meta.Scheme == SchemeSelf {
+		if hr, ok := s.storage.(headReader); s.storage != nil && ok {
+			rc, size, rerr := hr.GetFileReader(ctx, meta.ObjectKey)
+			if rerr != nil {
+				return nil, fmt.Errorf("对象尚未上传或不可读: %w", rerr)
+			}
+			_ = rc.Close()
+			if err := utils.CheckUploadSize(size, utils.GetMaxUploadSize()); err != nil {
+				return nil, fmt.Errorf("文件过大")
+			}
+			meta.FileSize = size
+		}
+	}
+
 	// 3.8 魔数复检（2026-10-05 审计 P3，对齐 chunk 通道）：此前 presign 通道
 	// 落盘后无内容检查，扩展名伪装的可执行/脚本可经 presign 入库。统一存储
 	// 实例两种 scheme 都读得到对象（local 直落盘 / s3 为事实源），失败即拒并

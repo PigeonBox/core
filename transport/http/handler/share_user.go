@@ -3,6 +3,7 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strconv"
 	"time"
@@ -217,6 +218,11 @@ func HardDeleteUserShare(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 	if err := getShareService().HardDeleteUserShare(ctx, uid, code); err != nil {
+		// 不在回收站（未软删/不存在）：显式 400，替代此前 200 静默 no-op
+		if errors.Is(err, share.ErrNotInRecycleBin) {
+			c.JSON(consts.StatusBadRequest, map[string]interface{}{"code": 400, "message": err.Error()})
+			return
+		}
 		c.JSON(consts.StatusInternalServerError, map[string]interface{}{"code": 500, "message": "永久删除失败: " + err.Error()})
 		return
 	}

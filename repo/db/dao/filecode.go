@@ -288,11 +288,15 @@ func (r *FileCodeRepository) RestoreByCode(ctx context.Context, userID uint, cod
 		Update("deleted_at", nil).Error
 }
 
-// HardDeleteByCode 永久删除（仅 owner，已软删除的）
-func (r *FileCodeRepository) HardDeleteByCode(ctx context.Context, userID uint, code string) error {
-	return r.db().WithContext(ctx).Unscoped().Model(&model.FileCode{}).
+// HardDeleteByCode 永久删除（仅 owner，已软删除的）。返回实际删除行数：
+// 0 = 该分享不在回收站（未软删或不存在）。调用方必须对 0 显式报错——
+// 此前 0 行删除也返回 nil，直接 hard 活跃分享表现为 200 静默 no-op，
+// 运维/集成误判已清理（v0.11.1 修复）。
+func (r *FileCodeRepository) HardDeleteByCode(ctx context.Context, userID uint, code string) (int64, error) {
+	res := r.db().WithContext(ctx).Unscoped().Model(&model.FileCode{}).
 		Where("user_id = ? AND code = ? AND deleted_at IS NOT NULL", userID, code).
-		Delete(&model.FileCode{}).Error
+		Delete(&model.FileCode{})
+	return res.RowsAffected, res.Error
 }
 
 // DecrementExpiredCount 原子扣减剩余次数。

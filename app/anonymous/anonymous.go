@@ -164,14 +164,17 @@ func (s *Service) lookupShareCode(ctx context.Context, code string) (string, err
 	return "", ErrCodeNotFound
 }
 
-// isShareCodeShape 判断是否形如 8 位分享码（字母数字，区分大小写）
+// isShareCodeShape 判断输入是否可回退 DB 直查分享码：8 位随机分享码（字母数字，
+// 区分大小写）或自定义取件码（3-32 位字母/数字/-/_，与创建端约束一致，上限放宽
+// 至 64 留裕量）。此前仅放行恰 8 位——自定义码两头不落，/anonymous/search|retrieve|
+// download 恒 404，联邦自定义码跨站程序化取件在最后一公里断裂（v0.11.1 修复）。
 func isShareCodeShape(code string) bool {
-	if len(code) != shareCodeLength {
+	if len(code) < 3 || len(code) > 64 {
 		return false
 	}
 	for i := 0; i < len(code); i++ {
 		c := code[i]
-		if (c < '0' || c > '9') && (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && c != '-' && c != '_' {
 			return false
 		}
 	}
@@ -268,6 +271,12 @@ func (s *Service) Peek(ctx context.Context, code string) (*CodeMeta, *model.File
 		return nil, nil, ErrCodeNotFound
 	}
 	enrichMetaFromDB(meta, fc)
+	// 过期分享与不存在同语义（统一 404 防探测），与 /share/metadata、Retrieve
+	// 对齐——此前仅查封禁不查过期，过期分享的元数据经本端点永久可查
+	// （v0.11.1 修复）。
+	if fc.IsExpired() {
+		return nil, nil, ErrCodeNotFound
+	}
 	if fc.IsBlockedShare() {
 		return nil, nil, &BlockedError{Status: fc.Status}
 	}
