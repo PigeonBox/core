@@ -1233,6 +1233,9 @@ func publicConfigHandler(ctx context.Context, c *app.RequestContext) {
 		"oidcEnabled": conf.GetGlobalConfig().Security.OIDC.Enabled,
 		// 管理入口可见性（ui.show_admin_addr；/admin 路由始终可达，仅控制页脚入口展示）
 		"showAdminAddr": config.UI.ShowAdminAddr,
+		// API 文档开关（ui.expose_openapi）：false 时后端 /openapi.json 404，
+		// 前端据此隐藏 API 文档入口并将 /api-docs 页降级为未开启提示
+		"apiDocsEnabled": config.UI.ExposeOpenAPI,
 		// 安全版主题（serve 时白名单校验：非 http(s) URL / 非 #hex 颜色整体忽略）
 		"background":  safeImageURL(config.UI.Background),
 		"accentColor": safeHexColor(config.UI.AccentColor),
