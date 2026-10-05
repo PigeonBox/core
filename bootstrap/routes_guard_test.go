@@ -24,6 +24,7 @@ func TestRegisteredRoutesMatchContract(t *testing.T) {
 	config = &conf.AppConfiguration{
 		MCP:      conf.MCPConfig{Enabled: true},
 		Security: conf.SecurityConfig{OIDC: conf.OIDCConfig{Enabled: true}},
+		UI:       conf.UIConfig{ExposeOpenAPI: true}, // openapi.json 注册受 ui.expose_openapi 门控
 	}
 	defer func() { config = prev }()
 

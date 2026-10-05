@@ -69,6 +69,51 @@ type Config = conf.AppConfiguration
 // staticOpts 保存最近一次 Bootstrap 应用的选项(静态服务等闭包读取)。
 var staticOpts = defaultOptions()
 
+// rateLimitBucket 路径 → 限流桶（"login"/"upload"/"download"，空串=不限）。
+//
+// 前缀必须与真实路由表逐一对应：TestRateLimitBucketCoversRoutes 守卫测试
+// 用 hertz 实际注册路由回归本函数，任何"桶里写了、路由表没有"（死条目，
+// 等于没限流）或"公开路由没进桶"都会在 CI 失败。
+func rateLimitBucket(path string) string {
+	switch {
+	// 凭证类：爆破/灌号目标（注册与初始化向导同属此类，2026-10-05 审计补入；
+	// OIDC login/callback 涉及 IdP 跳转与 code 换票建号，2026-10-06 补入）
+	case strings.HasPrefix(path, "/admin/login"),
+		strings.HasPrefix(path, "/user/login"),
+		strings.HasPrefix(path, "/user/register"),
+		strings.HasPrefix(path, "/api/v1/user/oidc/"),
+		path == "/setup", path == "/setup/check":
+		return "login"
+
+	// 写入/上传类（匿名发布、分块上传、预签名、寄件码访客投递）
+	case strings.HasPrefix(path, "/anonymous/generate"),
+		strings.HasPrefix(path, "/anonymous/retrieve"),
+		strings.HasPrefix(path, "/chunk/"),
+		strings.HasPrefix(path, "/api/v1/presign"),
+		strings.HasPrefix(path, "/api/v1/share/multi"),
+		strings.HasPrefix(path, "/api/v1/request/"),
+		strings.HasPrefix(path, "/share/text"),
+		strings.HasPrefix(path, "/share/file"):
+		return "upload"
+
+	// 下载与公开枚举类（/anonymous/search 与 /share/metadata 是免密码元数据
+	// 预言机，/share/select 取件内容获取，/request 寄件码 token 探测，
+	// /qrcode 图片编码 CPU 型公开端点，/api/v1/federation/resolve 可借本站
+	// 做联邦枚举跳板）
+	case strings.Contains(path, "/download"),
+		strings.HasPrefix(path, "/anonymous/search/"),
+		strings.HasPrefix(path, "/share/metadata/"),
+		strings.HasPrefix(path, "/share/select"),
+		strings.HasPrefix(path, "/request/"),
+		strings.HasPrefix(path, "/preview/"),
+		strings.HasPrefix(path, "/qrcode/"),
+		strings.HasPrefix(path, "/openapi.json"),
+		strings.HasPrefix(path, "/api/v1/federation/resolve"):
+		return "download"
+	}
+	return ""
+}
+
 // CORS 跨域中间件（配置化）。
 //
 // 安全策略：
@@ -94,6 +139,10 @@ func CORS() app.HandlerFunc {
 		allowOrigins[o] = true
 	}
 	allowCredentials := config.Security.CORS.AllowCredentials
+	// localhost 兜底仅限开发模式：生产实例放行任意 localhost Origin 等于给
+	// 本机/内网里的恶意页面开跨域读通道（2026-10-06 审计收紧）。
+	// 生产需要本地联调时用 FCB_CORS_ALLOW_ORIGINS 显式加白名单。
+	localhostFallback := config != nil && !config.IsProduction()
 
 	return func(ctx context.Context, c *app.RequestContext) {
 		origin := string(c.GetHeader("Origin"))
@@ -103,7 +152,7 @@ func CORS() app.HandlerFunc {
 			if allowOrigins[origin] {
 				// 白名单精确匹配
 				allowedOrigin = origin
-			} else if isLocalhostOrigin(origin) {
+			} else if localhostFallback && isLocalhostOrigin(origin) {
 				// 无白名单或未命中白名单时，允许 localhost 跨域（开发友好）
 				allowedOrigin = origin
 			}
@@ -228,6 +277,9 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("rate_limit.block_seconds", 60)
 	// MCP server 默认开启（路由挂管理员认证，无暴露风险）
 	v.SetDefault("mcp.enabled", true)
+	// /openapi.json 公开开关：默认保持公开（前端 /api-docs 页依赖），
+	// 生产部署建议关闭以收缩端点清单侦察面（FCB_UI_EXPOSE_OPENAPI=false）
+	v.SetDefault("ui.expose_openapi", true)
 	// 内容审核默认关闭、命中默认直接拒绝（治理 2026-10-03）
 	v.SetDefault("moderation.enabled", false)
 	v.SetDefault("moderation.block_action", "reject")
@@ -315,6 +367,8 @@ var envBindings = map[string][]string{
 	"notify.smtp.from":     {"FCB_SMTP_FROM"},
 	// mcp
 	"mcp.enabled": {"FCB_MCP_ENABLED"},
+	// ui
+	"ui.expose_openapi": {"FCB_UI_EXPOSE_OPENAPI"},
 	// moderation（内容审核，治理 2026-10-03）
 	"moderation.enabled":       {"FCB_MODERATION_ENABLED"},
 	"moderation.blocked_words": {"FCB_MODERATION_BLOCKED_WORDS"},
@@ -696,6 +750,9 @@ func BootstrapWithOptions(configPath string, opts ...Option) (*server.Hertz, err
 
 	// 限流：路径感知，按接口类型选择限流维度（登录/上传/下载）。
 	// 防止暴力破解登录、取件码枚举、上传下载 DoS。
+	// 路径 → 桶的映射抽为 rateLimitBucket 纯函数（有守卫测试对真实路由表
+	// 回归，防止前缀写错导致桶成死条目——2026-10-06 审计发现 /api/v1/chunk
+	// 前缀在路由表中不存在，分块上传此前从未进桶）。
 	// 配置来自 rate_limit 段（默认值见 middleware.DefaultRateLimitConfig），
 	// use_redis=true 且 Redis 可用时多实例共享计数。
 	rl := middleware.InitDefaultRateLimiter(middleware.RateLimitConfigFromConf())
@@ -703,37 +760,27 @@ func BootstrapWithOptions(configPath string, opts ...Option) (*server.Hertz, err
 	// 匿名上传日配额计数器复用同一 Redis（无 Redis 退化进程内计数）
 	gate.SetQuotaRedis(redis.GetClient())
 	h.Use(func(ctx context.Context, c *app.RequestContext) {
-		path := string(c.Request.URI().Path())
-		switch {
-		case strings.HasPrefix(path, "/admin/login"),
-			strings.HasPrefix(path, "/api/v1/user/login"),
-			strings.HasPrefix(path, "/user/login"),
-			// 注册与初始化向导同属凭证类端点（2026-10-05 审计：此前无限流，
-			// 可批量灌号/在未初始化实例上抢建管理员）
-			strings.HasPrefix(path, "/user/register"),
-			strings.HasPrefix(path, "/api/v1/user/register"),
-			path == "/setup", path == "/setup/check":
+		switch rateLimitBucket(string(c.Request.URI().Path())) {
+		case "login":
 			rl.LoginMiddleware()(ctx, c)
-		case strings.HasPrefix(path, "/anonymous/generate"),
-			strings.HasPrefix(path, "/anonymous/retrieve"),
-			strings.HasPrefix(path, "/api/v1/presign"),
-			strings.HasPrefix(path, "/api/v1/chunk"),
-			strings.HasPrefix(path, "/api/v1/share/multi"),
-			strings.HasPrefix(path, "/share/text"),
-			strings.HasPrefix(path, "/share/file"):
+		case "upload":
 			rl.UploadMiddleware()(ctx, c)
-		case strings.Contains(path, "/download"),
-			// 元数据/搜索/预览/联邦解析：公开枚举类端点，此前落 default 全不限速
-			// （/anonymous/search 与 /share/metadata 是免密码元数据预言机，
-			// /api/v1/federation/resolve 可借本站做联邦枚举跳板）
-			strings.HasPrefix(path, "/anonymous/search/"),
-			strings.HasPrefix(path, "/share/metadata/"),
-			strings.HasPrefix(path, "/preview/"),
-			strings.HasPrefix(path, "/api/v1/federation/resolve"):
+		case "download":
 			rl.DownloadMiddleware()(ctx, c)
 		default:
 			c.Next(ctx)
 		}
+	})
+
+	// /version 版本信息不再公开：版本号/commit 是 CVE 匹配的定位器，
+	// 前端零消费、探针不走它（健康探针用 /ping /live /ready），收归管理员。
+	// 运维侧查版本用 admin 凭证调用（smoke-full.sh 已同步）。
+	h.Use(func(ctx context.Context, c *app.RequestContext) {
+		if string(c.Request.URI().Path()) == "/version" {
+			middleware.AdminMiddleware()(ctx, c)
+			return
+		}
+		c.Next(ctx)
 	})
 
 	// 6. 注册路由
@@ -786,7 +833,11 @@ func Cleanup() {
 // 即可打开前端页面并使用全部功能。
 func customizedRegister(r *server.Hertz) {
 	// ===== OpenAPI 文档（Swagger UI）=====
-	r.GET("/openapi.json", customHandler.OpenAPISpec)
+	// ui.expose_openapi=false 时不注册（404）：端点全清单对攻击者是现成的
+	// 侦察地图；前端 /api-docs 页是唯一消费方，生产不需要时可整体关闭。
+	if config.UI.ExposeOpenAPI {
+		r.GET("/openapi.json", customHandler.OpenAPISpec)
+	}
 
 	// ===== presign 预签名直传端点（gen router 未注册，在此补）=====
 	r.PUT("/api/v1/presign/upload-direct/:uploadID", presignHandler.UploadDirect)

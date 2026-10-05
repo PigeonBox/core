@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/cloudwego/hertz/pkg/app"
+	"github.com/filescodebox/core/pkg/resp"
 	"github.com/google/uuid"
 )
 
@@ -16,17 +17,19 @@ type CtxKeyTraceID struct{}
 // RequestID 为每个请求生成 / 透传 trace_id（X-Trace-Id）。
 //
 // 行为：
-//   - 优先沿用请求头 X-Trace-Id（便于上游链路串联）
-//   - 缺失时生成 UUID
+//   - 沿用请求头 X-Trace-Id（须通过白名单校验：长度 ≤64、字符集
+//     [A-Za-z0-9._-]，见 resp.ValidTraceID。2026-10-06 审计：原样回显
+//     任意值会把超长串写进响应头并落入访问日志——日志刷量/注入面）
+//   - 缺失或不合规时生成 UUID
 //   - 写入响应头、app.RequestContext（Set）与 context.Context，
 //     使访问日志 / 业务日志 / resp envelope 都能拿到同一个 trace_id。
 //
-// 与 internal/pkg/resp.getOrGenTraceID 配合：resp 包在构造响应体时
-// 会读取同样的 header，保证全链路 trace_id 一致。
+// 与 resp.getOrGenTraceID 配合：resp 包在构造响应体时会读取同样的
+// header（同样过白名单），保证全链路 trace_id 一致。
 func RequestID() app.HandlerFunc {
 	return func(ctx context.Context, c *app.RequestContext) {
 		tid := string(c.GetHeader(TraceIDHeader))
-		if tid == "" {
+		if !resp.ValidTraceID(tid) {
 			tid = uuid.New().String()
 		}
 		// 写响应头，供客户端 / 代理记录

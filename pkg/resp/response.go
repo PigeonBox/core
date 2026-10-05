@@ -35,9 +35,32 @@ type PageData struct {
 // traceIDHeader trace_id 通过 X-Trace-Id header 透传
 const traceIDHeader = "X-Trace-Id"
 
+// maxTraceIDLen 客户端自带 trace_id 的长度上限（超过即视为滥用，重新生成）
+const maxTraceIDLen = 64
+
+// ValidTraceID 客户端自带 trace_id 白名单校验：非空、长度 ≤64、
+// 字符集 [A-Za-z0-9._-]。原样采信任意值会把超长串回显进响应头并落入
+// 访问日志（日志刷量/注入面），不合规一律重新生成。
+// 供 pkg/middleware.RequestID 与本包 getOrGenTraceID 共用。
+func ValidTraceID(tid string) bool {
+	if tid == "" || len(tid) > maxTraceIDLen {
+		return false
+	}
+	for i := 0; i < len(tid); i++ {
+		ch := tid[i]
+		switch {
+		case ch >= '0' && ch <= '9', ch >= 'a' && ch <= 'z', ch >= 'A' && ch <= 'Z',
+			ch == '-', ch == '_', ch == '.':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 func getOrGenTraceID(c *app.RequestContext) string {
 	tid := string(c.GetHeader(traceIDHeader))
-	if tid == "" {
+	if !ValidTraceID(tid) {
 		tid = uuid.New().String()
 	}
 	c.Response.Header.Set(traceIDHeader, tid)

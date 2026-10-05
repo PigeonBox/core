@@ -367,6 +367,9 @@ type UIConfig struct {
 	ShowAdminAddr bool   `mapstructure:"show_admin_addr" json:"show_admin_addr"`
 	Background    string `mapstructure:"background" json:"background"`
 	AccentColor   string `mapstructure:"accent_color" json:"accent_color"`
+	// ExposeOpenAPI 是否公开 /openapi.json（默认 true，前端 /api-docs 页依赖）；
+	// 生产部署可置 false 收缩端点清单侦察面（env: FCB_UI_EXPOSE_OPENAPI）。
+	ExposeOpenAPI bool `mapstructure:"expose_openapi" json:"expose_openapi"`
 }
 
 // ObservabilityConfig 可观测性配置（metrics；分布式追踪见路线图，未实现前不暴露配置）
