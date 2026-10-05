@@ -20,11 +20,13 @@ func Register(r *server.Hertz) {
 	{
 		_admin := root.Group("/admin", _adminMw()...)
 		_admin.GET("/notifies", append(_listMw(), notify.List)...)
-		_notifies := _admin.Group("/notifies", _notifiesMw()...)
-		_notifies.DELETE("/:id", append(_deleteMw(), notify.Delete)...)
-		_notifies.GET("/:id", append(_getMw(), notify.Get)...)
-		_notifies.PUT("/:id", append(_updateMw(), notify.Update)...)
 		_admin.POST("/notifies", append(_createMw(), notify.Create)...)
+		{
+			_notifies := _admin.Group("/notifies", _notifiesMw()...)
+			_notifies.DELETE("/:id", append(_deleteMw(), notify.Delete)...)
+			_notifies.GET("/:id", append(_getMw(), notify.Get)...)
+			_notifies.PUT("/:id", append(_updateMw(), notify.Update)...)
+		}
 	}
 	{
 		_notifies0 := root.Group("/notifies", _notifies0Mw()...)

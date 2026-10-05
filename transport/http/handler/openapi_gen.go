@@ -251,3 +251,86 @@ func securityFor(method, path string) ([]map[string]any, string) {
 		return nil, ""
 	}
 }
+
+// MergeWithIDLSpec 骨架规范 × contracts IDL 规范（openapi.Spec）合并。
+//
+// 设计（2026-10-06 IDL/hz 治理链路）：
+//   - IDL 治理域：paths 下的 operation 以 IDL 条目为准（带完整 request/response
+//     schema），但保留骨架独有的 security/tags 字段（认证矩阵真相源在运行时）；
+//   - customizedRegister 手写路由：骨架独有路径/方法原样保留（骨架级、无 schema）；
+//   - components：骨架的 securitySchemes 与 IDL 的 schemas 深并，键冲突 IDL 优先。
+//
+// 任一侧解析失败均回退骨架（可用性优先）。
+func MergeWithIDLSpec(skeleton, idl []byte) []byte {
+	var skel, id map[string]any
+	if json.Unmarshal(skeleton, &skel) != nil || json.Unmarshal(idl, &id) != nil {
+		return skeleton
+	}
+
+	skelPaths, _ := skel["paths"].(map[string]any)
+	idPaths, _ := id["paths"].(map[string]any)
+	for p, ops := range idPaths {
+		idOps, ok := ops.(map[string]any)
+		if !ok {
+			continue
+		}
+		skelOps, ok := skelPaths[p].(map[string]any)
+		if !ok {
+			// 骨架没有该路径（罕见：IDL 有、运行时未注册），整段并入
+			skelPaths[p] = idOps
+			continue
+		}
+		for m, op := range idOps {
+			idOp, ok := op.(map[string]any)
+			if !ok {
+				continue
+			}
+			skelOp, ok := skelOps[m].(map[string]any)
+			if !ok {
+				skelOps[m] = idOp
+				continue
+			}
+			// 同路径同方法：骨架字段打底，IDL 字段覆盖（schema 赢，security/tags 留）
+			merged := map[string]any{}
+			for k, v := range skelOp {
+				merged[k] = v
+			}
+			for k, v := range idOp {
+				merged[k] = v
+			}
+			if _, has := skelOp["security"]; has {
+				merged["security"] = skelOp["security"]
+			}
+			skelOps[m] = merged
+		}
+	}
+
+	// components 深并：securitySchemes 留骨架，schemas IDL 优先
+	skelComp, _ := skel["components"].(map[string]any)
+	idComp, _ := id["components"].(map[string]any)
+	if skelComp == nil {
+		skelComp = map[string]any{}
+		skel["components"] = skelComp
+	}
+	if idSchemas, ok := idComp["schemas"].(map[string]any); ok {
+		skelSchemas, ok := skelComp["schemas"].(map[string]any)
+		if !ok {
+			skelSchemas = map[string]any{}
+			skelComp["schemas"] = skelSchemas
+		}
+		for k, v := range idSchemas {
+			skelSchemas[k] = v
+		}
+	}
+	if _, ok := skelComp["securitySchemes"]; !ok {
+		if ss, ok := idComp["securitySchemes"]; ok {
+			skelComp["securitySchemes"] = ss
+		}
+	}
+
+	out, err := json.Marshal(skel)
+	if err != nil {
+		return skeleton
+	}
+	return out
+}

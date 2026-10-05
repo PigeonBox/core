@@ -22,15 +22,19 @@ func Register(r *server.Hertz) {
 		_admin.GET("/config", append(_admingetconfigMw(), admin.AdminGetConfig)...)
 		_admin.PUT("/config", append(_adminupdateconfigMw(), admin.AdminUpdateConfig)...)
 		_admin.GET("/files", append(_adminlistfilesMw(), admin.AdminListFiles)...)
-		_files := _admin.Group("/files", _filesMw()...)
-		_files.DELETE("/:id", append(_admindeletefileMw(), admin.AdminDeleteFile)...)
 		_admin.POST("/login", append(_adminloginMw(), admin.AdminLogin)...)
 		_admin.GET("/stats", append(_adminstatsMw(), admin.AdminStats)...)
 		_admin.GET("/users", append(_adminlistusersMw(), admin.AdminListUsers)...)
-		_users := _admin.Group("/users", _usersMw()...)
 		{
-			_id := _users.Group("/:id", _idMw()...)
-			_id.PUT("/status", append(_adminupdateuserstatusMw(), admin.AdminUpdateUserStatus)...)
+			_files := _admin.Group("/files", _filesMw()...)
+			_files.DELETE("/:id", append(_admindeletefileMw(), admin.AdminDeleteFile)...)
+		}
+		{
+			_users := _admin.Group("/users", _usersMw()...)
+			{
+				_id := _users.Group("/:id", _idMw()...)
+				_id.PUT("/status", append(_adminupdateuserstatusMw(), admin.AdminUpdateUserStatus)...)
+			}
 		}
 	}
 }

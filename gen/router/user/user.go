@@ -20,8 +20,6 @@ func Register(r *server.Hertz) {
 	{
 		_user := root.Group("/user", _userMw()...)
 		_user.GET("/api-keys", append(_listapikeysMw(), user.ListAPIKeys)...)
-		_api_keys := _user.Group("/api-keys", _api_keysMw()...)
-		_api_keys.DELETE("/:id", append(_deleteapikeyMw(), user.DeleteAPIKey)...)
 		_user.POST("/api-keys", append(_createapikeyMw(), user.CreateAPIKey)...)
 		_user.POST("/change-password", append(_changepasswordMw(), user.ChangePassword)...)
 		_user.GET("/files", append(_userfilesMw(), user.UserFiles)...)
@@ -30,5 +28,9 @@ func Register(r *server.Hertz) {
 		_user.PUT("/profile", append(_updateprofileMw(), user.UpdateProfile)...)
 		_user.POST("/register", append(_registerMw(), user.Register)...)
 		_user.GET("/stats", append(_userstatsMw(), user.UserStats)...)
+		{
+			_api_keys := _user.Group("/api-keys", _api_keysMw()...)
+			_api_keys.DELETE("/:id", append(_deleteapikeyMw(), user.DeleteAPIKey)...)
+		}
 	}
 }

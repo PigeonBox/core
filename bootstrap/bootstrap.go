@@ -15,6 +15,7 @@ import (
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/app/server"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
+	"github.com/filescodebox/contracts/openapi"
 	"github.com/filescodebox/core/conf"
 	"github.com/filescodebox/core/gen/router"
 	"github.com/filescodebox/core/pkg/auth"
@@ -789,7 +790,9 @@ func BootstrapWithOptions(configPath string, opts ...Option) (*server.Hertz, err
 	// 7. 注册自定义路由
 	customizedRegister(h)
 
-	// 8. 生成 openapi.json（运行时路由表 → 契约级骨架规范，根治快照漂移/容器 404）
+	// 8. 生成 openapi.json：骨架规范（运行时路由表，全端点零漂移+认证矩阵）
+	// 与 contracts IDL 规范（api.* 注解，带完整 schema）合并——IDL 治理域
+	// 以 IDL schema 为准，customizedRegister 手写路由由骨架补齐覆盖。
 	routes := make([]customHandler.OpenAPIRoute, 0, len(h.Routes()))
 	for _, rt := range h.Routes() {
 		routes = append(routes, customHandler.OpenAPIRoute{Method: rt.Method, Path: rt.Path})
@@ -798,10 +801,11 @@ func BootstrapWithOptions(configPath string, opts ...Option) (*server.Hertz, err
 	if cfg := conf.GetGlobalConfig(); cfg != nil {
 		baseURL = cfg.Server.BaseURL
 	}
-	customHandler.SetOpenAPISpecBytes(customHandler.BuildOpenAPISpec(routes, customHandler.SpecInfo{
+	skeleton := customHandler.BuildOpenAPISpec(routes, customHandler.SpecInfo{
 		Version: "1.1.0",
 		BaseURL: baseURL,
-	}))
+	})
+	customHandler.SetOpenAPISpecBytes(customHandler.MergeWithIDLSpec(skeleton, openapi.Spec))
 
 	logger.Info("Application bootstrap completed successfully")
 	return h, nil
