@@ -377,11 +377,16 @@ func BuildAndProbe(ctx context.Context, cfg *StorageConfig) error {
 }
 
 // ProbeConfig 认证级验证存储配置（管理端切换/保存前调用）。
-// s3：凭据有效且桶存在；webdav：根路径可达（401 在此暴露）；local：路径可创建可写。
+// s3/webdav：凭据+可达性；云厂商（oss/cos/bos/ks3/obs）：凭据有效且桶存在；
+// local：路径可创建可写。
+// 注意：云厂商类型必须显式列入下方 case——ConfigFromConf 归一后 Type 仍是
+// 厂商名（cos 等），若落入 default 会被当 local 只探本地路径，坏配置静默上线
+// （2026-10-05 215 实测：不存在的桶 Probe 照样通过，上传全挂）。
 func ProbeConfig(ctx context.Context, cfg *StorageConfig) error {
 	switch cfg.Type {
 	case StorageTypeS3, StorageTypeWebDAV, StorageTypeFTP, StorageTypeSFTP, StorageTypeGCS,
-		StorageTypeAzBlob, StorageTypeHDFS, StorageTypeOneDrv:
+		StorageTypeAzBlob, StorageTypeHDFS, StorageTypeOneDrv,
+		StorageTypeOSS, StorageTypeCOS, StorageTypeBOS, StorageTypeKS3, StorageTypeOBS:
 		op, err := buildOperator(cfg)
 		if err != nil {
 			return err
