@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -17,6 +18,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/filescodebox/core/pkg/logger"
+	"github.com/filescodebox/core/pkg/security"
 	"github.com/filescodebox/core/repo/db/dao"
 	"github.com/filescodebox/core/repo/db/model"
 	"github.com/filescodebox/kit/async"
@@ -24,7 +26,22 @@ import (
 )
 
 // webhookHTTPClient webhook 推送专用客户端（5s 超时；推送失败静默记日志不重试）。
-var webhookHTTPClient = &http.Client{Timeout: 5 * time.Second}
+// 重定向防护（2026-10-05 审计 P3）：webhook URL 仅管理员可配，但保存期校验
+// 会被 302 绕过——目标服务器一跳转即可指向私网。CheckRedirect 逐跳复用
+// security.ValidateEndpointURL（respect security.ssrf.allow_private_networks），
+// 私网目标且未放行时中止。
+var webhookHTTPClient = &http.Client{
+	Timeout: 5 * time.Second,
+	CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 5 {
+			return fmt.Errorf("stopped after 5 redirects")
+		}
+		if err := security.ValidateEndpointURL(req.URL.String()); err != nil {
+			return fmt.Errorf("webhook 重定向目标被拒绝: %w", err)
+		}
+		return nil
+	},
+}
 
 // 错误
 var (

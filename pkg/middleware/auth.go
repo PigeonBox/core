@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/filescodebox/core/pkg/auth"
@@ -80,6 +82,107 @@ func SetIdentityHeaders(c *app.RequestContext, claims *auth.Claims) {
 	c.Header("X-Role", claims.Role)
 }
 
+// ===== 身份回查（2026-10-05 审计 P2：封禁/降权/改密即时生效）=====
+//
+// JWT 是无状态的：仅凭签名无法感知"签发后用户被 ban/降权/改密"。此前 API Key
+// 每请求回查属主状态（apikey.go）而 JWT 不回查，两条认证路径不对称——封禁用户
+// 的 JWT 可用到自然过期（默认 7 天），降权的 admin 同理，且 refresh 端点可无限
+// 续期。注入 IdentityLoader 后，认证路径以 DB 当前值复核 status/role/会话纪元
+// （users.session_epoch，变更点 +1）；短 TTL 缓存控制查询成本，变更方调
+// InvalidateIdentity 可立即生效。
+
+const (
+	identityCacheTTL     = 30 * time.Second
+	identityCacheMaxSize = 65536
+)
+
+// IdentityRecord 用户当前态快照（composition root 以 dao 桥注入）。
+type IdentityRecord struct {
+	Status string
+	Role   string
+	Epoch  int
+}
+
+var (
+	identityLoader func(ctx context.Context, userID uint) (*IdentityRecord, error)
+	identityMu     sync.RWMutex
+	identityCache  = map[uint]identityCacheEntry{}
+	identityGCAt   time.Time
+)
+
+type identityCacheEntry struct {
+	rec *IdentityRecord
+	at  time.Time
+}
+
+// SetIdentityLoader 注入身份加载器（bootstrap 调用一次；nil = 关闭回查，
+// 退化为纯 JWT 语义——单测/轻量环境）。
+func SetIdentityLoader(fn func(ctx context.Context, userID uint) (*IdentityRecord, error)) {
+	identityMu.Lock()
+	defer identityMu.Unlock()
+	identityLoader = fn
+}
+
+// InvalidateIdentity 清除某用户的回查缓存（改密/封禁/降权落库后调用，
+// 使本次变更绕过 TTL 立即生效）。
+func InvalidateIdentity(userID uint) {
+	identityMu.Lock()
+	delete(identityCache, userID)
+	identityMu.Unlock()
+}
+
+// identityOf 带缓存的回查。loader 未注入返回 (nil, nil)，调用方跳过复核。
+func identityOf(ctx context.Context, userID uint) (*IdentityRecord, error) {
+	identityMu.RLock()
+	loader := identityLoader
+	if loader != nil {
+		if e, ok := identityCache[userID]; ok && time.Since(e.at) < identityCacheTTL {
+			identityMu.RUnlock()
+			return e.rec, nil
+		}
+	}
+	identityMu.RUnlock()
+	if loader == nil {
+		return nil, nil
+	}
+
+	rec, err := loader(ctx, userID)
+	identityMu.Lock()
+	// 惰性 GC：容量触顶或距上次清扫超过一个 TTL 量级时清理过期项
+	now := time.Now()
+	if len(identityCache) >= identityCacheMaxSize || now.Sub(identityGCAt) > identityCacheTTL {
+		for k, e := range identityCache {
+			if now.Sub(e.at) >= identityCacheTTL {
+				delete(identityCache, k)
+			}
+		}
+		identityGCAt = now
+	}
+	if err == nil && rec != nil {
+		identityCache[userID] = identityCacheEntry{rec: rec, at: now}
+	}
+	identityMu.Unlock()
+	return rec, err
+}
+
+// identityFresh 认证附加复核：用户 active + 会话纪元与 claim 一致。
+// 通过时用 DB 角色回填 claim（防降权后旧 claim 仍带 admin）。
+// 返回 false 表示应拒绝（强制路径 401 / 可选路径降级匿名）。
+func identityFresh(ctx context.Context, claims *auth.Claims) bool {
+	rec, err := identityOf(ctx, claims.UserID)
+	if rec == nil {
+		return err == nil // loader 未注入 → 维持纯 JWT 语义
+	}
+	if err != nil {
+		return false // 查询失败 fail-closed（与 API Key 回查语义一致）
+	}
+	if rec.Status != "active" || rec.Epoch != claims.Epoch {
+		return false
+	}
+	claims.Role = rec.Role
+	return true
+}
+
 // AuthMiddleware JWT认证中间件
 func AuthMiddleware() app.HandlerFunc {
 	return func(ctx context.Context, c *app.RequestContext) {
@@ -121,6 +224,16 @@ func AuthMiddleware() app.HandlerFunc {
 			c.JSON(http.StatusUnauthorized, map[string]interface{}{
 				"code":    http.StatusUnauthorized,
 				"message": "Token has been revoked",
+			})
+			c.Abort()
+			return
+		}
+
+		// 身份复核（封禁/降权/改密即时生效；DB 角色回填 claim）
+		if !identityFresh(ctx, claims) {
+			c.JSON(http.StatusUnauthorized, map[string]interface{}{
+				"code":    http.StatusUnauthorized,
+				"message": "账号状态已变更，请重新登录",
 			})
 			c.Abort()
 			return
@@ -187,6 +300,16 @@ func AdminMiddleware() app.HandlerFunc {
 			return
 		}
 
+		// 身份复核（封禁/降权即时生效；DB 角色回填 claim 后再判管理员）
+		if !identityFresh(ctx, claims) {
+			c.JSON(http.StatusUnauthorized, map[string]interface{}{
+				"code":    http.StatusUnauthorized,
+				"message": "账号状态已变更，请重新登录",
+			})
+			c.Abort()
+			return
+		}
+
 		// 角色检查先于任何放行
 		if claims.Role != "admin" {
 			c.JSON(http.StatusForbidden, map[string]interface{}{
@@ -233,6 +356,12 @@ func OptionalAuthMiddleware() app.HandlerFunc {
 		// 也要尊重吊销语义，否则 logout 后旧 JWT 仍在分享/chunk/presign 等路由
 		// 注入 user_id（配额、归属、审计归因全部按"已登录"处理）
 		if auth.IsTokenRevoked(ctx, parts[1]) {
+			c.Next(ctx)
+			return
+		}
+
+		// 身份复核不过（封禁/纪元过期）同样降级匿名
+		if !identityFresh(ctx, claims) {
 			c.Next(ctx)
 			return
 		}

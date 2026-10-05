@@ -19,6 +19,9 @@ type User struct {
 	LastLoginAt   *time.Time `json:"last_login_at"`                          // 最后登录时间
 	LastLoginIP   string     `gorm:"size:45" json:"last_login_ip"`           // 最后登录IP
 	OidcSub       string     `gorm:"index;size:128" json:"-"`                // OIDC subject（P2 SSO；空=非 OIDC）
+	// SessionEpoch 会话纪元：改密/封禁/降权时 +1，使全部已签发 JWT 即时失效
+	// （2026-10-05 审计 P2：此前封禁/重置密码后旧 JWT 仍有效至自然过期）。
+	SessionEpoch int `gorm:"default:0" json:"-"`
 
 	// 用户上传统计
 	TotalUploads    int   `gorm:"default:0" json:"total_uploads"`     // 总上传次数

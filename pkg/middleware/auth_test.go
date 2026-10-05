@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -46,7 +47,7 @@ func TestAdminMiddlewareRoleGate(t *testing.T) {
 	ran := false
 	h := newServer(&ran)
 	w := ut.PerformRequest(h.Engine, http.MethodGet, "/admin/secret", nil,
-		ut.Header{"Authorization", "Bearer " + userToken})
+		ut.Header{Key: "Authorization", Value: "Bearer " + userToken})
 	resp := w.Result()
 	assert.DeepEqual(t, http.StatusForbidden, resp.StatusCode())
 	if ran {
@@ -60,7 +61,7 @@ func TestAdminMiddlewareRoleGate(t *testing.T) {
 	ran = false
 	h = newServer(&ran)
 	w = ut.PerformRequest(h.Engine, http.MethodGet, "/admin/secret", nil,
-		ut.Header{"Authorization", "Bearer not-a-jwt"})
+		ut.Header{Key: "Authorization", Value: "Bearer not-a-jwt"})
 	assert.DeepEqual(t, http.StatusUnauthorized, w.Result().StatusCode())
 	if ran {
 		t.Fatal("无效 token 下业务 handler 被执行")
@@ -70,7 +71,7 @@ func TestAdminMiddlewareRoleGate(t *testing.T) {
 	ran = false
 	h = newServer(&ran)
 	w = ut.PerformRequest(h.Engine, http.MethodGet, "/admin/secret", nil,
-		ut.Header{"Authorization", "Bearer " + adminToken})
+		ut.Header{Key: "Authorization", Value: "Bearer " + adminToken})
 	assert.DeepEqual(t, http.StatusOK, w.Result().StatusCode())
 	if !ran {
 		t.Fatal("admin token 未放行业务 handler")
@@ -109,9 +110,73 @@ func TestOptionalAuthMiddlewareRespectsBlacklist(t *testing.T) {
 	h.POST("/share/text", append(OptionalIdentity(), handler)...)
 
 	w := ut.PerformRequest(h.Engine, http.MethodPost, "/share/text", nil,
-		ut.Header{"Authorization", "Bearer " + token})
+		ut.Header{Key: "Authorization", Value: "Bearer " + token})
 	assert.DeepEqual(t, http.StatusOK, w.Result().StatusCode())
 	if !ran {
 		t.Fatal("匿名语义应放行 handler")
 	}
+}
+
+// 身份复核回归（2026-10-05 审计 P2）：封禁/降权/会话纪元过期即时生效。
+func TestIdentityFreshEnforcement(t *testing.T) {
+	auth.SetJWTSecret("test-secret-for-identity-fresh-32ch")
+	t.Cleanup(func() { auth.SetJWTSecret("") })
+
+	users := map[uint]*IdentityRecord{
+		7: {Status: "active", Role: "user", Epoch: 0},
+	}
+	SetIdentityLoader(func(ctx context.Context, userID uint) (*IdentityRecord, error) {
+		if rec, ok := users[userID]; ok {
+			return rec, nil
+		}
+		return nil, fmt.Errorf("user not found")
+	})
+	t.Cleanup(func() { SetIdentityLoader(nil) })
+	auth.SetEpochLoader(func(userID uint) int { return users[userID].Epoch })
+	t.Cleanup(func() { auth.SetEpochLoader(nil) })
+
+	h := server.New(server.WithHostPorts("127.0.0.1:0"))
+	h.GET("/me", AuthMiddleware(), func(ctx context.Context, c *app.RequestContext) {
+		c.JSON(http.StatusOK, map[string]string{})
+	})
+
+	token0, err := auth.GenerateToken(7, "carol", "user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assert.DeepEqual(t, http.StatusOK, ut.PerformRequest(h.Engine, http.MethodGet, "/me", nil,
+		ut.Header{Key: "Authorization", Value: "Bearer " + token0}).Result().StatusCode())
+
+	// 封禁 → 立即 401
+	users[7].Status = "banned"
+	InvalidateIdentity(7)
+	assert.DeepEqual(t, http.StatusUnauthorized, ut.PerformRequest(h.Engine, http.MethodGet, "/me", nil,
+		ut.Header{Key: "Authorization", Value: "Bearer " + token0}).Result().StatusCode())
+
+	// 解封但纪元 +1（模拟改密/降权）→ 旧 token 仍 401
+	users[7] = &IdentityRecord{Status: "active", Role: "user", Epoch: 1}
+	InvalidateIdentity(7)
+	assert.DeepEqual(t, http.StatusUnauthorized, ut.PerformRequest(h.Engine, http.MethodGet, "/me", nil,
+		ut.Header{Key: "Authorization", Value: "Bearer " + token0}).Result().StatusCode())
+
+	// 新签发 token 携带新纪元 → 放行
+	token1, err := auth.GenerateToken(7, "carol", "user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assert.DeepEqual(t, http.StatusOK, ut.PerformRequest(h.Engine, http.MethodGet, "/me", nil,
+		ut.Header{Key: "Authorization", Value: "Bearer " + token1}).Result().StatusCode())
+
+	// DB 角色回填：claim 声称 admin 但 DB 是 user → AdminMiddleware 403
+	users[7].Role = "user"
+	adminClaimToken, err := auth.GenerateToken(7, "carol", "admin") // 伪造场景：泄露的旧 admin claim
+	if err != nil {
+		t.Fatal(err)
+	}
+	h2 := server.New(server.WithHostPorts("127.0.0.1:0"))
+	h2.GET("/admin/x", AdminMiddleware(), func(ctx context.Context, c *app.RequestContext) {
+		c.JSON(http.StatusOK, map[string]string{})
+	})
+	assert.DeepEqual(t, http.StatusForbidden, ut.PerformRequest(h2.Engine, http.MethodGet, "/admin/x", nil,
+		ut.Header{Key: "Authorization", Value: "Bearer " + adminClaimToken}).Result().StatusCode())
 }

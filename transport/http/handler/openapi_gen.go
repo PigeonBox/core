@@ -226,6 +226,9 @@ func securityFor(method, path string) ([]map[string]any, string) {
 	// 公开
 	case path == "/admin/login", path == "/user/login", path == "/user/register":
 		return nil, ""
+	// MCP（2026-10-05 审计 P3：AdminMiddleware 保护但此前被标为公开）
+	case strings.HasPrefix(path, "/api/v1/mcp"):
+		return []map[string]any{{"adminAuth": []string{}}}, ""
 	case strings.HasPrefix(path, "/api/v1/user/oidc/"):
 		return nil, ""
 	case strings.HasPrefix(path, "/request/"), strings.HasPrefix(path, "/api/v1/request/"):

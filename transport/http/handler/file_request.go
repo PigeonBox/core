@@ -4,10 +4,12 @@ package handler
 import (
 	"context"
 	"fmt"
+	"mime/multipart"
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
 	requestApp "github.com/filescodebox/core/app/request"
+	"github.com/filescodebox/core/pkg/gate"
 	"github.com/filescodebox/core/pkg/middleware"
 	"github.com/filescodebox/core/pkg/resp"
 	"github.com/filescodebox/core/pkg/transfer"
@@ -19,6 +21,15 @@ var requestSvc *requestApp.Service
 func SetRequestService(s *requestApp.Service) { requestSvc = s }
 
 func getRequestService() *requestApp.Service { return requestSvc }
+
+// totalDeclaredSize 申报总字节数（配额预检用）
+func totalDeclaredSize(files []*multipart.FileHeader) int64 {
+	var total int64
+	for _, f := range files {
+		total += f.Size
+	}
+	return total
+}
 
 // ==================== 链接管理（登录用户） ====================
 
@@ -152,6 +163,12 @@ func GuestSubmitFiles(ctx context.Context, c *app.RequestContext) {
 	}
 
 	guestIP := middleware.ClientIP(c)
+	// 访客按 IP 计入匿名日配额（2026-10-05 审计 P2：此前投递通道绕过日配额，
+	// 拿到链接者可无限制向属主配额灌文件）。闸门在落盘前 fail-fast。
+	if err := gate.CheckAnonymousQuota(ctx, guestIP, totalDeclaredSize(files)); err != nil {
+		resp.NewTypedError(c, err)
+		return
+	}
 	st := manageStorage
 	// 访客投递为明文上传，不跳过魔数校验（encrypted=false）
 	stored, ok := saveUploadEntries(ctx, c, st, files, false)

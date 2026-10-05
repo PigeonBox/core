@@ -64,7 +64,8 @@ func (s *Service) InitializeSystem(ctx context.Context, req *InitializeSystemReq
 		return fmt.Errorf("密码哈希失败: %w", err)
 	}
 
-	// 创建管理员用户
+	// 创建管理员用户（事务内"无管理员才创建"，消除 check-then-act 并发窗口——
+	// 2026-10-05 审计 P2：初始化空窗期未认证者可抢建管理员）
 	admin := &model.User{
 		Username:      req.AdminUsername,
 		Email:         req.AdminEmail,
@@ -75,9 +76,12 @@ func (s *Service) InitializeSystem(ctx context.Context, req *InitializeSystemReq
 		EmailVerified: true,
 	}
 
-	err = s.userRepo.Create(ctx, admin)
+	created, err := s.userRepo.CreateFirstAdminIfNoAdmin(ctx, admin)
 	if err != nil {
 		return fmt.Errorf("创建管理员失败: %w", err)
+	}
+	if !created {
+		return errors.New("系统已初始化，禁止重复初始化")
 	}
 
 	return nil

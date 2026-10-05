@@ -33,6 +33,35 @@ func (r *UserRepository) UpdateColumns(ctx context.Context, id uint, updates map
 }
 
 // UpdatePasswordHash 管理员重置密码（直接写 bcrypt 哈希）
+// CreateFirstAdminIfNoAdmin 事务内"无管理员才创建"——setup 初始化的原子防护
+// （2026-10-05 审计 P2：原 check-then-act 两步间并发窗口可抢建管理员）。
+// 返回是否真的创建了（false=已有管理员，调用方回"系统已初始化"）。
+func (r *UserRepository) CreateFirstAdminIfNoAdmin(ctx context.Context, admin *model.User) (bool, error) {
+	created := false
+	err := r.db().Transaction(func(tx *gorm.DB) error {
+		var count int64
+		if err := tx.Model(&model.User{}).Where("role = ?", "admin").Count(&count).Error; err != nil {
+			return err
+		}
+		if count > 0 {
+			return nil
+		}
+		if err := tx.Create(admin).Error; err != nil {
+			return err
+		}
+		created = true
+		return nil
+	})
+	return created, err
+}
+
+// BumpSessionEpoch 会话纪元 +1（原子自增）：使该用户全部已签发 JWT 即时失效。
+// 改密（本人/管理员重置）、封禁/停用、角色变更时调用。
+func (r *UserRepository) BumpSessionEpoch(ctx context.Context, id uint) error {
+	return r.db().Model(&model.User{}).Where("id = ?", id).
+		Update("session_epoch", gorm.Expr("session_epoch + 1")).Error
+}
+
 func (r *UserRepository) UpdatePasswordHash(ctx context.Context, id uint, passwordHash string) error {
 	return r.db().WithContext(ctx).Model(&model.User{}).Where("id = ?", id).
 		Update("password_hash", passwordHash).Error

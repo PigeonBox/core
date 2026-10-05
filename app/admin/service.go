@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -13,6 +15,7 @@ import (
 	"github.com/filescodebox/core/pkg/auth"
 	"github.com/filescodebox/core/pkg/logger"
 	"github.com/filescodebox/core/pkg/middleware"
+	"github.com/filescodebox/core/pkg/security"
 	"github.com/filescodebox/core/repo/db/dao"
 	"github.com/filescodebox/core/repo/db/model"
 	"github.com/filescodebox/core/storage"
@@ -336,7 +339,14 @@ func (s *Service) ListUsersFiltered(ctx context.Context, f UserListFilter) ([]*m
 
 // ResetUserPassword 管理员重置用户密码（写入已哈希口令）。
 func (s *Service) ResetUserPassword(ctx context.Context, userID uint, passwordHash string) error {
-	return s.userRepo.UpdatePasswordHash(ctx, userID, passwordHash)
+	if err := s.userRepo.UpdatePasswordHash(ctx, userID, passwordHash); err != nil {
+		return err
+	}
+	// 重置密码 bump 会话纪元：被盗会话即时失效（2026-10-05 审计 P3）
+	if berr := s.userRepo.BumpSessionEpoch(ctx, userID); berr == nil {
+		middleware.InvalidateIdentity(userID)
+	}
+	return nil
 }
 
 // GetFileByID 按主键取分享记录（管理端详情/下载重定向）。
@@ -659,7 +669,55 @@ func validateSystemConfig(cfg *SystemConfig) error {
 	if err := validateUserSettings(cfg.User); cfg.User != nil && err != nil {
 		return err
 	}
+	// 出站目标保存期校验（2026-10-05 审计 P3：notify/oidc 段此前零校验，
+	// 管理员级 SSRF 至少收紧 scheme/私网语义——与存储端点同一策略开关）
+	if cfg.Notify != nil {
+		if u := strings.TrimSpace(cfg.Notify.WebhookURL); u != "" {
+			if err := security.ValidateEndpointURL(u); err != nil {
+				return fmt.Errorf("notify.webhook_url 校验失败: %w", err)
+			}
+		}
+		if h := strings.TrimSpace(cfg.Notify.SMTP.Host); h != "" {
+			if err := security.ValidateEndpointHost(h); err != nil {
+				return fmt.Errorf("notify.smtp.host 校验失败: %w", err)
+			}
+		}
+	}
+	if cfg.OIDC != nil {
+		if u := strings.TrimSpace(cfg.OIDC.Issuer); u != "" {
+			if err := security.ValidateEndpointURL(u); err != nil {
+				return fmt.Errorf("security.oidc.issuer 校验失败: %w", err)
+			}
+		}
+	}
+	// local_import roots 白名单校验（2026-10-05 审计 P3：roots=["/"] 时任意
+	// 登录用户可经 import-local 导入服务器任意可读文件）
+	for _, li := range []*conf.LocalImportConfig{cfg.LocalImport, localImportOfUploadEx(cfg.UploadEx)} {
+		if li == nil {
+			continue
+		}
+		for _, root := range li.Roots {
+			root = strings.TrimSpace(root)
+			if root == "" {
+				continue
+			}
+			if !filepath.IsAbs(root) {
+				return fmt.Errorf("local_import.roots 需为绝对路径: %s", root)
+			}
+			if filepath.Clean(root) == "/" {
+				return errors.New("local_import.roots 禁止配置根目录 /")
+			}
+		}
+	}
 	return nil
+}
+
+// localImportOfUploadEx UploadEx 段内嵌的 local_import（同一配置两种提交形状）
+func localImportOfUploadEx(u *conf.UploadConfig) *conf.LocalImportConfig {
+	if u == nil {
+		return nil
+	}
+	return &u.LocalImport
 }
 
 // UpdateConfig 更新系统配置：写穿到 DB（单行），成功后才更新内存。
@@ -767,7 +825,14 @@ func (s *Service) applySystemConfigOverlayLocked(sc *SystemConfig) {
 		g.UI = *sc.UI
 	}
 	if sc.UploadEx != nil {
+		// 保留既有 local_import（2026-10-05 审计附带 bug：UploadEx 整段覆盖
+		// 会把零值的 LocalImport 一并写入——"上传"tab 保存未携带该段时
+		// 冲掉已配置 roots）
+		prevLocal := g.Upload.LocalImport
 		g.Upload = *sc.UploadEx
+		if sc.LocalImport == nil && !sc.UploadEx.LocalImport.Enabled && len(sc.UploadEx.LocalImport.Roots) == 0 {
+			g.Upload.LocalImport = prevLocal
+		}
 	}
 	if sc.Download != nil {
 		g.Download = *sc.Download
@@ -913,8 +978,16 @@ func (s *Service) UpdateUserStatus(ctx context.Context, userID uint, status stri
 		return err
 	}
 
+	statusChanged := user.Status != status
 	user.Status = status
 	err = s.userRepo.Update(ctx, user)
+	// 封禁/停用 bump 会话纪元：既有 JWT 即时失效（2026-10-05 审计 P2，
+	// 此前被封用户 token 可用到自然过期且 refresh 可无限续期）
+	if err == nil && statusChanged {
+		if berr := s.userRepo.BumpSessionEpoch(ctx, userID); berr == nil {
+			middleware.InvalidateIdentity(userID)
+		}
+	}
 	s.logAdminOperation(ctx, "user.update_status",
 		fmt.Sprintf("user %d (username=%s) status -> %s", userID, user.Username, status), err == nil)
 	return err
@@ -928,14 +1001,16 @@ func (s *Service) GenerateTokenForAdmin(ctx context.Context, username, password 
 		return "", errors.New("用户名或密码错误")
 	}
 
+	// 验证密码（2026-10-05 审计 P3：先比密码再判角色——原顺序下错误信息
+	// "权限不足" vs "用户名或密码错误" 可区分"该用户名是管理员"，构成
+	// 管理员用户名探测预言机）
+	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)); err != nil {
+		return "", errors.New("用户名或密码错误")
+	}
+
 	// 检查是否为管理员
 	if user.Role != "admin" {
 		return "", errors.New("权限不足")
-	}
-
-	// 验证密码
-	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)); err != nil {
-		return "", errors.New("用户名或密码错误")
 	}
 
 	// 检查用户状态

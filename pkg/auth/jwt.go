@@ -30,7 +30,34 @@ type Claims struct {
 	UserID   uint   `json:"user_id"`
 	Username string `json:"username"`
 	Role     string `json:"role"`
+	// Epoch 会话纪元快照：签发时用户的 session_epoch。改密/封禁/降权会使
+	// DB 纪元 +1，纪元不匹配的旧 token 即时失效（认证中间件回查比对）。
+	Epoch int `json:"sess_epoch,omitempty"`
 	jwt.RegisteredClaims
+}
+
+// epochLoader 签发时读取用户当前会话纪元（composition root 注入 dao 桥；
+// 无注入时恒 0——纯单测环境语义不变）。
+var (
+	epochLoaderMu sync.RWMutex
+	epochLoader   func(userID uint) int
+)
+
+// SetEpochLoader 注入纪元加载器（bootstrap 调用一次；nil 关闭）。
+func SetEpochLoader(fn func(userID uint) int) {
+	epochLoaderMu.Lock()
+	defer epochLoaderMu.Unlock()
+	epochLoader = fn
+}
+
+func currentEpoch(userID uint) int {
+	epochLoaderMu.RLock()
+	fn := epochLoader
+	epochLoaderMu.RUnlock()
+	if fn == nil {
+		return 0
+	}
+	return fn(userID)
 }
 
 // sessionExpiry 会话时长，默认 7 天。
@@ -56,6 +83,7 @@ func GenerateToken(userID uint, username, role string) (string, error) {
 		UserID:   userID,
 		Username: username,
 		Role:     role,
+		Epoch:    currentEpoch(userID),
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(sessionExpiry)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),

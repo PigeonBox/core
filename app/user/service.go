@@ -13,6 +13,8 @@ import (
 	usermodel "github.com/filescodebox/contracts/gen/user"
 	"github.com/filescodebox/core/conf"
 	"github.com/filescodebox/core/pkg/auth"
+	"github.com/filescodebox/core/pkg/middleware"
+	"github.com/filescodebox/core/pkg/utils"
 	"github.com/filescodebox/core/repo/db/dao"
 	"github.com/filescodebox/core/repo/db/model"
 	"github.com/filescodebox/kit/uidgen"
@@ -105,6 +107,12 @@ func (s *Service) ensureRepository() {
 func (s *Service) Create(ctx context.Context, req *CreateUserReq) (*model.UserResp, error) {
 	s.ensureRepository()
 
+	// username 字符集白名单（2026-10-05 审计 P3）：注册/建号共用本收口。
+	// 昵称不受限（展示字段）；username 进日志/审计/键值，收紧为安全字符集。
+	if err := utils.ValidateUsername(req.Username); err != nil {
+		return nil, err
+	}
+
 	existing, err := s.repo.GetByUsername(ctx, req.Username)
 	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, err
@@ -164,6 +172,8 @@ func (s *Service) Update(ctx context.Context, id uint, req *UpdateUserReq) (*mod
 		return nil, err
 	}
 
+	roleChanged := req.Role != "" && req.Role != user.Role
+	statusChanged := req.Status != "" && req.Status != user.Status
 	if req.Nickname != "" {
 		user.Nickname = req.Nickname
 	}
@@ -179,6 +189,13 @@ func (s *Service) Update(ctx context.Context, id uint, req *UpdateUserReq) (*mod
 
 	if err := s.repo.Update(ctx, user); err != nil {
 		return nil, err
+	}
+	// 角色/状态变更 bump 会话纪元：降权/封禁即时踢出既有会话
+	// （2026-10-05 审计 P2；此前降权的 admin JWT 有效至自然过期）
+	if roleChanged || statusChanged {
+		if err := s.repo.BumpSessionEpoch(ctx, id); err == nil {
+			middleware.InvalidateIdentity(id)
+		}
 	}
 
 	return user.ToResp(), nil
@@ -292,7 +309,14 @@ func (s *Service) ChangePassword(ctx context.Context, userID uint, oldPassword, 
 	}
 
 	user.PasswordHash = string(hashedPassword)
-	return s.repo.Update(ctx, user)
+	if err := s.repo.Update(ctx, user); err != nil {
+		return err
+	}
+	// 改密后 bump 会话纪元：其他已签发 JWT 即时失效（2026-10-05 审计 P2）
+	if err := s.repo.BumpSessionEpoch(ctx, userID); err == nil {
+		middleware.InvalidateIdentity(userID)
+	}
+	return nil
 }
 
 // UpdateUserStats 更新用户统计信息。

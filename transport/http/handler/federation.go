@@ -7,6 +7,7 @@ package handler
 
 import (
 	"context"
+	"strings"
 
 	"github.com/cloudwego/hertz/pkg/app"
 
@@ -35,9 +36,17 @@ func FederationResolve(ctx context.Context, c *app.RequestContext) {
 		resp.Success(c, map[string]any{"available": false})
 		return
 	}
+	// 对端 URL scheme 白名单（2026-10-05 审计 P3）：registry 返回的 URL 交由
+	// 前端跳转，仅放行 http(s)，其余（含畸形串）按未命中处理，防恶意节点
+	// 借本端点向访问者浏览器注入非 http 跳转目标。
+	u := strings.TrimSpace(info.URL)
+	if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
+		resp.Success(c, map[string]any{"available": false})
+		return
+	}
 	resp.Success(c, map[string]any{
 		"available":  true,
-		"url":        info.URL,
+		"url":        u,
 		"node_id":    info.NodeID,
 		"name":       info.Name,
 		"expires_at": info.ExpiresAt.Unix(),

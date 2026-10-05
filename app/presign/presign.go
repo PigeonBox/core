@@ -89,6 +89,12 @@ type streamWriter interface {
 	SaveStream(ctx context.Context, savePath string, r io.Reader, expectedSize int64) (int64, error)
 }
 
+// headReader 魔数复检读取能力（*storage.StorageService 实现；与 streamWriter
+// 同款能力探测模式，Complete 阶段读对象头部 512B 做内容检查）。
+type headReader interface {
+	GetFileReader(ctx context.Context, filePath string) (io.ReadCloser, int64, error)
+}
+
 // ObjectStore 真预签名直传能力（由 *storage.StorageService 实现）。
 // PresignPutURL 对 local/webdav 返回 storage.ErrPresignUnsupported，调用方回退自家中转。
 type ObjectStore interface {
@@ -292,6 +298,26 @@ func (s *Service) Complete(ctx context.Context, uploadID, token, ownerIP string)
 		meta.FileSize = actual
 		// 注意：服务器未接触内容，meta.FileHash 保持客户端提供的值（可为空，
 		// 为空则该分享不参与秒传指纹库）
+	}
+
+	// 3.8 魔数复检（2026-10-05 审计 P3，对齐 chunk 通道）：此前 presign 通道
+	// 落盘后无内容检查，扩展名伪装的可执行/脚本可经 presign 入库。统一存储
+	// 实例两种 scheme 都读得到对象（local 直落盘 / s3 为事实源），失败即拒并
+	// 清理已落对象。
+	if hr, ok := s.storage.(headReader); s.storage != nil && ok {
+		if rc, _, rerr := hr.GetFileReader(ctx, meta.ObjectKey); rerr == nil {
+			buf := make([]byte, 512)
+			n, _ := io.ReadFull(rc, buf)
+			_ = rc.Close()
+			if n > 0 {
+				if cerr := utils.CheckUploadContent(meta.FileName, buf[:n]); cerr != nil {
+					_ = s.storage.DeleteFile(ctx, meta.ObjectKey)
+					s.rdb.Del(ctx, fmt.Sprintf(keyUploadMeta, uploadID))
+					return nil, cerr
+				}
+			}
+		}
+		// 读不到内容头（远端驱动抖动）不阻断：存在性/大小已由 3.5 或上传链路核实
 	}
 
 	// 4. 校验是否已完成

@@ -580,6 +580,21 @@ func BootstrapWithOptions(configPath string, opts ...Option) (*server.Hertz, err
 	// 由 composition root 以 dao 桥接；须先于任何服务流量）
 	middleware.SetAPIKeyStore(daoAPIKeyStore{})
 	transfer.SetSink(daoTransferSink{})
+	// JWT 身份复核 + 会话纪元（2026-10-05 审计 P2）：封禁/降权/改密即时生效
+	middleware.SetIdentityLoader(func(ctx context.Context, userID uint) (*middleware.IdentityRecord, error) {
+		u, err := dao.NewUserRepository().GetByID(ctx, userID)
+		if err != nil {
+			return nil, err
+		}
+		return &middleware.IdentityRecord{Status: u.Status, Role: u.Role, Epoch: u.SessionEpoch}, nil
+	})
+	auth.SetEpochLoader(func(userID uint) int {
+		u, err := dao.NewUserRepository().GetByID(context.Background(), userID)
+		if err != nil {
+			return 0
+		}
+		return u.SessionEpoch
+	})
 
 	// 3.5 初始化 Redis（匿名取件码 / presign 会话 / 分布式限流依赖）。
 	// 此前 bootstrap 从不调用 redis.Init，GetClient() 恒为 nil，
@@ -603,7 +618,13 @@ func BootstrapWithOptions(configPath string, opts ...Option) (*server.Hertz, err
 	if err := middleware.SetTrustedProxies(config.Security.TrustedProxies); err != nil {
 		return nil, fmt.Errorf("invalid security.trusted_proxies: %w", err)
 	}
-	securityPkg.SetDownloadTokenSecret("fcb-dl:" + config.User.JWTSecret)
+	// 下载令牌签名密钥：优先独立 env（2026-10-05 审计 P3：派生自 jwt_secret
+	// 时 JWT 泄露即波及防盗链令牌伪造），缺省回退旧派生保持兼容
+	dlSecret := os.Getenv("FCB_DOWNLOAD_TOKEN_SECRET")
+	if dlSecret == "" {
+		dlSecret = "fcb-dl:" + config.User.JWTSecret
+	}
+	securityPkg.SetDownloadTokenSecret(dlSecret)
 
 	// 4. 创建默认管理员
 	if err := CreateDefaultAdmin(database); err != nil {

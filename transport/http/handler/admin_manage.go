@@ -72,6 +72,11 @@ func AdminCreateUser(ctx context.Context, c *app.RequestContext) {
 		resp.NewErrorWithMessage(c, 10001, "username 与 password 必填")
 		return
 	}
+	// role 白名单（2026-10-05 审计 P3：此前未校验，可写入任意角色串）
+	if req.Role != "" && req.Role != "admin" && req.Role != "user" {
+		resp.NewErrorWithMessage(c, 10001, "role 仅支持 admin/user")
+		return
+	}
 	userSvc := getManageUserSvc()
 	created, err := userSvc.Create(ctx, &userapp.CreateUserReq{
 		Username: req.Username,
