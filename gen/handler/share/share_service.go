@@ -694,23 +694,29 @@ func authorizeAndCharge(ctx context.Context, c *app.RequestContext, code, passwo
 
 	// 下载令牌校验（security.download_token.enabled，默认开）：
 	// 取件查询/匿名取件接口下发时间窗 HMAC 令牌，恒时比较校验。
-	// 密码保护分享：正确密码或有效令牌任一即可（令牌由密码校验通过后的
-	// 取件查询签发，等价于已认证——回归：此前持有效令牌下载仍被要求密码）。
+	// 密码通道仅对"密码保护分享"开放（2026-10-05 审计 P2 修复：此前 password
+	// 参数非空即跳过"缺令牌"拦截，无密码分享加任意 &password=x 即绕过强制
+	// 令牌，防盗链语义失效）；令牌由密码校验通过后的取件查询签发，等价已认证。
 	tokenEnabled := downloadTokenEnabled()
-	if tokenEnabled && token == "" && password == "" {
-		c.JSON(consts.StatusUnauthorized, map[string]interface{}{
-			"code":    errcode.CodeDownloadToken,
-			"message": "缺少下载令牌，请重新获取取件信息",
-		})
-		return nil, false
-	}
 	tokenValid := tokenEnabled && token != "" && security.VerifyDownloadToken(code, token)
-	if tokenEnabled && token != "" && !tokenValid {
-		c.JSON(consts.StatusUnauthorized, map[string]interface{}{
-			"code":    errcode.CodeDownloadToken,
-			"message": "下载令牌无效或已过期，请重新获取取件信息",
-		})
-		return nil, false
+	if tokenEnabled && !tokenValid {
+		passwordOK := false
+		if password != "" {
+			if fc, gerr := getShareService().GetFileByCode(ctx, code); gerr == nil && fc.RequireAuth {
+				passwordOK = true
+			}
+		}
+		if !passwordOK {
+			msg := "缺少下载令牌，请重新获取取件信息"
+			if token != "" {
+				msg = "下载令牌无效或已过期，请重新获取取件信息"
+			}
+			c.JSON(consts.StatusUnauthorized, map[string]interface{}{
+				"code":    errcode.CodeDownloadToken,
+				"message": msg,
+			})
+			return nil, false
+		}
 	}
 
 	// 获取分享内容并校验密码（viewer IP 由 handler 注入，可信代理解析）

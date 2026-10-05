@@ -137,6 +137,12 @@ func AuthMiddleware() app.HandlerFunc {
 }
 
 // AdminMiddleware 管理员权限中间件
+//
+// 实现（2026-10-05 审计 P0 修复）：认证+授权必须在本中间件内联完成后统一放行。
+// 此前复用 AuthMiddleware()——其成功路径会 c.Next 把链上剩余 handler（含业务
+// handler）先执行完，返回后才做角色检查：写操作已生效、读操作的响应体已生成
+// （hertz 的 JSON 写入是追加语义，403 只会拼在业务响应后面）。任意注册用户
+// 因此可执行全部 /admin/* 与 /api/v1/mcp。
 func AdminMiddleware() app.HandlerFunc {
 	// 不需要认证的路径白名单
 	skipPaths := map[string]bool{
@@ -150,15 +156,39 @@ func AdminMiddleware() app.HandlerFunc {
 			return
 		}
 
-		// 先进行身份认证
-		AuthMiddleware()(ctx, c)
-		if c.IsAborted() {
+		authHeader := string(c.GetHeader("Authorization"))
+		parts := strings.SplitN(authHeader, " ", 2)
+		if len(parts) != 2 || parts[0] != "Bearer" {
+			c.JSON(http.StatusUnauthorized, map[string]interface{}{
+				"code":    http.StatusUnauthorized,
+				"message": "Authorization header format must be Bearer {token}",
+			})
+			c.Abort()
 			return
 		}
 
-		// 检查是否为管理员
-		role, _ := c.Get("role")
-		if role != "admin" {
+		claims, err := auth.ParseToken(parts[1])
+		if err != nil {
+			c.JSON(http.StatusUnauthorized, map[string]interface{}{
+				"code":    http.StatusUnauthorized,
+				"message": "Invalid or expired token",
+			})
+			c.Abort()
+			return
+		}
+
+		// 注销黑名单检查（与 AuthMiddleware 同语义：已注销 token 即刻失效）
+		if auth.IsTokenRevoked(ctx, parts[1]) {
+			c.JSON(http.StatusUnauthorized, map[string]interface{}{
+				"code":    http.StatusUnauthorized,
+				"message": "Token has been revoked",
+			})
+			c.Abort()
+			return
+		}
+
+		// 角色检查先于任何放行
+		if claims.Role != "admin" {
 			c.JSON(http.StatusForbidden, map[string]interface{}{
 				"code":    http.StatusForbidden,
 				"message": "Admin access required",
@@ -166,6 +196,10 @@ func AdminMiddleware() app.HandlerFunc {
 			c.Abort()
 			return
 		}
+
+		SetJWTClaims(c, claims)
+		ctx = withIdentity(ctx, claims.UserID, claims.Username, claims.Role, ClientIP(c), 0)
+		SetIdentityHeaders(c, claims)
 
 		c.Next(ctx)
 	}
@@ -191,6 +225,14 @@ func OptionalAuthMiddleware() app.HandlerFunc {
 		// 解析JWT token
 		claims, err := auth.ParseToken(parts[1])
 		if err != nil {
+			c.Next(ctx)
+			return
+		}
+
+		// 已注销 token 一律按匿名放行（2026-10-05 审计 P1 修复）：可选身份路径
+		// 也要尊重吊销语义，否则 logout 后旧 JWT 仍在分享/chunk/presign 等路由
+		// 注入 user_id（配额、归属、审计归因全部按"已登录"处理）
+		if auth.IsTokenRevoked(ctx, parts[1]) {
 			c.Next(ctx)
 			return
 		}

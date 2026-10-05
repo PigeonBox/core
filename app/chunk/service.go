@@ -13,14 +13,21 @@ import (
 )
 
 type InitiateUploadReq struct {
-	UploadID    string
-	FileName    string
-	TotalChunks int
-	FileSize    int64
-	ChunkSize   int
-	OwnerIP     string // 上传者 IP（治理归属追踪）
-	UserID      *uint  // 上传者（chunk 路由当前无可选认证，恒 nil；字段就位以便接线）
+	UploadID     string
+	FileName     string
+	TotalChunks  int
+	FileSize     int64
+	ChunkSize    int
+	OwnerIP      string // 上传者 IP（治理归属追踪）
+	UserID       *uint  // 上传者（chunk 路由当前无可选认证，恒 nil；字段就位以便接线）
+	SessionToken string // 客户端回传的会话令牌（X-Upload-Token；IP 漂移后恢复会话用）
 }
+
+// ErrSessionConflict init 撞上他人进行中（已含分片数据）的会话。
+// 2026-10-05 审计 P1：uploadID 可为客户端自报哈希（公开文件哈希可预测），
+// 原"最后写入者 wins"无条件重绑归属让第三方可截胡他人上传——改归属后即可
+// 绑走已传分片（内容窃取）或覆写合并结果（内容替换）。HTTP 层映射 409。
+var ErrSessionConflict = errors.New("上传会话已被占用，请刷新上传")
 
 type UploadChunkReq struct {
 	UploadID   string
@@ -83,19 +90,27 @@ func (s *Service) InitiateUpload(ctx context.Context, req *InitiateUploadReq) (*
 	// 由客户端经 status 续传——此前直接报错，秒传未命中时同哈希重传必 500。
 	existing, err := s.chunkRepo.GetByUploadID(ctx, req.UploadID)
 	if err == nil && existing != nil {
-		// 会话接管（治理回归）：确定性 uploadID（客户端自报哈希）下，匿名用户
-		// 换网络后 IP 漂移会让 Complete 恒 403、分片成孤儿。未完成的会话按
-		// "最后写入者 wins" 重新绑定归属；已完成会话不动。
-		if existing.Status != "completed" && req.OwnerIP != "" && existing.OwnerIP != req.OwnerIP {
-			updates := map[string]interface{}{"owner_ip": req.OwnerIP}
-			if req.UserID != nil {
-				updates["user_id"] = *req.UserID
+		// 会话接管收紧（2026-10-05 审计 P1，替代无条件"最后写入者 wins"）。
+		// 放行仅三类：① 上传者本人（IP 或登录用户一致，断点重连语义不变）；
+		// ② 持有效会话令牌（init 响应头 X-Upload-Token 签发，IP 漂移恢复通道）；
+		// ③ 尚无任何分片落盘的空会话（孤儿回收——无内容可窃，保留原恢复语义）。
+		// 已含数据的他人会话拒绝（ErrSessionConflict → 409）。
+		if chunkSessionOwnedBy(existing, req.OwnerIP, req.UserID, req.SessionToken) ||
+			!s.sessionHasChunks(ctx, existing.UploadID) {
+			// 幂等语义：同 uploadID 重复 init（同哈希重传 / 断点重连）返回既有进度，
+			// 由客户端经 status 续传——此前直接报错，秒传未命中时同哈希重传必 500。
+			if existing.Status != "completed" && req.OwnerIP != "" && existing.OwnerIP != req.OwnerIP {
+				updates := map[string]interface{}{"owner_ip": req.OwnerIP}
+				if req.UserID != nil {
+					updates["user_id"] = *req.UserID
+				}
+				if err := s.chunkRepo.UpdateOwner(ctx, existing.UploadID, updates); err == nil {
+					existing.OwnerIP = req.OwnerIP
+				}
 			}
-			if err := s.chunkRepo.UpdateOwner(ctx, existing.UploadID, updates); err == nil {
-				existing.OwnerIP = req.OwnerIP
-			}
+			return controlToResp(existing), nil
 		}
-		return controlToResp(existing), nil
+		return nil, ErrSessionConflict
 	}
 
 	// 创建控制记录（chunk_index = -1）
@@ -285,6 +300,12 @@ func (s *Service) DeleteUpload(ctx context.Context, uploadID string) error {
 // GetUploadedChunkIndexes 获取已上传分片的索引列表
 func (s *Service) GetUploadedChunkIndexes(ctx context.Context, uploadID string) ([]int, error) {
 	return s.chunkRepo.GetUploadedChunkIndexes(ctx, uploadID)
+}
+
+// sessionHasChunks 会话是否已含任何分片数据（空会话=可安全回收的孤儿，init 可认领）。
+func (s *Service) sessionHasChunks(ctx context.Context, uploadID string) bool {
+	indexes, err := s.GetUploadedChunkIndexes(ctx, uploadID)
+	return err == nil && len(indexes) > 0
 }
 
 // GetUploadInfo 获取上传信息（包括文件名、大小等）

@@ -255,13 +255,18 @@ func (s *Service) ExchangeCallback(ctx context.Context, baseURL, code, state str
 }
 
 // matchOrCreate (issuer,sub) → email → 建号
+//
+// 邮箱匹配与自动建号均要求 IdP 侧 email_verified=true（2026-10-05 审计 P1 修复）：
+// 此前只要 userinfo 带 email 就按邮箱绑定本地账号——自建 IdP（Keycloak 等）
+// 若允许未验证邮箱注册，攻击者用受害者邮箱在 IdP 注册即可接管本站账号
+// （pre-hijack）。email_verified 缺失/false 时仅 (issuer,sub) 精确匹配可用。
 func (s *Service) matchOrCreate(ctx context.Context, claims idClaims) (*model.User, error) {
-	// 按 sub 精确匹配
+	// 按 sub 精确匹配（身份链由 IdP 保证，无条件信任）
 	if u, err := s.userRepo.GetByOIDCSub(ctx, claims.Sub); err == nil && u != nil {
 		return u, nil
 	}
-	// 按邮箱匹配（用户先以密码注册、后用 OIDC 登录的场景）
-	if claims.Email != "" {
+	// 按邮箱匹配（用户先以密码注册、后用 OIDC 登录的场景）——仅限已验证邮箱
+	if claims.Email != "" && claims.EmailVerified {
 		if u, err := s.userRepo.GetByEmail(ctx, claims.Email); err == nil && u != nil {
 			// 绑定 sub，后续走精确匹配
 			_ = s.userRepo.UpdateColumns(ctx, u.ID, map[string]interface{}{"oidc_sub": claims.Sub})
@@ -300,8 +305,9 @@ func (s *Service) matchOrCreate(ctx context.Context, claims idClaims) (*model.Us
 		Status:   "active",
 		OidcSub:  claims.Sub,
 	}
-	if claims.Email == "" {
-		// email 唯一索引不接受空串重复：以 sub 生成占位
+	if claims.Email == "" || !claims.EmailVerified {
+		// 未验证邮箱不落库（与邮箱匹配同门槛，防占位邮箱后续被用于接管）：
+		// email 唯一索引不接受空串重复，以 sub 生成占位
 		user.Email = fmt.Sprintf("oidc-%s@oidc.local", claims.Sub[:8])
 	}
 	if err := s.userRepo.Create(ctx, user); err != nil {

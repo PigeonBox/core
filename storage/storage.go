@@ -582,6 +582,20 @@ func (s *StorageService) SaveBytes(ctx context.Context, savePath string, data []
 	return os.WriteFile(clean, data, 0o644)
 }
 
+// localContain 本地后端路径收口：rel 清洗后必须仍落在 DataPath 根内，返回绝对路径。
+// 2026-10-05 审计修复：此前仅写侧（SaveStream/SaveBytes）有逃逸守卫，读/删/Stat
+// 侧裸 Join——DB 中 RelPath 被投毒（如 multi-bind 的 object_key）即可任意读/删/
+// Stat 服务器文件。所有本地路径访问统一经此。
+func (s *StorageService) localContain(rel string) (string, error) {
+	root := filepath.Clean(s.dataPath())
+	full := filepath.Clean(filepath.Join(root, rel))
+	r, err := filepath.Rel(root, full)
+	if err != nil || full == root || r == ".." || strings.HasPrefix(r, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("illegal storage path: %s", rel)
+	}
+	return full, nil
+}
+
 // DeleteFile 删除文件
 func (s *StorageService) DeleteFile(ctx context.Context, filePath string) error {
 	_, op := s.current()
@@ -591,7 +605,10 @@ func (s *StorageService) DeleteFile(ctx context.Context, filePath string) error 
 	if op != nil {
 		return op.Delete(ctx, filePath)
 	}
-	fullPath := filepath.Join(s.dataPath(), filePath)
+	fullPath, err := s.localContain(filePath)
+	if err != nil {
+		return err
+	}
 	return os.Remove(fullPath)
 }
 
@@ -601,7 +618,11 @@ func (s *StorageService) GetFile(ctx context.Context, filePath string) ([]byte, 
 	if op != nil {
 		return op.Read(ctx, filePath)
 	}
-	return os.ReadFile(filepath.Join(s.dataPath(), filePath))
+	fullPath, err := s.localContain(filePath)
+	if err != nil {
+		return nil, err
+	}
+	return os.ReadFile(fullPath)
 }
 
 // FileExists 检查文件是否存在
@@ -610,7 +631,11 @@ func (s *StorageService) FileExists(ctx context.Context, filePath string) bool {
 	if op != nil {
 		return op.Exists(ctx, filePath)
 	}
-	_, err := os.Stat(filepath.Join(s.dataPath(), filePath))
+	fullPath, err := s.localContain(filePath)
+	if err != nil {
+		return false
+	}
+	_, err = os.Stat(fullPath)
 	return !os.IsNotExist(err)
 }
 
@@ -621,7 +646,10 @@ func (s *StorageService) SaveChunk(ctx context.Context, uploadID string, chunkIn
 	if op != nil {
 		return op.Write(ctx, key, data)
 	}
-	chunkPath := filepath.Join(s.dataPath(), key)
+	chunkPath, err := s.localContain(key)
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(filepath.Dir(chunkPath), 0755); err != nil {
 		return err
 	}
@@ -632,7 +660,7 @@ func (s *StorageService) SaveChunk(ctx context.Context, uploadID string, chunkIn
 // local：顺序拼接落盘；远端：懒打开分片的链式读器 + 按总大小流式上传，
 // 不整文件进内存。
 func (s *StorageService) MergeChunks(ctx context.Context, uploadID string, totalChunks int, savePath string) error {
-	cfg, op := s.current()
+	_, op := s.current()
 
 	if op != nil {
 		total := int64(0)
@@ -652,7 +680,10 @@ func (s *StorageService) MergeChunks(ctx context.Context, uploadID string, total
 		return nil
 	}
 
-	fullPath := filepath.Join(cfg.DataPath, savePath)
+	fullPath, err := s.localContain(savePath)
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
 		return err
 	}
@@ -663,7 +694,11 @@ func (s *StorageService) MergeChunks(ctx context.Context, uploadID string, total
 	defer func() { _ = dst.Close() }()
 
 	for i := 0; i < totalChunks; i++ {
-		chunkData, err := os.ReadFile(filepath.Join(cfg.DataPath, chunkKey(uploadID, i)))
+		chunkPath, err := s.localContain(chunkKey(uploadID, i))
+		if err != nil {
+			return fmt.Errorf("读取分片 %d 失败: %w", i, err)
+		}
+		chunkData, err := os.ReadFile(chunkPath)
 		if err != nil {
 			return fmt.Errorf("读取分片 %d 失败: %w", i, err)
 		}
@@ -683,7 +718,11 @@ func (s *StorageService) CleanChunks(ctx context.Context, uploadID string) error
 	if op != nil {
 		return op.RemoveAll(ctx, prefix)
 	}
-	return os.RemoveAll(filepath.Join(s.dataPath(), prefix))
+	fullPath, err := s.localContain(prefix)
+	if err != nil {
+		return err
+	}
+	return os.RemoveAll(fullPath)
 }
 
 // boolPtr bool 取指针
@@ -692,12 +731,19 @@ func boolPtr(b bool) *bool { return &b }
 // resolveLocal 定位本地文件：优先 DataPath+rel，失败回退 DataPath+/uploads/+rel。
 // 兼容统一存储实例前的历史双层布局（chunk/share 懒加载单例的 DataPath 分别为
 // ./data 与 ./data/uploads，直传历史文件落在 data/uploads/uploads/<rel>）。
+// 两条候选路径均经 localContain 收口，逃逸（../）一律视为不存在。
 func (s *StorageService) resolveLocal(rel string) (string, bool) {
-	p := filepath.Join(s.dataPath(), rel)
+	p, err := s.localContain(rel)
+	if err != nil {
+		return "", false
+	}
 	if _, err := os.Stat(p); err == nil {
 		return p, true
 	}
-	alt := filepath.Join(s.dataPath(), "uploads", rel)
+	alt, err := s.localContain(filepath.Join("uploads", rel))
+	if err != nil {
+		return p, false
+	}
 	if _, err := os.Stat(alt); err == nil {
 		return alt, true
 	}
@@ -730,7 +776,11 @@ func (s *StorageService) GetFileSize(ctx context.Context, filePath string) (int6
 		}
 		return md.Size, nil
 	}
-	info, err := os.Stat(filepath.Join(s.dataPath(), filePath))
+	fullPath, err := s.localContain(filePath)
+	if err != nil {
+		return 0, err
+	}
+	info, err := os.Stat(fullPath)
 	if err != nil {
 		return 0, err
 	}

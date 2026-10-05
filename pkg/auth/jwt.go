@@ -71,7 +71,7 @@ func ParseToken(tokenString string) (*Claims, error) {
 	secret := getSecret()
 	token, err := jwt.ParseWithClaims(tokenString, &Claims{}, func(token *jwt.Token) (interface{}, error) {
 		return secret, nil
-	})
+	}, jwt.WithValidMethods([]string{"HS256"}))
 	if err != nil {
 		if errors.Is(err, jwt.ErrTokenExpired) {
 			return nil, ErrExpiredToken
@@ -86,6 +86,10 @@ func ParseToken(tokenString string) (*Claims, error) {
 
 // RefreshToken 刷新 token。已注销（黑名单）的 token 拒绝刷新，
 // 堵住"登出后旧 token 仍可换新"的撤销绕过（设计文档 §9.6）。
+//
+// 轮换语义（2026-10-05 审计 P1 修复）：签发新 token 的同时把旧 token 按剩余
+// 有效期加入黑名单——否则被盗 token 可与真用户并行使用到自然过期，且每次
+// 刷新都无法止损。
 func RefreshToken(ctx context.Context, tokenString string) (string, error) {
 	claims, err := ParseToken(tokenString)
 	if err != nil {
@@ -94,7 +98,14 @@ func RefreshToken(ctx context.Context, tokenString string) (string, error) {
 	if IsTokenRevoked(ctx, tokenString) {
 		return "", ErrTokenRevoked
 	}
-	return GenerateToken(claims.UserID, claims.Username, claims.Role)
+	newToken, err := GenerateToken(claims.UserID, claims.Username, claims.Role)
+	if err != nil {
+		return "", err
+	}
+	if remaining := time.Until(claims.ExpiresAt.Time); remaining > 0 {
+		RevokeToken(ctx, tokenString, remaining)
+	}
+	return newToken, nil
 }
 
 // GenerateAdminToken 生成管理员 token

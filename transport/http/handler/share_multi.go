@@ -10,7 +10,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"path"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/cloudwego/hertz/pkg/app"
@@ -338,6 +341,20 @@ func MultiShareBind(ctx context.Context, c *app.RequestContext) {
 				mergedUploadIDs = append(mergedUploadIDs, uploadID)
 			}
 		case e.ObjectKey != "":
+			// object_key 投毒堵口（2026-10-05 审计 P0）：object_key 是客户端可控、
+			// 直接入库为 RelPath 的存储相对路径，此前仅验 GetFileSize 存在——
+			// 传 `../../etc/passwd` 即可把任意可读文件绑成可下载分享。
+			// 现仅接受服务端生成命名空间 uploads/（presign genObjectKey 布局），
+			// 且清洗后不得逃逸存储根（存储层 localContain 兜底双保险）。
+			cleanKey := path.Clean(filepath.ToSlash(e.ObjectKey))
+			if !strings.HasPrefix(cleanKey, "uploads/") || strings.Contains(cleanKey, "..") {
+				cleanupStored(ctx, st, bound)
+				c.JSON(consts.StatusBadRequest, map[string]interface{}{
+					"code":    400,
+					"message": fmt.Sprintf("object_key 非法（仅接受 uploads/ 下服务端生成的对象）: %s", e.ObjectKey),
+				})
+				return
+			}
 			name := utils.SanitizeFileName(e.FileName)
 			if name == "" || !utils.IsAllowedExtension(name) {
 				cleanupStored(ctx, st, bound)

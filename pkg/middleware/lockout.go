@@ -22,6 +22,14 @@ type redisLockCmds interface {
 	Del(ctx context.Context, keys ...string) *redis.IntCmd
 }
 
+// 内存兜底表的容量上限与 GC 周期（2026-10-05 审计 P2：此前 memFail/memHit
+// 只在同 key 重访时惰性清理，攻击者用海量唯一键（用户名/取件码）打失败计数
+// 可让两表无界增长——内存型 DoS。现周期清扫 + 满载淘汰）。
+const (
+	memLockoutMax      = 65536
+	memLockoutGCPeriod = 10 * time.Minute
+)
+
 // Lockout 登录/取件失败计数锁定（防爆破，非 QPS 语义）。
 //
 // 维度由调用方决定（建议 "ip"、"user:xxx"、"code:xxx" 组合键）：
@@ -34,6 +42,8 @@ type Lockout struct {
 	mu      sync.Mutex
 	memHit  map[string]time.Time // key → 锁定截止时间
 	memFail map[string]*failWindow
+
+	gcOnce sync.Once
 }
 
 type failWindow struct {
@@ -65,11 +75,50 @@ func NewLockout(rdb *redis.Client) *Lockout {
 			cfg = c.Security.Lockout
 		}
 	}
-	return &Lockout{
+	l := &Lockout{
 		rdb:     cmds,
 		cfg:     cfg,
 		memHit:  map[string]time.Time{},
 		memFail: map[string]*failWindow{},
+	}
+	return l.withGC()
+}
+
+// withGC 启动内存表周期清扫（Redis 模式下表恒空，空转开销可忽略）
+func (l *Lockout) withGC() *Lockout {
+	l.gcOnce.Do(func() {
+		go func() {
+			ticker := time.NewTicker(memLockoutGCPeriod)
+			defer ticker.Stop()
+			for range ticker.C {
+				l.gcSweep()
+			}
+		}()
+	})
+	return l
+}
+
+// gcSweep 清扫过期条目；满载仍超限时整表清空（保命优先于保留计数，
+// 满载 64K 意味着已被海量唯一键刷过，重置不放大爆破面——限流层仍在）。
+func (l *Lockout) gcSweep() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now := time.Now()
+	for k, until := range l.memHit {
+		if now.After(until) {
+			delete(l.memHit, k)
+		}
+	}
+	for k, w := range l.memFail {
+		if now.After(w.windowEnd) {
+			delete(l.memFail, k)
+		}
+	}
+	if len(l.memFail) >= memLockoutMax {
+		l.memFail = map[string]*failWindow{}
+	}
+	if len(l.memHit) >= memLockoutMax {
+		l.memHit = map[string]time.Time{}
 	}
 }
 
@@ -126,6 +175,18 @@ func (l *Lockout) RecordFailure(ctx context.Context, key string) (bool, int) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := time.Now()
+	// 满载守卫：新键进入前先扫过期，仍满则整表重置（防海量唯一键撑表，
+	// 限流层仍在线，此处只兜内存）
+	if _, exists := l.memFail[key]; !exists && len(l.memFail) >= memLockoutMax {
+		for k, w := range l.memFail {
+			if now.After(w.windowEnd) {
+				delete(l.memFail, k)
+			}
+		}
+		if len(l.memFail) >= memLockoutMax {
+			l.memFail = map[string]*failWindow{}
+		}
+	}
 	w, ok := l.memFail[key]
 	if !ok || now.After(w.windowEnd) {
 		w = &failWindow{count: 0, windowEnd: now.Add(window)}

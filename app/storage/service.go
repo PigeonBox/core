@@ -116,7 +116,9 @@ func cloneCloud(src *conf.CloudStorageConfig) *conf.CloudStorageConfig {
 	return &cp
 }
 
-// validateEndpoints 远端端点 SSRF 校验（scheme 白名单 + 私网策略）
+// validateEndpoints 远端端点 SSRF 校验（scheme 白名单 + 私网策略）。
+// 2026-10-05 审计 P2 补全：云厂商显式 endpoint 与 FTP/SFTP host 此前不在
+// 校验范围，管理员可配 oss.endpoint=http://127.0.0.1:6379 借 Probe 做内网探测。
 func validateEndpoints(c *conf.StorageConfig) error {
 	if c.S3 != nil && c.S3.Endpoint != "" {
 		if err := security.ValidateEndpointURL(c.S3.Endpoint); err != nil {
@@ -136,6 +138,25 @@ func validateEndpoints(c *conf.StorageConfig) error {
 	if c.AzureBlob != nil && c.AzureBlob.Endpoint != "" {
 		if err := security.ValidateEndpointURL(c.AzureBlob.Endpoint); err != nil {
 			return fmt.Errorf("AzureBlob endpoint 校验失败: %w", err)
+		}
+	}
+	for name, seg := range map[string]*conf.CloudStorageConfig{
+		"OSS": c.OSS, "COS": c.COS, "BOS": c.BOS, "KS3": c.KS3, "OBS": c.OBS,
+	} {
+		if seg != nil && seg.Endpoint != "" {
+			if err := security.ValidateEndpointURL(seg.Endpoint); err != nil {
+				return fmt.Errorf("%s endpoint 校验失败: %w", name, err)
+			}
+		}
+	}
+	if c.FTP != nil && c.FTP.Host != "" {
+		if err := security.ValidateEndpointHost(c.FTP.Host); err != nil {
+			return fmt.Errorf("FTP host 校验失败: %w", err)
+		}
+	}
+	if c.SFTP != nil && c.SFTP.Host != "" {
+		if err := security.ValidateEndpointHost(c.SFTP.Host); err != nil {
+			return fmt.Errorf("SFTP host 校验失败: %w", err)
 		}
 	}
 	return nil

@@ -306,6 +306,15 @@ func SearchByCode(ctx context.Context, c *app.RequestContext) {
 	if fc.ExpiredAt != nil {
 		expireStr = fc.ExpiredAt.Format(time.RFC3339)
 	}
+	// 密码保护分享的最小化返回（2026-10-05 审计 P2）：与 /share/metadata 同策略，
+	// 输对密码前不泄露文件名/大小/取件统计——该端点公开且此前不在任何限流桶，
+	// 构成免密码元数据预言机。
+	if fc.RequireAuth {
+		resp.Success(c, &anonmodel.SearchByCodeData{
+			RequirePassword: true,
+		})
+		return
+	}
 	resp.Success(c, &anonmodel.SearchByCodeData{
 		FileName:        meta.FileName,
 		FileSize:        meta.FileSize,

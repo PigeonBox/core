@@ -117,7 +117,12 @@ func ResolveClientIP(remote, xff, xri string) string {
 	}
 
 	if xri = strings.TrimSpace(xri); xri != "" {
-		return xri
+		// 2026-10-05 审计 P2：X-Real-IP 原样返回会让可信代理透传的任意字符串
+		// 进入限流/锁定键与审计日志（伪造 IP 永不命中计数 = 绕过；还可注入
+		// 任意内容污染日志）。非合法 IP 一律回退直连地址。
+		if net.ParseIP(stripPort(xri)) != nil {
+			return xri
+		}
 	}
 	return stripPort(remote)
 }

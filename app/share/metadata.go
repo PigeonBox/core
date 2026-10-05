@@ -27,6 +27,10 @@ type ShareMetadata struct {
 
 // GetShareMetadata 查询分享元数据（复用 GetFileByCode 的过期/封禁检查与 typed error）。
 // 不存在/已过期/被封禁统一由调用方转 404，避免存在性区分扩大探测面。
+//
+// 密码保护分享的最小化返回（2026-10-05 审计 P2）：持码者在输对密码前只拿到
+// has_password/type/encrypted——文件名常含敏感信息（简历/合同名），此前免密码
+// 即泄露，且该端点无鉴权。普通分享仍返回全量字段。
 func (s *Service) GetShareMetadata(ctx context.Context, code string) (*ShareMetadata, error) {
 	fc, err := s.GetFileByCode(ctx, code)
 	if err != nil {
@@ -50,6 +54,16 @@ func (s *Service) GetShareMetadata(ctx context.Context, code string) (*ShareMeta
 		if n, cerr := s.fileRepo().CountByFileCodeID(ctx, fc.ID); cerr == nil {
 			meta.FileCount = n
 		}
+	}
+	if meta.HasPassword {
+		// 保留 code/type/has_password/encrypted 与过期时间（供前端渲染锁样式），
+		// 抹去内容性字段：文件名/大小/取件统计/创建时间
+		meta.Name = ""
+		meta.Size = 0
+		meta.UsedCount = 0
+		meta.ExpiredCount = -1
+		meta.FileCount = 0
+		meta.CreatedAt = time.Time{}
 	}
 	return meta, nil
 }

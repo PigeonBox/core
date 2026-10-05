@@ -59,3 +59,19 @@ func OwnedByCaller(info *model.UploadChunk, clientIP string, sessionToken string
 	}
 	return false
 }
+
+// chunkSessionOwnedBy init 阶段的会话归属判定（与 OwnedByCaller 同语义，
+// 入参来自 InitiateUploadReq 而非 RequestContext；OwnerIP 为空的老数据
+// 视为无主空会话，走调用方的孤儿回收分支）。
+func chunkSessionOwnedBy(info *model.UploadChunk, ownerIP string, userID *uint, sessionToken string) bool {
+	if ownerIP != "" && info.OwnerIP == ownerIP {
+		return true
+	}
+	if VerifySessionToken(info.UploadID, sessionToken) {
+		return true
+	}
+	if userID != nil && info.UserID != nil && *info.UserID == *userID {
+		return true
+	}
+	return false
+}

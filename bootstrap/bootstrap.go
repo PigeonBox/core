@@ -403,6 +403,10 @@ var insecureDefaultSecrets = map[string]string{
 	"please-change-me":                      "placeholder secret",
 	"dev-only-change-me":                    "dev placeholder secret",
 	"dev-only-change-me-to-random-32chars":  "dev placeholder secret",
+	// deploy/k8s/base/secret.yaml 的占位值（2026-10-05 审计 P1：公开仓库里的
+	// 已知密钥=任何人可离线伪造任意 JWT）。忘记替换时启动即失败，而非带公开
+	// 密钥上线。
+	"REPLACE_WITH_STRONG_RANDOM_SECRET": "k8s base manifest placeholder",
 }
 
 // validateSecrets 全环境校验敏感配置，避免使用默认/弱密钥启动（fail-fast）。
@@ -682,7 +686,12 @@ func BootstrapWithOptions(configPath string, opts ...Option) (*server.Hertz, err
 		switch {
 		case strings.HasPrefix(path, "/admin/login"),
 			strings.HasPrefix(path, "/api/v1/user/login"),
-			strings.HasPrefix(path, "/user/login"):
+			strings.HasPrefix(path, "/user/login"),
+			// 注册与初始化向导同属凭证类端点（2026-10-05 审计：此前无限流，
+			// 可批量灌号/在未初始化实例上抢建管理员）
+			strings.HasPrefix(path, "/user/register"),
+			strings.HasPrefix(path, "/api/v1/user/register"),
+			path == "/setup", path == "/setup/check":
 			rl.LoginMiddleware()(ctx, c)
 		case strings.HasPrefix(path, "/anonymous/generate"),
 			strings.HasPrefix(path, "/anonymous/retrieve"),
@@ -692,7 +701,14 @@ func BootstrapWithOptions(configPath string, opts ...Option) (*server.Hertz, err
 			strings.HasPrefix(path, "/share/text"),
 			strings.HasPrefix(path, "/share/file"):
 			rl.UploadMiddleware()(ctx, c)
-		case strings.Contains(path, "/download"):
+		case strings.Contains(path, "/download"),
+			// 元数据/搜索/预览/联邦解析：公开枚举类端点，此前落 default 全不限速
+			// （/anonymous/search 与 /share/metadata 是免密码元数据预言机，
+			// /api/v1/federation/resolve 可借本站做联邦枚举跳板）
+			strings.HasPrefix(path, "/anonymous/search/"),
+			strings.HasPrefix(path, "/share/metadata/"),
+			strings.HasPrefix(path, "/preview/"),
+			strings.HasPrefix(path, "/api/v1/federation/resolve"):
 			rl.DownloadMiddleware()(ctx, c)
 		default:
 			c.Next(ctx)

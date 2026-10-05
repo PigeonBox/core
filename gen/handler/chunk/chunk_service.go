@@ -10,6 +10,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strconv"
@@ -133,6 +134,15 @@ func ChunkUploadInit(ctx context.Context, c *app.RequestContext) {
 	if uploadID == "" {
 		uploadID = uuid.New().String()
 	}
+	// 上传ID字符白名单（UUID/哈希十六进制）：客户端可自报哈希，须从词法上
+	// 排除路径语义（2026-10-05 审计 P0 配套）
+	if !validUploadID(uploadID) {
+		c.JSON(consts.StatusBadRequest, map[string]interface{}{
+			"code":    400,
+			"message": "文件哈希格式非法（仅支持十六进制/UUID）",
+		})
+		return
+	}
 
 	// 检查快速上传：如果文件已存在，直接返回分享代码
 	if req.FileHash != "" {
@@ -156,12 +166,13 @@ func ChunkUploadInit(ctx context.Context, c *app.RequestContext) {
 
 	// 初始化上传
 	initReq := &chunkService.InitiateUploadReq{
-		UploadID:    uploadID,
-		FileName:    req.FileName,
-		TotalChunks: int(req.TotalChunks),
-		FileSize:    req.FileSize,
-		ChunkSize:   int(req.ChunkSize),
-		OwnerIP:     middleware.ClientIP(c),
+		UploadID:     uploadID,
+		FileName:     req.FileName,
+		TotalChunks:  int(req.TotalChunks),
+		FileSize:     req.FileSize,
+		ChunkSize:    int(req.ChunkSize),
+		OwnerIP:      middleware.ClientIP(c),
+		SessionToken: string(c.GetHeader("X-Upload-Token")),
 	}
 	if uid, exists := c.Get("user_id"); exists {
 		if uidUint, ok := uid.(uint); ok {
@@ -171,6 +182,14 @@ func ChunkUploadInit(ctx context.Context, c *app.RequestContext) {
 
 	result, err := getChunkService().InitiateUpload(ctx, initReq)
 	if err != nil {
+		// 他人进行中的会话（已含分片数据）→ 409，防截胡（2026-10-05 审计 P1）
+		if errors.Is(err, chunkService.ErrSessionConflict) {
+			c.JSON(consts.StatusConflict, map[string]interface{}{
+				"code":    409,
+				"message": "该文件已有进行中的上传会话，请稍后重试或更换文件",
+			})
+			return
+		}
 		c.JSON(consts.StatusInternalServerError, map[string]interface{}{
 			"code":    500,
 			"message": "初始化上传失败: " + err.Error(),
@@ -224,8 +243,25 @@ func ChunkUpload(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
-	// 归属校验（治理）：防向他人会话覆盖分片（同尺寸分片可替换内容而不触发大小校验）
-	if info, ierr := getChunkService().GetUploadInfo(ctx, uploadID); ierr == nil && !ownedByCaller(info, c) {
+	// 归属校验（治理）：防向他人会话覆盖分片（同尺寸分片可替换内容而不触发大小校验）。
+	// 会话不存在必须 404 拒绝——2026-10-05 审计 P0：此前 `ierr == nil &&` 短路让
+	// 不存在的 uploadID 跳过校验直接落盘（存储侧彼时无逃逸守卫，构成任意路径写）。
+	if !validUploadID(uploadID) {
+		c.JSON(consts.StatusBadRequest, map[string]interface{}{
+			"code":    400,
+			"message": "上传ID格式非法",
+		})
+		return
+	}
+	info, ierr := getChunkService().GetUploadInfo(ctx, uploadID)
+	if ierr != nil {
+		c.JSON(consts.StatusNotFound, map[string]interface{}{
+			"code":    404,
+			"message": "上传记录不存在",
+		})
+		return
+	}
+	if !ownedByCaller(info, c) {
 		c.JSON(consts.StatusForbidden, map[string]interface{}{
 			"code":    errcode.CodeForbidden,
 			"message": "无权操作该上传会话",
@@ -441,6 +477,27 @@ func ownedByCaller(info *model.UploadChunk, c *app.RequestContext) bool {
 		}
 	}
 	return chunkService.OwnedByCaller(info, middleware.ClientIP(c), string(c.GetHeader("X-Upload-Token")), callerUserID)
+}
+
+// validUploadID 上传ID字符白名单：合法来源仅 UUID 与 MD5/SHA-256 十六进制
+// （客户端可自报哈希），字母数字+连字符/下划线、≤128 位。点号整体排除——
+// 从词法上根除 `..`/`.` 之类路径语义进入存储 key（chunks/<id>/chunk_N）的可能。
+// 2026-10-05 审计 P0：无此校验时 uploadID 携 `..` 可越出 data 根写/删文件。
+func validUploadID(id string) bool {
+	if id == "" || len(id) > 128 {
+		return false
+	}
+	for _, r := range id {
+		switch {
+		case r >= '0' && r <= '9':
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r == '-' || r == '_':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // ChunkUploadComplete .
@@ -743,8 +800,26 @@ func ChunkUploadCancel(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
-	// 归属校验（治理）：防第三方取消/删除他人分片
-	if info, ierr := getChunkService().GetUploadInfo(ctx, uploadID); ierr == nil && !ownedByCaller(info, c) {
+	// 归属校验（治理）：防第三方取消/删除他人分片。
+	// 会话不存在必须 404 拒绝——2026-10-05 审计 P0：此前 `ierr == nil &&` 短路
+	// 让不存在的 uploadID 跳过校验直达 CleanSessionFiles，uploadID 携 `..` 时
+	// RemoveAll(chunks/..) 即删整个 data 根（库+全部上传文件）。
+	if !validUploadID(uploadID) {
+		c.JSON(consts.StatusBadRequest, map[string]interface{}{
+			"code":    400,
+			"message": "上传ID格式非法",
+		})
+		return
+	}
+	info, ierr := getChunkService().GetUploadInfo(ctx, uploadID)
+	if ierr != nil {
+		c.JSON(consts.StatusNotFound, map[string]interface{}{
+			"code":    404,
+			"message": "上传记录不存在",
+		})
+		return
+	}
+	if !ownedByCaller(info, c) {
 		c.JSON(consts.StatusForbidden, map[string]interface{}{
 			"code":    errcode.CodeForbidden,
 			"message": "无权操作该上传会话",

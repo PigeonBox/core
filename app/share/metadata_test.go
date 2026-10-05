@@ -24,7 +24,8 @@ func TestGetShareMetadata(t *testing.T) {
 	require.Empty(t, meta.Name, "text 分享不得经 metadata 泄露内容")
 	require.False(t, meta.HasPassword)
 
-	// 带密码的文件分享：type=file、文件名来自 Text、has_password=true
+	// 带密码的文件分享：type=file、has_password=true；
+	// 最小化返回（2026-10-05 审计 P2）：输对密码前不泄露文件名/大小/统计
 	pwdHash, err := utils.HashPassword("s3cret")
 	require.NoError(t, err)
 	fileResp, err := svc.CreateShare(ctx, &ShareFileReq{
@@ -42,10 +43,28 @@ func TestGetShareMetadata(t *testing.T) {
 	meta, err = svc.GetShareMetadata(ctx, fileResp.Code)
 	require.NoError(t, err)
 	require.Equal(t, "file", meta.Type)
-	require.Equal(t, "a.txt", meta.Name)
 	require.True(t, meta.HasPassword)
-	// CreateShare 会为每个文件分享写一条子表行（单/多文件统一模型），file_count=1
-	require.Equal(t, int64(1), meta.FileCount)
+	require.Empty(t, meta.Name, "密码保护分享不得免密码泄露文件名")
+	require.Zero(t, meta.Size, "密码保护分享不得免密码泄露大小")
+	require.Zero(t, meta.FileCount, "密码保护分享不得免密码泄露子文件数")
+	require.Equal(t, -1, meta.ExpiredCount)
+
+	// 无密码文件分享：全量字段（文件名可见）
+	openResp, err := svc.CreateShare(ctx, &ShareFileReq{
+		Channel:      "direct",
+		FilePath:     "uploads/2026/10/03/open.txt",
+		Size:         5,
+		Text:         "open.txt",
+		ExpiredAt:    utils.CalculateExpireTime(1, "day"),
+		ExpiredCount: utils.CalculateExpireCount("day", 1),
+		UploadType:   "authenticated",
+	})
+	require.NoError(t, err)
+	openMeta, err := svc.GetShareMetadata(ctx, openResp.Code)
+	require.NoError(t, err)
+	require.Equal(t, "open.txt", openMeta.Name)
+	require.False(t, openMeta.HasPassword)
+	require.Equal(t, int64(1), openMeta.FileCount)
 
 	// 查询不扣次数
 	require.Equal(t, meta.UsedCount, func() int {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -65,6 +66,34 @@ func ValidateEndpointURL(rawURL string) error {
 		// 解析失败不在此处定性（连接阶段会自然失败），仅放行 scheme/host 校验
 		return nil
 	}
+	for _, ip := range ips {
+		if isPrivateOrLocal(ip) {
+			return fmt.Errorf("%w: 端点解析到私网/保留地址 %s；如为局域网存储请在配置中开启 security.ssrf.allow_private_networks", ErrEndpointURL, ip)
+		}
+	}
+	return nil
+}
+
+// ValidateEndpointHost 校验裸主机端点（FTP/SFTP 的 host 字段：host[:port]，
+// 无 scheme 不适用 URL 解析）。策略与 ValidateEndpointURL 一致：IP 字面量直接
+// 判私网；域名解析后逐 IP 复判；allow_private_networks 开启时全放行。
+func ValidateEndpointHost(hostPort string) error {
+	host := hostPort
+	if h, _, err := net.SplitHostPort(strings.TrimSpace(hostPort)); err == nil {
+		host = h
+	}
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return fmt.Errorf("%w: 缺少 host", ErrEndpointURL)
+	}
+	allowPrivate := false
+	if cfg := conf.GetGlobalConfig(); cfg != nil {
+		allowPrivate = cfg.Security.SSRF.AllowPrivateNetworks
+	}
+	if allowPrivate {
+		return nil
+	}
+	ips := resolveHost(host)
 	for _, ip := range ips {
 		if isPrivateOrLocal(ip) {
 			return fmt.Errorf("%w: 端点解析到私网/保留地址 %s；如为局域网存储请在配置中开启 security.ssrf.allow_private_networks", ErrEndpointURL, ip)
