@@ -32,7 +32,6 @@ func (r *UserRepository) UpdateColumns(ctx context.Context, id uint, updates map
 	return r.db().WithContext(ctx).Model(&model.User{}).Where("id = ?", id).Updates(updates).Error
 }
 
-// UpdatePasswordHash 管理员重置密码（直接写 bcrypt 哈希）
 // CreateFirstAdminIfNoAdmin 事务内"无管理员才创建"——setup 初始化的原子防护
 // （2026-10-05 审计 P2：原 check-then-act 两步间并发窗口可抢建管理员）。
 // 返回是否真的创建了（false=已有管理员，调用方回"系统已初始化"）。
@@ -62,6 +61,7 @@ func (r *UserRepository) BumpSessionEpoch(ctx context.Context, id uint) error {
 		Update("session_epoch", gorm.Expr("session_epoch + 1")).Error
 }
 
+// UpdatePasswordHash 管理员重置密码（直接写 bcrypt 哈希）
 func (r *UserRepository) UpdatePasswordHash(ctx context.Context, id uint, passwordHash string) error {
 	return r.db().WithContext(ctx).Model(&model.User{}).Where("id = ?", id).
 		Update("password_hash", passwordHash).Error
