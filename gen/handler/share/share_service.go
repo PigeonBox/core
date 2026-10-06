@@ -890,8 +890,8 @@ func DownloadFile(ctx context.Context, c *app.RequestContext) {
 		fileName = fileCode.Prefix + fileCode.Suffix
 	}
 
-	// 本地后端：直接 c.File（原生 Range/断点续传/MIME 推断；P3 下载断点续传）。
-	// 远端后端无本地路径，回退下方流式中转（S3 直下开关可用时流量不经服务器）。
+	// 统一下传送流：本地后端 c.File 原生 Range/断点续传；远端后端服务端
+	// 区间流（206，驱动支持时），不支持区间读的驱动回退全量 200。
 	payload, err := getShareService().OpenShareDownload(ctx, filePath)
 	if err != nil {
 		c.JSON(consts.StatusInternalServerError, map[string]interface{}{
@@ -900,24 +900,7 @@ func DownloadFile(ctx context.Context, c *app.RequestContext) {
 		})
 		return
 	}
-	if payload.LocalAbs != "" {
-		logTransfer()
-		c.Header("Content-Type", "application/octet-stream")
-		c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, fileName))
-		c.File(payload.LocalAbs)
-		return
-	}
-
-	logTransfer()
-	c.Header("Content-Type", "application/octet-stream")
-	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, fileName))
-	c.Header("Content-Length", fmt.Sprintf("%d", payload.Size))
-
-	// 流式传输文件内容。
-	// 回归要点（P0）：Hertz 的 SetBodyStream 在 handler 返回后才真正写出 body，
-	// 因此绝不能 defer reader.Close()——读到的是已关闭 reader（0 字节空文件），
-	// 文件下载分支曾因此长期不可用。改为读到 EOF 即自动关闭。
-	c.SetBodyStream(newCloseOnEOFReader(payload.ReadCloser), int(payload.Size))
+	streamFileDownload(ctx, c, payload, filePath, fileName, logTransfer)
 }
 
 // closeOnEOFReader 包装 ReadCloser：读至 EOF 时自动 Close。

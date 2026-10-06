@@ -30,21 +30,10 @@ func streamChildFile(ctx context.Context, c *app.RequestContext, code string, fi
 	}
 	name := child.DisplayName()
 
-	// 本地后端：c.File 原生 Range/断点续传（P3）
-	if payload.LocalAbs != "" {
-		logDownload(ctx, fc, code, name, child.Size, viewerIP)
-		c.Header("Content-Type", "application/octet-stream")
-		c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, name))
-		c.File(payload.LocalAbs)
-		return true
-	}
-
-	logDownload(ctx, fc, code, name, child.Size, viewerIP)
-	c.Header("Content-Type", "application/octet-stream")
-	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, name))
-	c.Header("Content-Length", fmt.Sprintf("%d", payload.Size))
-	// Hertz 延迟流式写出：读至 EOF 自动关闭（不能 defer Close，回归要点见 DownloadFile）
-	c.SetBodyStream(newCloseOnEOFReader(payload.ReadCloser), int(payload.Size))
+	// 统一下传送流：本地后端 c.File 原生 Range；远端后端服务端区间流（206）
+	// 或全量 200 回退（驱动不支持区间读时）。
+	streamFileDownload(ctx, c, payload, child.FilePath, name,
+		func() { logDownload(ctx, fc, code, name, child.Size, viewerIP) })
 	return true
 }
 
