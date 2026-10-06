@@ -6,7 +6,7 @@ require (
 	github.com/alicebob/miniredis/v2 v2.38.0
 	github.com/cloudwego/hertz v0.9.6
 	github.com/disintegration/imaging v1.6.2
-	github.com/filescodebox/contracts v0.5.0
+	github.com/filescodebox/contracts v0.6.2
 	github.com/glebarez/sqlite v1.11.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0

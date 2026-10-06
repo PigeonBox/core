@@ -103,15 +103,18 @@ func UpdateStorageConfig(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
-	// thrift 模型 → 领域请求（手写映射，重生成 IDL 后需同步）
+	// thrift 模型 → 领域请求（全字段映射；此前静默丢弃 S3.hostname/proxy、
+	// WebDAV.hostname/root_path 与整个 NFS——IDL 与领域模型本就齐备，纯映射缺失）
 	appReq := &storageapp.UpdateConfigRequest{Type: req.Type}
 	if req.Config != nil {
 		appReq.Config.StoragePath = req.Config.StoragePath
 		if req.Config.Webdav != nil {
 			appReq.Config.WebDAV = &storageapp.WebDAVConfig{
-				URL:      req.Config.Webdav.URL,
+				Hostname: req.Config.Webdav.Hostname,
 				Username: req.Config.Webdav.Username,
 				Password: req.Config.Webdav.Password,
+				RootPath: req.Config.Webdav.RootPath,
+				URL:      req.Config.Webdav.URL,
 			}
 		}
 		if req.Config.S3 != nil {
@@ -121,6 +124,21 @@ func UpdateStorageConfig(ctx context.Context, c *app.RequestContext) {
 				SecretAccessKey: req.Config.S3.SecretAccessKey,
 				BucketName:      req.Config.S3.BucketName,
 				RegionName:      req.Config.S3.RegionName,
+				Hostname:        req.Config.S3.Hostname,
+				Proxy:           req.Config.S3.Proxy,
+			}
+		}
+		if req.Config.Nfs != nil {
+			appReq.Config.NFS = &storageapp.NFSConfig{
+				Server:     req.Config.Nfs.Server,
+				Path:       req.Config.Nfs.Path,
+				MountPoint: req.Config.Nfs.MountPoint,
+				Version:    req.Config.Nfs.Version,
+				Options:    req.Config.Nfs.Options,
+				Timeout:    req.Config.Nfs.Timeout,
+				AutoMount:  req.Config.Nfs.AutoMount,
+				RetryCount: req.Config.Nfs.RetryCount,
+				SubPath:    req.Config.Nfs.SubPath,
 			}
 		}
 	}

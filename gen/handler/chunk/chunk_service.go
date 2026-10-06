@@ -672,18 +672,12 @@ func ChunkUploadComplete(ctx context.Context, c *app.RequestContext) {
 
 	// 密码保护（修复 P0：此前 RequireAuth 透传但密码丢失，产出
 	// require_auth=true 且哈希为空的死分享——取件侧对空哈希一律拒绝，
-	// 分享永远无法取件）。密码经 form 字段传递（CompleteReq 模型无此字段）。
+	// 分享永远无法取件）。契约字段（v0.6.2 起；此前 form 直读+二次解析 body）。
 	passwordHash := ""
 	if req.RequireAuth {
-		password := c.DefaultPostForm("password", "")
-		if password == "" {
-			var pwBody struct {
-				Password string `json:"password"`
-			}
-			if b := c.Request.Body(); len(b) > 0 {
-				_ = json.Unmarshal(b, &pwBody)
-				password = pwBody.Password
-			}
+		password := ""
+		if req.Password != nil {
+			password = *req.Password
 		}
 		if password == "" {
 			c.JSON(consts.StatusBadRequest, map[string]interface{}{
@@ -705,17 +699,8 @@ func ChunkUploadComplete(ctx context.Context, c *app.RequestContext) {
 
 	// 自定义取件码（P3）：仅登录用户可指定（防匿名抢注）
 	customCode := ""
-	if userID != nil {
-		customCode = c.DefaultPostForm("custom_code", "")
-		if customCode == "" {
-			var ccBody struct {
-				CustomCode string `json:"custom_code"`
-			}
-			if b := c.Request.Body(); len(b) > 0 {
-				_ = json.Unmarshal(b, &ccBody)
-				customCode = ccBody.CustomCode
-			}
-		}
+	if userID != nil && req.CustomCode != nil {
+		customCode = *req.CustomCode
 	}
 
 	// 创建分享记录

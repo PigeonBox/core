@@ -88,7 +88,8 @@ func ShareText(ctx context.Context, c *app.RequestContext) {
 
 	// XSS 防护：对文本内容进行 HTML 转义。
 	// E2E 密文分享跳过转义（base64 密文无需转义，转义会破坏解密）
-	encrypted := c.DefaultPostForm("encrypted", "false") == "true"
+	// encrypted 为契约字段（v0.6.0 起；此前 DefaultPostForm 直读）
+	encrypted := req.Encrypted != nil && *req.Encrypted
 	safeText := req.Text
 	if !encrypted {
 		safeText = html.EscapeString(req.Text)
@@ -116,10 +117,13 @@ func ShareText(ctx context.Context, c *app.RequestContext) {
 	ownerIP := middleware.ClientIP(c)
 
 	// 密码保护:require_auth 时密码必填,bcrypt 哈希后入库(明文不落库)
-	// 注:密码经 form 传递(ShareTextReq 模型无此字段,DefaultPostForm 直读)
+	// (契约字段 v0.6.0 起,form/json 均按绑定规则进 req)
 	passwordHash := ""
 	if req.RequireAuth {
-		password := c.DefaultPostForm("password", "")
+		password := ""
+		if req.Password != nil {
+			password = *req.Password
+		}
 		if password == "" {
 			c.JSON(consts.StatusBadRequest, map[string]interface{}{
 				"code":    400,
@@ -140,10 +144,8 @@ func ShareText(ctx context.Context, c *app.RequestContext) {
 
 	// 自定义取件码（P3）：仅登录用户可指定（防匿名抢注）
 	customCode := ""
-	if userID != nil {
-		if v := c.DefaultPostForm("custom_code", ""); v != "" {
-			customCode = v
-		}
+	if userID != nil && req.CustomCode != nil {
+		customCode = *req.CustomCode
 	}
 
 	// 调用 service（使用转义后的安全文本；E2E 密文跳过转义，审核由 service 层跳过）
@@ -191,15 +193,22 @@ func ShareText(ctx context.Context, c *app.RequestContext) {
 // ShareFile .
 // @router /share/file/ [POST]
 func ShareFile(ctx context.Context, c *app.RequestContext) {
-	// 1. 解析表单参数
-	expireValueStr := c.DefaultPostForm("expire_value", "1")
-	expireStyle := c.DefaultPostForm("expire_style", "day")
-	requireAuth := c.DefaultPostForm("require_auth", "false") == "true"
-	password := c.DefaultPostForm("password", "")
-
-	expireValue, err := strconv.Atoi(expireValueStr)
-	if err != nil {
-		expireValue = 1
+	// 1. 解析表单参数（契约绑定 v0.6.1 起；此前手工 DefaultPostForm 逐一读取，
+	//    password 更是契约外字段）
+	var req sharemodel.ShareFileReq
+	if err := c.BindAndValidate(&req); err != nil {
+		c.JSON(consts.StatusBadRequest, map[string]interface{}{
+			"code":    400,
+			"message": err.Error(),
+		})
+		return
+	}
+	expireValue := int(req.ExpireValue)
+	expireStyle := req.ExpireStyle
+	requireAuth := req.RequireAuth
+	password := ""
+	if req.Password != nil {
+		password = *req.Password
 	}
 
 	// 过期样式白名单
@@ -603,51 +612,53 @@ func GetShare(ctx context.Context, c *app.RequestContext) {
 	lock.Reset(ctx, lockKey)
 
 	// 下发下载令牌（security.download_token.enabled 时 /share/download 必须携带）
+	token := security.GenerateDownloadToken(fileCode.Code)
 	downloadURL := fmt.Sprintf("/share/download?code=%s", fileCode.Code)
-	if tk := security.GenerateDownloadToken(fileCode.Code); tk != "" {
-		downloadURL += "&token=" + tk
+	if token != "" {
+		downloadURL += "&token=" + token
 	}
 
-	// 构建响应（保持 {code,message,data:{...}} 结构与前端兼容；
-	// data 内附加 download_url/token，ShareDetail thrift 模型无此字段）
-	data := map[string]interface{}{
-		"code":         fileCode.Code,
-		"text":         fileCode.Text,
-		"file_name":    fileCode.UUIDFileName,
-		"file_size":    fmt.Sprintf("%d", fileCode.Size),
-		"url":          downloadURL, // 修复：原 /download/:code 无对应路由，落到 SPA fallback
-		"download_url": downloadURL,
-		"has_password": fileCode.RequireAuth,
-		"encrypted":    fileCode.Encrypted, // E2E：前端需以链接 #fragment 中的密钥解密
+	// 契约响应（v0.6.0 起 ShareDetail 载全字段；此前为 ad-hoc map，
+	// download_url/token/encrypted/is_multi/files 六个字段游窜契约外）
+	data := &sharemodel.ShareDetail{
+		Code:        fileCode.Code,
+		Text:        fileCode.Text,
+		FileName:    fileCode.UUIDFileName,
+		FileSize:    fmt.Sprintf("%d", fileCode.Size),
+		URL:         downloadURL,
+		DownloadURL: &downloadURL,
+		HasPassword: fileCode.RequireAuth,
+		Encrypted:   &fileCode.Encrypted,
 	}
-	if tk := security.GenerateDownloadToken(fileCode.Code); tk != "" {
-		data["token"] = tk
+	if token != "" {
+		data.Token = &token
 	}
 	if fileCode.ExpiredAt != nil {
-		data["expire_time"] = fileCode.ExpiredAt.Format("2006-01-02 15:04:05")
+		data.ExpireTime = fileCode.ExpiredAt.Format("2006-01-02 15:04:05")
 	}
 
 	// 多文件列表（P0 多文件）：非文本分享附带 files 数组（含单文件，前端统一渲染）；
 	// is_multi 标记文件数 >1（前端显示"打包下载"）。查询失败静默省略（不阻断取件）。
 	if !shareService.IsTextShare(fileCode) {
 		if items, lerr := getShareService().ListShareFiles(ctx, code); lerr == nil && len(items) > 0 {
-			files := make([]map[string]interface{}, 0, len(items))
+			files := make([]*sharemodel.ShareFileItem, 0, len(items))
 			for _, it := range items {
-				files = append(files, map[string]interface{}{
-					"id":   it.ID,
-					"name": it.Name,
-					"size": it.Size,
+				files = append(files, &sharemodel.ShareFileItem{
+					ID:   int64(it.ID),
+					Name: it.Name,
+					Size: it.Size,
 				})
 			}
-			data["files"] = files
-			data["is_multi"] = len(items) > 1
+			data.Files = files
+			isMulti := len(items) > 1
+			data.IsMulti = &isMulti
 		}
 	}
 
-	c.JSON(consts.StatusOK, map[string]interface{}{
-		"code":    200,
-		"message": "获取成功",
-		"data":    data,
+	c.JSON(consts.StatusOK, &sharemodel.GetShareResp{
+		Code:    200,
+		Message: "获取成功",
+		Data:    data,
 	})
 }
 
