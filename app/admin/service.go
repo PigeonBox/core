@@ -394,6 +394,40 @@ func (s *Service) BatchDeleteFiles(ctx context.Context, ids []uint) (int, error)
 			}
 		}
 	}
+
+	// 物理文件清理（含多文件子文件）。此前纯 DB 删除：本地后端靠每日对账
+	// 兜底，远端后端（s3/webdav/多云）上即永久孤儿对象——2026-10-06 215
+	// COS 实测确认。失败不阻断 DB 删除（记日志）。
+	childRepo := dao.NewFileCodeFileRepository()
+	for _, id := range ids {
+		fc, err := s.fileCodeRepo.GetByID(ctx, id)
+		if err != nil {
+			continue
+		}
+		if s.storage != nil {
+			if children, cerr := childRepo.ListByFileCodeID(ctx, id); cerr == nil {
+				for _, c := range children {
+					if c.FilePath == "" {
+						continue
+					}
+					if err := s.storage.DeleteFile(ctx, c.FilePath); err != nil {
+						logger.Warn("batch delete child physical file failed", zap.String("path", c.FilePath), zap.Error(err))
+					}
+				}
+				if len(children) > 0 {
+					_ = childRepo.SoftDeleteByFileCodeIDs(ctx, []uint{id})
+				}
+			}
+		}
+		if s.storage != nil && fc.FilePath != "" {
+			if fp := fc.GetFilePath(); fp != "" {
+				if err := s.storage.DeleteFile(ctx, fp); err != nil {
+					logger.Warn("batch delete physical file failed", zap.String("path", fp), zap.Error(err))
+				}
+			}
+		}
+	}
+
 	n, err := s.fileCodeRepo.BatchDeleteByIDs(ctx, ids)
 	if err == nil && s.federation != nil {
 		for _, code := range codes {
@@ -1062,20 +1096,11 @@ func (s *Service) CleanExpiredFiles(ctx context.Context) (int64, int64, error) {
 			}
 		}
 		// 删物理文件（失败不阻断 DB 删除）
-		// TEMP-DEBUG 2026-10-06: 215 COS 清理不删对象的诊断插桩
-		logger.Info("cleanup physical delete diagnostic",
-			zap.Bool("storage_nil", s.storage == nil),
-			zap.String("raw_file_path", file.FilePath),
-			zap.String("uuid", file.UUIDFileName))
 		if s.storage != nil && file.FilePath != "" {
 			fp := file.GetFilePath()
-			logger.Info("cleanup physical delete diagnostic fp",
-				zap.String("fp", fp))
 			if fp != "" {
 				if err := s.storage.DeleteFile(ctx, fp); err != nil {
 					logger.Warn("delete physical file failed during cleanup", zap.String("path", fp), zap.Error(err))
-				} else {
-					logger.Info("cleanup physical delete ok", zap.String("path", fp))
 				}
 			}
 		}

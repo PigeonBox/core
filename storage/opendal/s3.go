@@ -126,6 +126,26 @@ func (d *s3Driver) Reader(ctx context.Context, key string) (io.ReadCloser, error
 	return obj, nil
 }
 
+// ReadRange 按 [start, start+length) 区间读取（S3 原生 Range GET，断点续传用）。
+// length<=0 表示从 start 读到末尾。
+func (d *s3Driver) ReadRange(ctx context.Context, key string, start, length int64) (io.ReadCloser, error) {
+	opts := minio.GetObjectOptions{}
+	if length > 0 {
+		if err := opts.SetRange(start, start+length-1); err != nil {
+			return nil, d.wrapErr(key, err)
+		}
+	} else if start > 0 {
+		if err := opts.SetRange(start, 0); err != nil {
+			return nil, d.wrapErr(key, err)
+		}
+	}
+	obj, err := d.client.GetObject(ctx, d.bucket, key, opts)
+	if err != nil {
+		return nil, d.wrapErr(key, err)
+	}
+	return obj, nil
+}
+
 func (d *s3Driver) Stat(ctx context.Context, key string) (*Metadata, error) {
 	info, err := d.client.StatObject(ctx, d.bucket, key, minio.StatObjectOptions{})
 	if err != nil {

@@ -835,6 +835,79 @@ func (s *StorageService) GetFileReader(ctx context.Context, filePath string) (io
 	return file, fileInfo.Size(), nil
 }
 
+// ErrRangeUnsupported 当前存储后端不支持按字节区间读取（Range 下载/断点续传）。
+// 转发 opendal.ErrRangeUnsupported，调用方用 errors.Is 判断后回退全量流。
+var ErrRangeUnsupported = opendal.ErrRangeUnsupported
+
+// StatFile 获取单个文件大小（Range 下载等需要先知总大小的场景）。
+func (s *StorageService) StatFile(ctx context.Context, filePath string) (int64, error) {
+	_, op := s.current()
+	if op != nil {
+		md, err := op.Stat(ctx, filePath)
+		if err != nil {
+			return 0, fmt.Errorf("文件不存在: %w", err)
+		}
+		return md.Size, nil
+	}
+	fullPath, ok := s.resolveLocal(filePath)
+	if !ok {
+		return 0, fmt.Errorf("文件不存在: %s", filePath)
+	}
+	info, err := os.Stat(fullPath)
+	if err != nil {
+		return 0, fmt.Errorf("文件不存在: %w", err)
+	}
+	return info.Size(), nil
+}
+
+// GetFileReaderRange 区间读取文件（Range 下载/断点续传）。
+// 返回 (区间读器, 对象总大小)。当前后端不支持区间读时返回
+// opendal.ErrRangeUnsupported，调用方应回退全量流式（200）。
+// start 越界（>= 文件大小）返回 os.ErrNotExist 语义错误（调用方 416）。
+func (s *StorageService) GetFileReaderRange(ctx context.Context, filePath string, start, length int64) (io.ReadCloser, int64, error) {
+	_, op := s.current()
+	if op != nil {
+		md, err := op.Stat(ctx, filePath)
+		if err != nil {
+			return nil, 0, fmt.Errorf("文件不存在: %w", err)
+		}
+		if start >= md.Size {
+			return nil, md.Size, fmt.Errorf("区间起点越界: %w", os.ErrNotExist)
+		}
+		rc, err := op.ReadRange(ctx, filePath, start, length)
+		if err != nil {
+			return nil, md.Size, err
+		}
+		return rc, md.Size, nil
+	}
+	fullPath, ok := s.resolveLocal(filePath)
+	if !ok {
+		return nil, 0, fmt.Errorf("文件不存在: %s", filePath)
+	}
+	info, err := os.Stat(fullPath)
+	if err != nil {
+		return nil, 0, fmt.Errorf("文件不存在: %w", err)
+	}
+	if start >= info.Size() {
+		return nil, info.Size(), fmt.Errorf("区间起点越界: %w", os.ErrNotExist)
+	}
+	f, err := os.Open(fullPath)
+	if err != nil {
+		return nil, info.Size(), fmt.Errorf("打开文件失败: %w", err)
+	}
+	if _, err := f.Seek(start, io.SeekStart); err != nil {
+		_ = f.Close()
+		return nil, info.Size(), fmt.Errorf("定位区间失败: %w", err)
+	}
+	if length > 0 {
+		return struct {
+			io.Reader
+			io.Closer
+		}{io.LimitReader(f, length), f}, info.Size(), nil
+	}
+	return f, info.Size(), nil
+}
+
 // GenerateFilePath 已删除：零调用方（上传路径统一走 pkg/utils.NewUploadRelPath）。
 
 // StoredFileEntry 已落存储的文件项（多文件分享/访客投递等跨域流转的统一载体）。

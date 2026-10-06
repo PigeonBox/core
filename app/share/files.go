@@ -8,6 +8,7 @@ package share
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"time"
@@ -59,6 +60,43 @@ func (s *Service) OpenShareDownload(ctx context.Context, filePath string) (*File
 		return nil, err
 	}
 	return &FilePayload{ReadCloser: rc, Size: size}, nil
+}
+
+// OpenShareDownloadRange 区间打开单文件下载流（Range 下载/断点续传，
+// 鉴权与扣次由调用方先行完成）。返回 (区间读器, 待传字节数, 对象总大小)。
+// 后端不支持区间读时返回 storage/opendal.ErrRangeUnsupported，调用方回退
+// OpenShareDownload 全量流（200）；start 越界返回 os.ErrNotExist 语义（416）。
+func (s *Service) OpenShareDownloadRange(ctx context.Context, filePath string, start, length int64) (io.ReadCloser, int64, int64, error) {
+	st, err := s.storageClient()
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	concrete, ok := st.(*storage.StorageService)
+	if !ok {
+		return nil, 0, 0, fmt.Errorf("%w（非统一存储实例）", storage.ErrRangeUnsupported)
+	}
+	rc, total, err := concrete.GetFileReaderRange(ctx, filePath, start, length)
+	if err != nil {
+		return nil, 0, total, err
+	}
+	if length <= 0 || start+length > total {
+		length = total - start
+	}
+	return rc, length, total, nil
+}
+
+// StatShareFile 获取分享文件总大小（Range 解析需先知 total）。
+// 后端非统一存储实例时返回 storage.ErrRangeUnsupported（调用方回退全量）。
+func (s *Service) StatShareFile(ctx context.Context, filePath string) (int64, error) {
+	st, err := s.storageClient()
+	if err != nil {
+		return 0, err
+	}
+	concrete, ok := st.(*storage.StorageService)
+	if !ok {
+		return 0, storage.ErrRangeUnsupported
+	}
+	return concrete.StatFile(ctx, filePath)
 }
 
 // OpenChildDownload 多文件分享的子文件取流。不存在/不属于该分享返回

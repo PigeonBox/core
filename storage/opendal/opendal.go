@@ -108,6 +108,11 @@ type (
 	presigner interface {
 		Presign(ctx context.Context, method, key string, expire time.Duration) (*PresignedResult, error)
 	}
+	rangeReader interface {
+		// ReadRange 读取 [start, start+length) 字节区间；length<=0 表示读到末尾。
+		// 不支持区间读的驱动不实现此接口（Operator.ReadRange 返回 ErrRangeUnsupported）。
+		ReadRange(ctx context.Context, key string, start, length int64) (io.ReadCloser, error)
+	}
 )
 
 // Metadata 文件元数据
@@ -304,6 +309,37 @@ func (op *Operator) Reader(ctx context.Context, path string) (io.ReadCloser, err
 		return os.Open(op.resolvePath(path))
 	}
 	return op.driver.Reader(ctx, op.key(path))
+}
+
+// ErrRangeUnsupported 当前驱动不支持按字节区间读取。
+// 调用方（Range 下载/断点续传）应回退全量流式（200）。
+var ErrRangeUnsupported = errors.New("storage driver: range read unsupported")
+
+// ReadRange 读取 [start, start+length) 字节区间（断点续传/Range 下载）。
+// length<=0 表示读到末尾。驱动未实现区间读能力时返回 ErrRangeUnsupported。
+func (op *Operator) ReadRange(ctx context.Context, path string, start, length int64) (io.ReadCloser, error) {
+	if op.scheme == SchemeFS {
+		f, err := os.Open(op.resolvePath(path))
+		if err != nil {
+			return nil, err
+		}
+		if _, err := f.Seek(start, io.SeekStart); err != nil {
+			_ = f.Close()
+			return nil, err
+		}
+		if length > 0 {
+			return struct {
+				io.Reader
+				io.Closer
+			}{io.LimitReader(f, length), f}, nil
+		}
+		return f, nil
+	}
+	rr, ok := op.driver.(rangeReader)
+	if !ok {
+		return nil, ErrRangeUnsupported
+	}
+	return rr.ReadRange(ctx, op.key(path), start, length)
 }
 
 // Stat 获取文件元信息；对象不存在时返回包装了 os.ErrNotExist 的错误
