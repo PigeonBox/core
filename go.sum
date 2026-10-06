@@ -43,6 +43,8 @@ github.com/filescodebox/contracts v0.3.0 h1:dGHe4yjn3GUstgEexnJXRmQcI0krOUKvAuoe
 github.com/filescodebox/contracts v0.3.0/go.mod h1:0haN4qXlJuCIZj9gZ+5fMah2v0yqVm0X36EP6gIHA/4=
 github.com/filescodebox/contracts v0.4.0 h1:35wdK+Da1LXPsu5ua9m3YFmsVX8E04oT8q7ZPXY00oY=
 github.com/filescodebox/contracts v0.4.0/go.mod h1:0haN4qXlJuCIZj9gZ+5fMah2v0yqVm0X36EP6gIHA/4=
+github.com/filescodebox/contracts v0.5.0 h1:UZSrANRWgsCqyM2ICHfsr11raOpHfzy5daR2SyGctGo=
+github.com/filescodebox/contracts v0.5.0/go.mod h1:0haN4qXlJuCIZj9gZ+5fMah2v0yqVm0X36EP6gIHA/4=
 github.com/filescodebox/kit v0.3.0 h1:zSgkUf374sz2gMG3NQKnPCUMfW2FeWUdYFg569fptTA=
 github.com/filescodebox/kit v0.3.0/go.mod h1:NMxlXOIe85WrFGyP8kk6vG/WiwvyIMSdX7SRcXgOlg4=
 github.com/frankban/quicktest v1.14.6 h1:7Xjx+VpznH+oBnejlPUj8oUpdxnVs4f8XU8WnHkI4W8=
