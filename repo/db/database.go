@@ -118,5 +118,10 @@ func autoMigrate() error {
 		&model.UserAPIKey{},
 		&model.SystemConfigRecord{},
 		&model.FilePreview{},
+		// notify 表此前只靠 bootstrap standalone 步骤迁移,而该步骤被
+		// database.auto_migrate 门控——env-only 形态(无 yaml,该键取零值
+		// false)下全新安装缺表,/notifies/* 全 500(2026-10-07 真机事故)。
+		// 在此登记使 autoMigrate 路径与版本化路径都覆盖。
+		&model.Notify{},
 	)
 }

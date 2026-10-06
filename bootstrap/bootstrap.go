@@ -255,6 +255,10 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("server.base_url", "")
 	v.SetDefault("database.driver", "sqlite")
 	v.SetDefault("database.db_name", "./data/filecodebox.db")
+	// auto_migrate 默认 true:env-only 形态(无 config.yaml,如 openwrt/fnos 容器)
+	// 此键无 yaml/env 来源,若取 Go 零值 false 会跳过 standalone 迁移步骤,
+	// 全新安装缺 notifies 表 → /notifies/* 500(2026-10-07 真机事故)
+	v.SetDefault("database.auto_migrate", true)
 	v.SetDefault("user.allow_user_registration", true)
 	v.SetDefault("observability.metrics.enabled", false)
 	v.SetDefault("observability.metrics.path", "/metrics")
@@ -522,6 +526,7 @@ func InitDatabase(config *conf.DatabaseConfig) (*gorm.DB, error) {
 		// AutoMigrate 兜底：补充 baseline 未覆盖的表（如 file_previews/notifies）
 		if err := database.AutoMigrate(
 			&model.FilePreview{},
+			&model.Notify{},
 		); err != nil {
 			logger.Error("AutoMigrate fallback for previews failed", zap.Error(err))
 		}
