@@ -838,6 +838,9 @@ func (s *Service) modelToResp(fileCode *model.FileCode) *ShareResp {
 		RequireAuth:  fileCode.RequireAuth,
 		Encrypted:    fileCode.Encrypted,
 		OwnerIP:      fileCode.OwnerIP,
+		// 分享链接三通道统一在此生成（文本通道尾部原有一份同值覆盖，保持无害）
+		ShareURL:     fmt.Sprintf("/share/%s", fileCode.Code),
+		FullShareURL: fmt.Sprintf("%s/share/%s", s.baseURL, fileCode.Code),
 	}
 }
 

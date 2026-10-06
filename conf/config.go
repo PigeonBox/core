@@ -114,6 +114,10 @@ type FederationConfig struct {
 type MCPConfig struct {
 	// Enabled 默认 true（认证已强制，无暴露风险）。env: FCB_MCP_ENABLED
 	Enabled bool `mapstructure:"enabled"`
+	// MaxFileSize MCP 单文件上传/下载上限（字节）。默认 6MB——base64 膨胀 4/3 后
+	// 约 8MB，低于默认请求体上限（max(10MB, upload.max_file_size)）；
+	// 调大超过请求体上限时须同步调大 upload.max_file_size。env: FCB_MCP_MAX_FILE_SIZE
+	MaxFileSize int64 `mapstructure:"max_file_size"`
 }
 
 // AdminConfig 管理端运维配置（治理 2026-10-03）

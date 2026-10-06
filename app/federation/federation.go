@@ -187,6 +187,17 @@ func (s *Service) setLastTickOK(ok bool) { s.tickOK.Store(ok) }
 
 func (s *Service) lastTickOK() bool { return s.tickOK.Load() }
 
+// Healthy 最近一次 registry 心跳是否成功（未启动/尚未跑首个周期时为 false）。
+// 供管理面（MCP federation_status 等）展示联邦健康度。
+func (s *Service) Healthy() bool { return s.lastTickOK() }
+
+// RegistryURLs 主备 registry 基址列表（配置逗号分隔项的副本）。
+func (s *Service) RegistryURLs() []string {
+	out := make([]string, len(s.regURLs))
+	copy(out, s.regURLs)
+	return out
+}
+
 func (s *Service) announceAll(ctx context.Context) {
 	now := time.Now()
 	s.mu.Lock()

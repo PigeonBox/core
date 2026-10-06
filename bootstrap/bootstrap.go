@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"errors"
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/app/server"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
@@ -279,6 +280,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("rate_limit.block_seconds", 60)
 	// MCP server 默认开启（路由挂管理员认证，无暴露风险）
 	v.SetDefault("mcp.enabled", true)
+	v.SetDefault("mcp.max_file_size", 6<<20) // 单文件上限；默认 6MB（base64 后约 8MB < 默认请求体上限 10MB）
 	// /openapi.json 公开开关：默认保持公开（前端 /api-docs 页依赖），
 	// 生产部署建议关闭以收缩端点清单侦察面（FCB_UI_EXPOSE_OPENAPI=false）
 	v.SetDefault("ui.expose_openapi", true)
@@ -370,7 +372,8 @@ var envBindings = map[string][]string{
 	"notify.smtp.password": {"FCB_SMTP_PASSWORD"},
 	"notify.smtp.from":     {"FCB_SMTP_FROM"},
 	// mcp
-	"mcp.enabled": {"FCB_MCP_ENABLED"},
+	"mcp.enabled":       {"FCB_MCP_ENABLED"},
+	"mcp.max_file_size": {"FCB_MCP_MAX_FILE_SIZE"},
 	// ui
 	"ui.expose_openapi": {"FCB_UI_EXPOSE_OPENAPI"},
 	// moderation（内容审核，治理 2026-10-03）
@@ -1586,11 +1589,15 @@ func initThriftIDLServices(database *gorm.DB) {
 	previewHandler.SetService(previewApp.NewService(bootstrapStorage))
 
 	// 6.5 MCP server（AI 客户端集成）：统计/维护走全站唯一 admin 实例，
-	//     分享创建走 share service（复用配额/审计链路）——经窄接口适配器注入
+	//     分享创建走 share service（复用配额/审核链路）、文件下载走全站存储实例、
+	//     联邦状态/路由走 federation 实例（未启用为 nil 适配器）——经窄接口适配器注入
 	if config.MCP.Enabled {
 		mcpService = mcpApp.NewService(config.App.Version)
 		mcpService.SetAdminService(mcpAdminAdapter{adminSvc})
 		mcpService.SetShareService(mcpShareAdapter{shareSvc})
+		mcpService.SetStorageService(bootstrapStorage)
+		mcpService.SetFederationService(mcpFederationAdapter{svc: federationSvcInstance})
+		mcpService.SetMaxFileSize(config.MCP.MaxFileSize)
 	}
 
 	// 7. 启动过期文件定时清理（默认每小时，删 DB 记录 + 物理文件），
@@ -1826,6 +1833,18 @@ func (a mcpAdminAdapter) CleanExpired(ctx context.Context) (int64, int64, error)
 // mcpShareAdapter mcp.ShareAPI 的 share 域适配器。
 type mcpShareAdapter struct{ svc *shareService.Service }
 
+func (a mcpShareAdapter) ShareBytes(ctx context.Context, opts mcpApp.FileShareOpts) (string, string, error) {
+	resp, err := a.svc.ShareBytes(ctx, shareService.ShareBytesOpts{
+		FileName: opts.FileName, Content: opts.Content,
+		ExpireValue: opts.ExpireValue, ExpireStyle: opts.ExpireStyle,
+		PasswordHash: opts.PasswordHash, CustomCode: opts.CustomCode,
+	})
+	if err != nil {
+		return "", "", err
+	}
+	return resp.Code, resp.FullShareURL, nil
+}
+
 func (a mcpShareAdapter) CreateTextShare(ctx context.Context, text string, expireValue int, expireStyle string,
 	requireAuth bool, passwordHash string, ownerIP, customCode string) (string, string, error) {
 	resp, err := a.svc.ShareTextWithAuth(ctx, text, expireValue, expireStyle, requireAuth, passwordHash, nil, ownerIP, false, customCode)
@@ -1845,6 +1864,34 @@ func (a mcpShareAdapter) ShareFiles(ctx context.Context, code string) ([]mcpApp.
 		out[i] = mcpApp.ShareFileInfo{Name: it.Name, Size: it.Size}
 	}
 	return out, nil
+}
+
+// mcpFederationAdapter mcp.FederationAPI 的 federation 域适配器。
+// svc 为 nil（未启用/初始化失败）时上报"未启用"事实而非报错。
+type mcpFederationAdapter struct{ svc *federationApp.Service }
+
+func (a mcpFederationAdapter) Status() mcpApp.FederationStatus {
+	if a.svc == nil {
+		return mcpApp.FederationStatus{}
+	}
+	return mcpApp.FederationStatus{
+		Enabled: true, NodeID: a.svc.NodeID(), Healthy: a.svc.Healthy(),
+		Registries: a.svc.RegistryURLs(),
+	}
+}
+
+func (a mcpFederationAdapter) Resolve(code string) (*mcpApp.FederationResolve, error) {
+	if a.svc == nil {
+		return nil, errors.New("联邦未启用")
+	}
+	info, err := a.svc.Resolve(code)
+	if err != nil || info == nil {
+		return nil, err
+	}
+	return &mcpApp.FederationResolve{
+		NodeID: info.NodeID, URL: info.URL, Name: info.Name,
+		ExpiresAt: info.ExpiresAt, SizeHint: info.SizeHint,
+	}, nil
 }
 
 // requestShareGateway request.ShareGateway 的 share 域适配器（访客投递 → 归属分享）。

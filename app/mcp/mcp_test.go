@@ -2,11 +2,14 @@ package mcp
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"mime/multipart"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
@@ -48,6 +51,18 @@ type shareAPIAdapter struct{ svc *shareApp.Service }
 func (a shareAPIAdapter) CreateTextShare(ctx context.Context, text string, expireValue int, expireStyle string,
 	requireAuth bool, passwordHash string, ownerIP, customCode string) (string, string, error) {
 	resp, err := a.svc.ShareTextWithAuth(ctx, text, expireValue, expireStyle, requireAuth, passwordHash, nil, ownerIP, false, customCode)
+	if err != nil {
+		return "", "", err
+	}
+	return resp.Code, resp.FullShareURL, nil
+}
+
+func (a shareAPIAdapter) ShareBytes(ctx context.Context, opts FileShareOpts) (string, string, error) {
+	resp, err := a.svc.ShareBytes(ctx, shareApp.ShareBytesOpts{
+		FileName: opts.FileName, Content: opts.Content,
+		ExpireValue: opts.ExpireValue, ExpireStyle: opts.ExpireStyle,
+		PasswordHash: opts.PasswordHash, CustomCode: opts.CustomCode,
+	})
 	if err != nil {
 		return "", "", err
 	}
@@ -121,8 +136,11 @@ func newMCPTestService(t *testing.T) *Service {
 	t.Cleanup(func() { db.SetDatabaseInstance(nil) })
 
 	svc := NewService("test-1.0.0")
-	svc.SetShareService(shareAPIAdapter{shareApp.NewService("http://test.local", nopStorage{})})
+	// share 服务与下载工具共用同一存储桩（写入/读取同 map 才能对上路径）
+	ms := mapStorage{data: map[string][]byte{}}
+	svc.SetShareService(shareAPIAdapter{shareApp.NewService("http://test.local", ms)})
 	svc.SetAdminService(adminAPIAdapter{adminApp.NewService()})
+	svc.SetStorageService(ms)
 	return svc
 }
 
@@ -157,17 +175,19 @@ func TestNotification_NoResponse(t *testing.T) {
 	assert.Empty(t, raw, "通知不返回响应体")
 }
 
-func TestToolsList_EightTools(t *testing.T) {
+func TestToolsList_ThirteenTools(t *testing.T) {
 	s := newMCPTestService(t)
 	_, out := rpc(t, s, "tools/list", nil)
 	tools := out["result"].(map[string]any)["tools"].([]any)
-	assert.Len(t, tools, 8)
+	assert.Len(t, tools, 13)
 	names := map[string]bool{}
 	for _, tl := range tools {
 		names[tl.(map[string]any)["name"].(string)] = true
 	}
-	for _, want := range []string{"share_text", "get_share", "list_shares", "delete_share",
-		"get_system_status", "get_storage_info", "list_users", "cleanup_expired"} {
+	for _, want := range []string{"share_text", "share_file", "get_share", "get_share_content",
+		"download_share_file", "list_shares", "delete_share",
+		"get_system_status", "get_storage_info", "list_users", "cleanup_expired",
+		"federation_status", "federation_resolve"} {
 		assert.True(t, names[want], "缺少工具 %s", want)
 	}
 }
@@ -257,6 +277,204 @@ func TestToolsCall_UnknownTool(t *testing.T) {
 	s := newMCPTestService(t)
 	_, out := rpc(t, s, "tools/call", map[string]any{"name": "nope"})
 	assert.Equal(t, true, out["result"].(map[string]any)["isError"])
+}
+
+// mapStorage 带内容的存储桩（download_share_file 用；其余方法沿用 nopStorage）
+type mapStorage struct {
+	nopStorage
+	data map[string][]byte
+}
+
+func (m mapStorage) SaveStream(_ context.Context, p string, r io.Reader, _ int64) (int64, error) {
+	d, err := io.ReadAll(r)
+	if err != nil {
+		return 0, err
+	}
+	m.data[p] = d
+	return int64(len(d)), nil
+}
+func (m mapStorage) GetFileSize(_ context.Context, p string) (int64, error) {
+	return int64(len(m.data[p])), nil
+}
+func (m mapStorage) GetFile(_ context.Context, p string) ([]byte, error) {
+	if d, ok := m.data[p]; ok {
+		return d, nil
+	}
+	return nil, errors.New("not found")
+}
+
+// toolText 取 tools/call 响应的文本内容
+func toolText(t *testing.T, out map[string]any) (string, bool) {
+	t.Helper()
+	result := out["result"].(map[string]any)
+	isErr, _ := result["isError"].(bool)
+	return result["content"].([]any)[0].(map[string]any)["text"].(string), isErr
+}
+
+func TestToolsCall_FileShareRoundtrip(t *testing.T) {
+	s := newMCPTestService(t)
+
+	content := []byte("hello-mcp-file-2026")
+	b64 := base64.StdEncoding.EncodeToString(content)
+
+	// share_file 创建
+	_, out := rpc(t, s, "tools/call", map[string]any{
+		"name": "share_file",
+		"arguments": map[string]any{
+			"file_name":      "report.txt",
+			"content_base64": b64,
+			"expire_style":   "day",
+		},
+	})
+	text, isErr := toolText(t, out)
+	assert.False(t, isErr, "share_file 应成功: %s", text)
+	code := extractCode(text)
+	require.Len(t, code, 8)
+	assert.Contains(t, text, "report.txt")
+
+	// get_share_content 读文件清单
+	_, out = rpc(t, s, "tools/call", map[string]any{
+		"name": "get_share_content", "arguments": map[string]any{"code": code},
+	})
+	text, isErr = toolText(t, out)
+	assert.False(t, isErr)
+	assert.Contains(t, text, "report.txt")
+	assert.Contains(t, text, "文件分享")
+
+	// download_share_file base64 回传与原内容一致
+	_, out = rpc(t, s, "tools/call", map[string]any{
+		"name": "download_share_file", "arguments": map[string]any{"code": code},
+	})
+	text, isErr = toolText(t, out)
+	assert.False(t, isErr, "download_share_file 应成功: %s", text)
+	idx := strings.Index(text, "base64:\n")
+	require.GreaterOrEqual(t, idx, 0)
+	got, err := base64.StdEncoding.DecodeString(strings.TrimSpace(text[idx+len("base64:\n"):]))
+	require.NoError(t, err)
+	assert.Equal(t, content, got)
+
+	// delete_share 清理
+	_, out = rpc(t, s, "tools/call", map[string]any{
+		"name": "delete_share", "arguments": map[string]any{"code": code},
+	})
+	_, isErr = toolText(t, out)
+	assert.False(t, isErr)
+}
+
+func TestToolsCall_FileShareRejections(t *testing.T) {
+	s := newMCPTestService(t)
+
+	// 扩展名白名单拒绝
+	_, out := rpc(t, s, "tools/call", map[string]any{
+		"name": "share_file",
+		"arguments": map[string]any{
+			"file_name":      "evil.exe",
+			"content_base64": base64.StdEncoding.EncodeToString([]byte("x")),
+		},
+	})
+	_, isErr := toolText(t, out)
+	assert.True(t, isErr, "exe 应被白名单拒绝")
+
+	// 非法 base64
+	_, out = rpc(t, s, "tools/call", map[string]any{
+		"name":      "share_file",
+		"arguments": map[string]any{"file_name": "a.txt", "content_base64": "!!not-b64!!"},
+	})
+	_, isErr = toolText(t, out)
+	assert.True(t, isErr)
+
+	// 文本分享走下载被引导到 get_share_content
+	_, out = rpc(t, s, "tools/call", map[string]any{
+		"name": "share_text", "arguments": map[string]any{"text": "just-text"},
+	})
+	text, _ := toolText(t, out)
+	code := extractCode(text)
+	require.Len(t, code, 8)
+	_, out = rpc(t, s, "tools/call", map[string]any{
+		"name": "download_share_file", "arguments": map[string]any{"code": code},
+	})
+	text, isErr = toolText(t, out)
+	assert.True(t, isErr)
+	assert.Contains(t, text, "get_share_content")
+
+	// 超过 MCP 上限拒绝
+	tiny := NewService("test")
+	tiny.SetShareService(shareAPIAdapter{shareApp.NewService("http://test.local", nopStorage{})})
+	tiny.SetStorageService(mapStorage{data: map[string][]byte{}})
+	tiny.SetMaxFileSize(4)
+	_, out = rpc(t, tiny, "tools/call", map[string]any{
+		"name": "share_file",
+		"arguments": map[string]any{
+			"file_name":      "big.txt",
+			"content_base64": base64.StdEncoding.EncodeToString([]byte("12345678")),
+		},
+	})
+	text, isErr = toolText(t, out)
+	assert.True(t, isErr)
+	assert.Contains(t, text, "上限")
+}
+
+func TestToolsCall_TextContent(t *testing.T) {
+	s := newMCPTestService(t)
+	_, out := rpc(t, s, "tools/call", map[string]any{
+		"name": "share_text", "arguments": map[string]any{"text": "正文内容-abc123"},
+	})
+	text, _ := toolText(t, out)
+	code := extractCode(text)
+	require.Len(t, code, 8)
+
+	_, out = rpc(t, s, "tools/call", map[string]any{
+		"name": "get_share_content", "arguments": map[string]any{"code": code},
+	})
+	text, isErr := toolText(t, out)
+	assert.False(t, isErr)
+	assert.Contains(t, text, "正文内容-abc123")
+}
+
+func TestToolsCall_Federation(t *testing.T) {
+	s := newMCPTestService(t)
+
+	// 未启用：status 是事实陈述（isError=false），resolve 报错
+	_, out := rpc(t, s, "tools/call", map[string]any{"name": "federation_status"})
+	text, isErr := toolText(t, out)
+	assert.False(t, isErr)
+	assert.Contains(t, text, "未启用")
+
+	_, out = rpc(t, s, "tools/call", map[string]any{
+		"name": "federation_resolve", "arguments": map[string]any{"code": "ABCD1234"},
+	})
+	_, isErr = toolText(t, out)
+	assert.True(t, isErr)
+
+	// 已启用：fake 适配器返回状态与路由
+	s.SetFederationService(fakeFederation{})
+	_, out = rpc(t, s, "tools/call", map[string]any{"name": "federation_status"})
+	text, isErr = toolText(t, out)
+	assert.False(t, isErr)
+	assert.Contains(t, text, "node-abc")
+	assert.Contains(t, text, "http://registry:12346")
+
+	_, out = rpc(t, s, "tools/call", map[string]any{
+		"name": "federation_resolve", "arguments": map[string]any{"code": "ABCD1234"},
+	})
+	text, isErr = toolText(t, out)
+	assert.False(t, isErr)
+	assert.Contains(t, text, "peer-node")
+}
+
+type fakeFederation struct{}
+
+func (fakeFederation) Status() FederationStatus {
+	return FederationStatus{Enabled: true, NodeID: "node-abc", Healthy: true,
+		Registries: []string{"http://registry:12346"}}
+}
+
+func (fakeFederation) Resolve(code string) (*FederationResolve, error) {
+	if code == "ABCD1234" {
+		return &FederationResolve{NodeID: "peer-node", URL: "https://peer.example.com",
+			Name: "peer", ExpiresAt: time.Now().Add(24 * time.Hour), SizeHint: 1024}, nil
+	}
+	return nil, nil
 }
 
 func TestProtocolErrors(t *testing.T) {
