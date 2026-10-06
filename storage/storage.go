@@ -221,7 +221,9 @@ func buildOperator(cfg *StorageConfig) (*opendal.Operator, error) {
 		})
 	case StorageTypeOSS, StorageTypeCOS, StorageTypeBOS, StorageTypeKS3, StorageTypeOBS:
 		// 云厂商：全部走 S3 兼容驱动（minio-go SigV4），endpoint 按厂商+region
-		// 推导（显式配置优先）；映射为 SchemeS3 后 presign 直传/直下随之生效
+		// 推导（显式配置优先）；映射为 SchemeS3 后 presign 直传/直下随之生效。
+		// force_virtual_host：minio-go 的 Auto 对自定义端点退化 path-style，
+		// 云厂商桶一律 virtual-host（COS ap-beijing 等对 path-style 直接拒绳）。
 		opts, err := ResolveCloudProvider(cfg.Type, cfg.Region, cfg.Bucket,
 			cfg.AccessKey, cfg.SecretKey, cfg.Endpoint,
 			boolPtr(cfg.UseSSL), boolPtr(cfg.PathStyle))
@@ -232,13 +234,14 @@ func buildOperator(cfg *StorageConfig) (*opendal.Operator, error) {
 			Scheme: opendal.SchemeS3,
 			Root:   opts["bucket"],
 			Options: map[string]string{
-				"endpoint":   opts["endpoint"],
-				"access_key": opts["access_key"],
-				"secret_key": opts["secret_key"],
-				"bucket":     opts["bucket"],
-				"region":     opts["region"],
-				"use_ssl":    opts["use_ssl"],
-				"path_style": opts["path_style"],
+				"endpoint":           opts["endpoint"],
+				"access_key":         opts["access_key"],
+				"secret_key":         opts["secret_key"],
+				"bucket":             opts["bucket"],
+				"region":             opts["region"],
+				"use_ssl":            opts["use_ssl"],
+				"path_style":         opts["path_style"],
+				"force_virtual_host": "true",
 			},
 		})
 	case StorageTypeWebDAV:
@@ -331,6 +334,7 @@ func buildOperator(cfg *StorageConfig) (*opendal.Operator, error) {
 		})
 	case StorageTypeGCS:
 		// GCS 走其 S3 兼容 XML 端点（需 HMAC 密钥：GCS 控制台 Settings→Interoperability）
+		// force_virtual_host 同云厂商分支（GCS 互操作端点同为 virtual-host 风格）
 		opts, err := ResolveCloudProvider(StorageTypeGCS, cfg.Region, cfg.Bucket,
 			cfg.AccessKey, cfg.SecretKey, cfg.Endpoint,
 			boolPtr(cfg.UseSSL), boolPtr(cfg.PathStyle))
@@ -341,13 +345,14 @@ func buildOperator(cfg *StorageConfig) (*opendal.Operator, error) {
 			Scheme: opendal.SchemeS3,
 			Root:   opts["bucket"],
 			Options: map[string]string{
-				"endpoint":   opts["endpoint"],
-				"access_key": opts["access_key"],
-				"secret_key": opts["secret_key"],
-				"bucket":     opts["bucket"],
-				"region":     opts["region"],
-				"use_ssl":    opts["use_ssl"],
-				"path_style": opts["path_style"],
+				"endpoint":           opts["endpoint"],
+				"access_key":         opts["access_key"],
+				"secret_key":         opts["secret_key"],
+				"bucket":             opts["bucket"],
+				"region":             opts["region"],
+				"use_ssl":            opts["use_ssl"],
+				"path_style":         opts["path_style"],
+				"force_virtual_host": "true",
 			},
 		})
 	default:

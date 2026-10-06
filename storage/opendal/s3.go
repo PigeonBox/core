@@ -60,7 +60,13 @@ func newS3Driver(opts map[string]string) (*s3Driver, error) {
 	}
 
 	lookup := minio.BucketLookupAuto
-	if opts["path_style"] == "true" {
+	switch {
+	case opts["force_virtual_host"] == "true":
+		// 云厂商预设桶均为 virtual-host 风格。minio-go 的 Auto 对自定义端点
+		// 退化为 path-style，部分桶/地域（如 COS ap-beijing 新桶）直接
+		// PathStyleDomainForbidden——云厂商分支必须显式强制 virtual-host。
+		lookup = minio.BucketLookupDNS
+	case opts["path_style"] == "true":
 		lookup = minio.BucketLookupPath
 	}
 	client, err := minio.New(endpoint, &minio.Options{
