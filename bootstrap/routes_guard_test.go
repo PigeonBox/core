@@ -65,7 +65,7 @@ func TestRegisteredRoutesMatchContract(t *testing.T) {
 		// ===== maintenance（IDL）=====
 		"POST /admin/maintenance/clean-expired", "POST /admin/maintenance/clean-temp",
 		"GET /admin/maintenance/logs", "GET /admin/maintenance/system-info",
-		"GET /admin/maintenance/monitor/storage",
+		"GET /admin/maintenance/monitor/storage", "POST /admin/maintenance/optimize",
 		// ===== ratelimit（IDL）=====
 		"GET /admin/ratelimit/config", "PUT /admin/ratelimit/config",
 		"GET /admin/ratelimit/status", "POST /admin/ratelimit/test",

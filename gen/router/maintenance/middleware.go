@@ -69,3 +69,8 @@ func _getstoragestatusMw() []app.HandlerFunc {
 	// your code...
 	return nil
 }
+
+func _optimizedatabaseMw() []app.HandlerFunc {
+	// your code...
+	return nil
+}

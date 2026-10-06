@@ -24,6 +24,7 @@ func Register(r *server.Hertz) {
 			_maintenance.POST("/clean-expired", append(_cleanexpiredfilesMw(), maintenance.CleanExpiredFiles)...)
 			_maintenance.POST("/clean-temp", append(_cleantempfilesMw(), maintenance.CleanTempFiles)...)
 			_maintenance.GET("/logs", append(_getsystemlogsMw(), maintenance.GetSystemLogs)...)
+			_maintenance.POST("/optimize", append(_optimizedatabaseMw(), maintenance.OptimizeDatabase)...)
 			_maintenance.GET("/system-info", append(_getsysteminfoMw(), maintenance.GetSystemInfo)...)
 			{
 				_monitor := _maintenance.Group("/monitor", _monitorMw()...)

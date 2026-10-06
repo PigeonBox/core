@@ -16,6 +16,7 @@ import (
 	"github.com/filescodebox/core/pkg/logger"
 	"github.com/filescodebox/core/pkg/middleware"
 	"github.com/filescodebox/core/pkg/security"
+	"github.com/filescodebox/core/repo/db"
 	"github.com/filescodebox/core/repo/db/dao"
 	"github.com/filescodebox/core/repo/db/model"
 	"github.com/filescodebox/core/storage"
@@ -1134,6 +1135,47 @@ func (s *Service) CleanTempFiles(ctx context.Context) (int64, int64, error) {
 	}
 
 	return int64(deletedCount), 0, nil
+}
+
+// OptimizeDatabase 数据库优化（维护工具「优化数据库」）。
+// sqlite：VACUUM 回收空间 + ANALYZE 刷新统计（此前前端按钮调用的是
+// 后端从未实现的 /admin/maintenance/optimize，恒 404——2026-10-06 补齐）；
+// mysql：ANALYZE 核心表；postgres：VACUUM ANALYZE；其他后端 no-op。
+// 返回 (实际优化的驱动, 执行说明)。
+func (s *Service) OptimizeDatabase(ctx context.Context) (string, string, error) {
+	gdb := db.GetDB()
+	if gdb == nil {
+		return "", "", errors.New("数据库未初始化")
+	}
+	dialect := gdb.Dialector.Name()
+	var detail string
+	switch dialect {
+	case "sqlite":
+		// VACUUM 不能在事务内执行，gorm Exec 默认非事务，可直接跑
+		if err := gdb.Exec("VACUUM").Error; err != nil {
+			return dialect, "", fmt.Errorf("VACUUM 失败: %w", err)
+		}
+		if err := gdb.Exec("ANALYZE").Error; err != nil {
+			return dialect, "", fmt.Errorf("ANALYZE 失败: %w", err)
+		}
+		detail = "VACUUM 回收空间 + ANALYZE 刷新统计已完成"
+	case "mysql":
+		if err := gdb.Exec("ANALYZE TABLE file_codes, users, transfer_logs, admin_operation_logs, file_code_files").Error; err != nil {
+			return dialect, "", fmt.Errorf("ANALYZE TABLE 失败: %w", err)
+		}
+		detail = "核心表统计信息已刷新（空间回收请由 DBA 择期执行 OPTIMIZE TABLE）"
+	case "postgres":
+		if err := gdb.Exec("VACUUM ANALYZE").Error; err != nil {
+			return dialect, "", fmt.Errorf("VACUUM ANALYZE 失败: %w", err)
+		}
+		detail = "VACUUM ANALYZE 已完成"
+	default:
+		detail = "当前数据库后端无需在线优化"
+	}
+	// 审计留痕（管理面低频操作）
+	s.logAdminOperation(ctx, "maintenance.optimize_db",
+		fmt.Sprintf("database optimized, driver=%s", dialect), true)
+	return dialect, detail, nil
 }
 
 // SystemInfo 系统信息

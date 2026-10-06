@@ -98,3 +98,24 @@ func GetStorageStatus(ctx context.Context, c *app.RequestContext) {
 		"data": status,
 	})
 }
+
+// OptimizeDatabase 数据库优化（sqlite: VACUUM+ANALYZE；mysql/pg: 统计刷新）
+// @router /admin/maintenance/optimize [POST]
+func OptimizeDatabase(ctx context.Context, c *app.RequestContext) {
+	driver, detail, err := adminService.OptimizeDatabase(ctx)
+	if err != nil {
+		c.JSON(consts.StatusInternalServerError, map[string]interface{}{
+			"code":    500,
+			"message": "数据库优化失败: " + err.Error(),
+		})
+		return
+	}
+	c.JSON(consts.StatusOK, map[string]interface{}{
+		"code":    200,
+		"message": "数据库优化完成",
+		"data": map[string]interface{}{
+			"driver": driver,
+			"detail": detail,
+		},
+	})
+}
