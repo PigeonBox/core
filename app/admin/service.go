@@ -122,6 +122,7 @@ type Service struct {
 	configLoaded bool // 已尝试过 DB 加载（含无记录的情况），避免每次读都打 DB
 	configRepo   *dao.SystemConfigRepository
 	federation   FederationNotifier // P2P 联邦口令路由钩子（nil = 非联邦模式）
+	onPersist    func()             // 配置持久化回调（bootstrap 注入；多副本 admin 模式发布变更广播）
 }
 
 // FederationNotifier P2P 联邦撤销钩子（窄接口，实现在 app/federation；
@@ -133,6 +134,35 @@ type FederationNotifier interface {
 
 // SetFederationNotifier 注入联邦撤销钩子（bootstrap 调用；nil = 非联邦）
 func (s *Service) SetFederationNotifier(f FederationNotifier) { s.federation = f }
+
+// SetOnConfigPersisted 注入配置持久化回调（bootstrap 调用）。多副本拆分时
+// admin 实例经它发布 Redis 变更广播，public 副本订阅后失效本地缓存并热重建
+// （详见 docs/specs/2026-10-06-multi-replica-deployment-modes.md §4）。
+func (s *Service) SetOnConfigPersisted(fn func()) {
+	s.reconfigurersMu.Lock()
+	defer s.reconfigurersMu.Unlock()
+	s.onPersist = fn
+}
+
+// notifyConfigPersisted 配置已持久化（UpdateConfig / SaveRuntimeStorage 成功路径末尾调用）。
+func (s *Service) notifyConfigPersisted() {
+	s.reconfigurersMu.RLock()
+	fn := s.onPersist
+	s.reconfigurersMu.RUnlock()
+	if fn != nil {
+		fn()
+	}
+}
+
+// InvalidateRuntimeConfig 丢弃内存配置缓存（仅影响缓存，不写库）。
+// 多副本：public 副本收到管理端变更广播后调用，下次 GetConfig 重读 DB——
+// 单机 standalone 不调用（保持既有"进程内即真相"语义）。
+func (s *Service) InvalidateRuntimeConfig() {
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
+	s.config = nil
+	s.configLoaded = false
+}
 
 func NewService() *Service {
 	return &Service{
@@ -878,6 +908,8 @@ func (s *Service) UpdateConfig(ctx context.Context, newConfig *SystemConfig) err
 	}
 
 	s.logAdminOperation(ctx, "config.update", "system config persisted to database", true)
+	// 广播变更（多副本 admin 模式；standalone 下回调为 nil 空转）
+	s.notifyConfigPersisted()
 	return nil
 }
 
@@ -1051,6 +1083,8 @@ func (s *Service) SaveRuntimeStorage(ctx context.Context, cfg *conf.StorageConfi
 		return err
 	}
 	s.logAdminOperation(ctx, "storage.config.persist", "runtime storage config persisted (type="+cfg.Type+")", true)
+	// 广播变更（多副本 admin 模式；public 副本收到后对存储单例 Reload）
+	s.notifyConfigPersisted()
 	return nil
 }
 

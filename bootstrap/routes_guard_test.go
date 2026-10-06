@@ -2,6 +2,7 @@ package bootstrap
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/cloudwego/hertz/pkg/app/server"
@@ -57,6 +58,8 @@ func TestRegisteredRoutesMatchContract(t *testing.T) {
 		"GET /admin/files/:id", "PUT /admin/files/:id",
 		"GET /admin/files/:id/download",
 		"POST /admin/files/batch-delete", "POST /admin/files/batch-extend",
+		// 回收站（2026-10-06）：软删恢复 / 彻底删除（DB 硬删+存储对象删除）
+		"POST /admin/files/restore", "POST /admin/files/purge",
 		// 分享治理（组合过滤 + 状态机）
 		"GET /admin/files/filter",
 		"PUT /admin/files/:id/status", "POST /admin/files/batch-status",
@@ -176,4 +179,113 @@ func joinLines(items []string) string {
 		out += fmt.Sprintf("- %s", s)
 	}
 	return out
+}
+
+// TestDeploymentModes 部署模式守卫（多副本拆分，2026-10-06）：
+//  1. public 副本：公开路由在场；管理面路由不得注册（未按模式注册的组），
+//     混合生成组中已注册的管理路由（notify 的 /admin/notifies、health 的
+//     /version）必须全部命中门卫清单 isAdminPlanePath（防清单漂移漏拦）；
+//  2. admin 实例：管理路由在场；公开面路由不得注册；
+//  3. standalone 契约由 TestRegisteredRoutesMatchContract 单独守卫。
+func TestDeploymentModes(t *testing.T) {
+	base := conf.AppConfiguration{
+		MCP:      conf.MCPConfig{Enabled: true},
+		Security: conf.SecurityConfig{OIDC: conf.OIDCConfig{Enabled: true}},
+		UI:       conf.UIConfig{ExposeOpenAPI: true},
+	}
+
+	build := func(mode string) map[string]bool {
+		prev := config
+		cfg := base
+		cfg.Deployment.Mode = mode
+		config = &cfg
+		defer func() { config = prev }()
+
+		h := server.New(server.WithHostPorts("127.0.0.1:0"))
+		registerGeneratedRoutes(h)
+		customizedRegister(h)
+		out := map[string]bool{}
+		for _, r := range h.Routes() {
+			out[r.Method+" "+r.Path] = true
+		}
+		return out
+	}
+
+	t.Run("public_replica", func(t *testing.T) {
+		actual := build(conf.DeployModePublic)
+
+		// 公开面关键路由必须在场
+		for _, r := range []string{
+			"POST /share/text/", "POST /chunk/upload/init/",
+			"POST /anonymous/generate", "GET /notifies/active",
+			"POST /user/login", "GET /share/metadata/:code",
+			"POST /api/v1/share/multi-direct", "GET /api/config", "GET /ping",
+		} {
+			if !actual[r] {
+				t.Errorf("public 副本缺公开路由: %s", r)
+			}
+		}
+
+		// 管理面路由：未注册的组必须缺席；注册了的（混合组）必须被门卫覆盖
+		registeredAdminPlane := []string{}
+		for r := range actual {
+			path := strings.TrimPrefix(r, strings.SplitN(r, " ", 2)[0]+" ")
+			if isAdminPlanePath(path) {
+				registeredAdminPlane = append(registeredAdminPlane, r)
+			}
+		}
+		for _, r := range []string{"GET /admin/stats", "POST /api/v1/mcp", "GET /setup", "POST /setup"} {
+			if actual[r] {
+				t.Errorf("public 副本不应注册管理路由: %s", r)
+			}
+		}
+		// 混合组残留的 /admin/notifies、/version：必须在门卫清单内（由上面的
+		// isAdminPlanePath 收集逻辑保证——若清单漏了它们，registeredAdminPlane
+		// 不会包含，本断言即失败）
+		if len(registeredAdminPlane) == 0 {
+			t.Fatalf("public 副本未检测到任何混合组管理路由（notify/health 组未按预期注册？）: %v", registeredAdminPlane)
+		}
+		for _, r := range registeredAdminPlane {
+			if !strings.HasPrefix(r, "GET /admin/notifies") && r != "GET /version" && !strings.HasPrefix(r, "POST /admin/notifies") &&
+				!strings.HasPrefix(r, "PUT /admin/notifies") && !strings.HasPrefix(r, "DELETE /admin/notifies") {
+				t.Errorf("public 副本注册了预期外的管理面路由（门卫清单须覆盖）: %s", r)
+			}
+		}
+	})
+
+	t.Run("admin_replica", func(t *testing.T) {
+		actual := build(conf.DeployModeAdmin)
+
+		for _, r := range []string{
+			"GET /admin/stats", "POST /api/v1/mcp", "GET /admin/notifies",
+			"GET /api/config", "GET /ping", "POST /api/v1/user/refresh",
+		} {
+			if !actual[r] {
+				t.Errorf("admin 实例缺管理/支撑路由: %s", r)
+			}
+		}
+		for _, r := range []string{
+			"POST /share/text/", "POST /chunk/upload/init/",
+			"POST /anonymous/generate", "GET /share/metadata/:code",
+			"POST /api/v1/share/multi-direct", "GET /request/:token",
+		} {
+			if actual[r] {
+				t.Errorf("admin 实例不应注册公开面路由: %s", r)
+			}
+		}
+	})
+}
+
+// TestStripAdminPlanePaths public 模式 OpenAPI 剥离：管理面路径移除、公开路径保留。
+func TestStripAdminPlanePaths(t *testing.T) {
+	spec := []byte(`{"openapi":"3.0.0","paths":{"/share/text/":{},"/admin/config":{},"/admin/storage/switch":{},"/version":{},"/api/v1/mcp":{},"/setup":{}}}`)
+	out := string(stripAdminPlanePaths(spec))
+	for _, banned := range []string{"/admin/config", "/admin/storage/switch", "/version", "/api/v1/mcp", "/setup"} {
+		if strings.Contains(out, `"`+banned+`"`) {
+			t.Errorf("剥离失败，残留管理面路径 %s: %s", banned, out)
+		}
+	}
+	if !strings.Contains(out, `"/share/text/"`) {
+		t.Errorf("公开路径被误删: %s", out)
+	}
 }

@@ -31,6 +31,62 @@ type AppConfiguration struct {
 	Moderation    ModerationConfig    `mapstructure:"moderation"`
 	Admin         AdminConfig         `mapstructure:"admin"`
 	Federation    FederationConfig    `mapstructure:"federation"`
+	Deployment    DeploymentConfig    `mapstructure:"deployment"`
+}
+
+// 部署模式取值（deployment.mode / env FCB_DEPLOY_MODE）。
+// 详见 docs/specs/2026-10-06-multi-replica-deployment-modes.md。
+const (
+	// DeployModeStandalone 单进程全功能（默认，即历史形态：全部路由 + 后台任务 + 迁移）。
+	DeployModeStandalone = "standalone"
+	// DeployModePublic 公开面副本（可多副本横向扩容）：只注册公开路由，
+	// 不跑后台任务/迁移，只读 system_configs 并订阅管理端变更广播。
+	DeployModePublic = "public"
+	// DeployModeAdmin 管理面单实例：admin/mcp/setup 等管理路由 + 后台任务 +
+	// DB 迁移 + system_configs 唯一写者（变更后 Redis 广播）。
+	DeployModeAdmin = "admin"
+)
+
+// DeploymentConfig 部署形态（多副本拆分，2026-10-06）。
+// 同一镜像三种运行模式：public×N + admin×1 组成多副本拓扑；
+// 单机部署保持默认 standalone，行为与历史版本完全一致。
+type DeploymentConfig struct {
+	// Mode standalone(默认) | public | admin。env: FCB_DEPLOY_MODE
+	Mode string `mapstructure:"mode"`
+}
+
+// NormalizedDeploymentMode 归一化部署模式（空值回退 standalone；
+// 非法值由 bootstrap 的 applyDeploymentConstraints fail-fast 拒绝，此处不做校验）。
+func (c *AppConfiguration) NormalizedDeploymentMode() string {
+	if c == nil || c.Deployment.Mode == "" {
+		return DeployModeStandalone
+	}
+	return c.Deployment.Mode
+}
+
+// IsStandalone 是否单机全功能模式（默认）。
+func (c *AppConfiguration) IsStandalone() bool {
+	return c.NormalizedDeploymentMode() == DeployModeStandalone
+}
+
+// IsPublicReplica 是否公开面副本（public 模式）。
+func (c *AppConfiguration) IsPublicReplica() bool {
+	return c.NormalizedDeploymentMode() == DeployModePublic
+}
+
+// IsAdminReplica 是否管理面单实例（admin 模式）。
+func (c *AppConfiguration) IsAdminReplica() bool {
+	return c.NormalizedDeploymentMode() == DeployModeAdmin
+}
+
+// ServesPublicPlane 是否注册公开面（standalone 与 public）。
+func (c *AppConfiguration) ServesPublicPlane() bool {
+	return !c.IsAdminReplica()
+}
+
+// ServesAdminPlane 是否注册管理面 + 后台任务 + 迁移（standalone 与 admin）。
+func (c *AppConfiguration) ServesAdminPlane() bool {
+	return !c.IsPublicReplica()
 }
 
 // FederationConfig P2P 联邦接入（M2；默认关闭。对端服务：github.com/filescodebox/p2p）。

@@ -17,7 +17,6 @@ import (
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
 	"github.com/filescodebox/contracts/openapi"
 	"github.com/filescodebox/core/conf"
-	"github.com/filescodebox/core/gen/router"
 	"github.com/filescodebox/core/pkg/auth"
 	"github.com/filescodebox/core/pkg/gate"
 	"github.com/filescodebox/core/pkg/logger"
@@ -258,6 +257,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("user.allow_user_registration", true)
 	v.SetDefault("observability.metrics.enabled", false)
 	v.SetDefault("observability.metrics.path", "/metrics")
+	// 部署模式默认单机全功能（多副本拆分见 docs/specs/2026-10-06-multi-replica-deployment-modes.md）
+	v.SetDefault("deployment.mode", conf.DeployModeStandalone)
 	// 安全默认（安全加固项，未配置时全开）：
 	v.SetDefault("upload.enable_magic_check", true)
 	v.SetDefault("security.download_token.enabled", true)
@@ -296,6 +297,8 @@ func setDefaults(v *viper.Viper) {
 //   - 文档化的短扁平名（PORT / DATABASE_HOST 等，便于运维记忆）
 //   - FCB_ 前缀 + 下划线的完整名（FCB_SERVER_PORT，与 mapstructure key 对齐）
 var envBindings = map[string][]string{
+	// deployment（多副本部署模式）
+	"deployment.mode": {"FCB_DEPLOY_MODE"},
 	// server
 	"server.host":          {"FCB_SERVER_HOST", "HOST"},
 	"server.port":          {"FCB_SERVER_PORT", "PORT"},
@@ -598,6 +601,11 @@ func BootstrapWithOptions(configPath string, opts ...Option) (*server.Hertz, err
 	// 设置全局配置（供其他包访问）
 	conf.SetGlobalConfig(config)
 
+	// 1.2 部署模式约束（多副本拆分；非法模式 fail-fast，public 派生约束在此落地）
+	if err := applyDeploymentConstraints(config); err != nil {
+		return nil, fmt.Errorf("invalid deployment config: %w", err)
+	}
+
 	// 1.1 注入 JWT secret 到 auth 包（覆盖硬编码默认值）。
 	// 此前 jwt.go 使用硬编码 "FileCodeBox2025SecretKey"，且与 config 的 jwt_secret
 	// 不一致，导致配置中的 secret 从未生效。此处统一从配置/env 读取。
@@ -681,9 +689,11 @@ func BootstrapWithOptions(configPath string, opts ...Option) (*server.Hertz, err
 	}
 	securityPkg.SetDownloadTokenSecret(dlSecret)
 
-	// 4. 创建默认管理员
-	if err := CreateDefaultAdmin(database); err != nil {
-		logger.Error("Failed to create default admin", zap.Error(err))
+	// 4. 创建默认管理员（public 副本不执行：管理员初始化归 admin/standalone）
+	if config.ServesAdminPlane() {
+		if err := CreateDefaultAdmin(database); err != nil {
+			logger.Error("Failed to create default admin", zap.Error(err))
+		}
 	}
 
 	// 4.5 初始化预览服务
@@ -749,6 +759,11 @@ func BootstrapWithOptions(configPath string, opts ...Option) (*server.Hertz, err
 	h.Use(middleware.SecurityHeaders())
 	h.Use(CORS())
 
+	// 部署模式门卫（public 副本拒绝管理面路径；早于限流与全部业务链）
+	if gate := deploymentGate(); gate != nil {
+		h.Use(gate)
+	}
+
 	// 限流：路径感知，按接口类型选择限流维度（登录/上传/下载）。
 	// 防止暴力破解登录、取件码枚举、上传下载 DoS。
 	// 路径 → 桶的映射抽为 rateLimitBucket 纯函数（有守卫测试对真实路由表
@@ -784,8 +799,8 @@ func BootstrapWithOptions(configPath string, opts ...Option) (*server.Hertz, err
 		c.Next(ctx)
 	})
 
-	// 6. 注册路由
-	router.GeneratedRegister(h)
+	// 6. 注册路由（按部署模式选组，见 deployment.go；IDL 生成链 scripts/gen-router.sh）
+	registerGeneratedRoutes(h)
 
 	// 7. 注册自定义路由
 	customizedRegister(h)
@@ -805,7 +820,18 @@ func BootstrapWithOptions(configPath string, opts ...Option) (*server.Hertz, err
 		Version: "1.1.0",
 		BaseURL: baseURL,
 	})
-	customHandler.SetOpenAPISpecBytes(customHandler.MergeWithIDLSpec(skeleton, openapi.Spec))
+	merged := customHandler.MergeWithIDLSpec(skeleton, openapi.Spec)
+	// public 副本：管理面路径物理不可达，公开 spec 不应枚举它们
+	if config.IsPublicReplica() {
+		merged = stripAdminPlanePaths(merged)
+	}
+	customHandler.SetOpenAPISpecBytes(merged)
+
+	// 8.5 多副本：public 副本订阅管理端配置变更广播（admin 侧发布钩子在
+	// initThriftIDLServices 注入；standalone 两者均不启动）
+	if config.IsPublicReplica() {
+		startConfigPropagationSubscriber()
+	}
 
 	logger.Info("Application bootstrap completed successfully")
 	return h, nil
@@ -843,8 +869,10 @@ func customizedRegister(r *server.Hertz) {
 		r.GET("/openapi.json", customHandler.OpenAPISpec)
 	}
 
-	// ===== presign 预签名直传端点（gen router 未注册，在此补）=====
-	r.PUT("/api/v1/presign/upload-direct/:uploadID", presignHandler.UploadDirect)
+	// ===== presign 预签名直传端点（gen router 未注册，在此补）=====（公开面）
+	if config.ServesPublicPlane() {
+		r.PUT("/api/v1/presign/upload-direct/:uploadID", presignHandler.UploadDirect)
+	}
 
 	// ===== token 刷新端点（前端 401 拦截器调用，换发新 token）=====
 	// 令牌来源：Bearer 头或会话 Cookie；轮换同时下发新 Cookie（2026-10-05
@@ -877,23 +905,27 @@ func customizedRegister(r *server.Hertz) {
 	// 此前端点缺失导致前端启动报 "获取配置失败: Network Error"。此处补齐。
 	r.GET("/api/config", publicConfigHandler)
 
-	// ===== P2P 联邦解析代理（M2；未启用时 handler 返回 available:false）=====
-	r.GET("/api/v1/federation/resolve", customHandler.FederationResolve)
+	// ===== P2P 联邦解析代理（M2；未启用时 handler 返回 available:false）=====（公开面）
+	if config.ServesPublicPlane() {
+		r.GET("/api/v1/federation/resolve", customHandler.FederationResolve)
+	}
 
-	// ===== robots.txt（对标上游 SEO 可配；输出 ui.robots_text）=====
-	r.GET("/robots.txt", func(ctx context.Context, c *app.RequestContext) {
-		content := config.UI.RobotsText
-		if content == "" {
-			content = "User-agent: *\nDisallow: /\n"
-		}
-		c.Header("Content-Type", "text/plain; charset=utf-8")
-		c.String(consts.StatusOK, content)
-	})
+	// ===== robots.txt（对标上游 SEO 可配；输出 ui.robots_text）=====（公开面）
+	if config.ServesPublicPlane() {
+		r.GET("/robots.txt", func(ctx context.Context, c *app.RequestContext) {
+			content := config.UI.RobotsText
+			if content == "" {
+				content = "User-agent: *\nDisallow: /\n"
+			}
+			c.Header("Content-Type", "text/plain; charset=utf-8")
+			c.String(consts.StatusOK, content)
+		})
+	}
 
 	// ===== MCP server（Model Context Protocol；AI 客户端集成，上游没有的差异化能力）=====
 	// Streamable HTTP 传输：POST /api/v1/mcp（JSON-RPC 2.0），管理员 JWT 认证。
-	// Claude Desktop 等标准客户端以 Authorization: Bearer <admin token> 接入。
-	if config.MCP.Enabled {
+	// Claude Desktop 等标准客户端以 Authorization: Bearer <admin token> 接入。（管理面）
+	if config.MCP.Enabled && config.ServesAdminPlane() {
 		// initThriftIDLServices 未跑（如轻量测试环境）时惰性兜底：
 		// share service 缺席时 share_text 工具会明确报错，协议处理不受影响
 		if mcpService == nil {
@@ -934,26 +966,32 @@ func customizedRegister(r *server.Hertz) {
 	r.POST("/user/api-keys/revoke-all", middleware.AuthMiddleware(), userHandler.RevokeAllAPIKeys)
 
 	// ===== 多文件分享（P0 多文件，手写路由）：直传 / chunk+presign 绑定 =====
-	// 可选身份（OptionalIdentity）：匿名可用，登录/带 Key 时注入 user_id 走配额与归属
-	multiShare := r.Group("/api/v1/share", middleware.OptionalIdentity()...)
-	{
-		multiShare.POST("/multi-direct", customHandler.MultiShareDirect)
-		multiShare.POST("/multi-bind", customHandler.MultiShareBind)
+	// 可选身份（OptionalIdentity）：匿名可用，登录/带 Key 时注入 user_id 走配额与归属（公开面）
+	if config.ServesPublicPlane() {
+		multiShare := r.Group("/api/v1/share", middleware.OptionalIdentity()...)
+		{
+			multiShare.POST("/multi-direct", customHandler.MultiShareDirect)
+			multiShare.POST("/multi-bind", customHandler.MultiShareBind)
+		}
+
+		// ===== 取件元数据（对标上游 /share/metadata：查询不扣次数、不要密码）=====
+		r.GET("/share/metadata/:code", customHandler.ShareMetadata)
 	}
 
-	// ===== 取件元数据（对标上游 /share/metadata：查询不扣次数、不要密码）=====
-	r.GET("/share/metadata/:code", customHandler.ShareMetadata)
-
 	// ===== 寄件码/反向收件（P2）：链接管理（JWT）+ 访客侧（公开） =====
-	// 服务实例在 initThriftIDLServices 装配（依赖 share/notify）
-	r.POST("/api/v1/user/requests", customMw.UserAuth(), customHandler.UserCreateFileRequest)
-	r.GET("/api/v1/user/requests", customMw.UserAuth(), customHandler.UserListFileRequests)
-	r.DELETE("/api/v1/user/requests/:token", customMw.UserAuth(), customHandler.UserDeleteFileRequest)
-	r.GET("/request/:token", customHandler.GetFileRequestPublic)
-	r.POST("/api/v1/request/:token/upload", customHandler.GuestSubmitFiles)
+	// 服务实例在 initThriftIDLServices 装配（依赖 share/notify）（公开面）
+	if config.ServesPublicPlane() {
+		r.POST("/api/v1/user/requests", customMw.UserAuth(), customHandler.UserCreateFileRequest)
+		r.GET("/api/v1/user/requests", customMw.UserAuth(), customHandler.UserListFileRequests)
+		r.DELETE("/api/v1/user/requests/:token", customMw.UserAuth(), customHandler.UserDeleteFileRequest)
+		r.GET("/request/:token", customHandler.GetFileRequestPublic)
+		r.POST("/api/v1/request/:token/upload", customHandler.GuestSubmitFiles)
+	}
 
-	// ===== NAS 本地文件免上传导入（P3；upload.local_import.enabled 开关在 service 内校验）=====
-	r.POST("/api/v1/user/shares/import-local", middleware.UserOrAPIKey(), customHandler.UserImportLocal)
+	// ===== NAS 本地文件免上传导入（P3；upload.local_import.enabled 开关在 service 内校验）=====（公开面）
+	if config.ServesPublicPlane() {
+		r.POST("/api/v1/user/shares/import-local", middleware.UserOrAPIKey(), customHandler.UserImportLocal)
+	}
 
 	// ===== OIDC 单点登录（常注册+运行时门控：handler 按 Enabled() 响应，
 	// 管理端在线改 OIDC 段经 ReconfigureHooks 热重建 service，无需重启）=====
@@ -967,8 +1005,12 @@ func customizedRegister(r *server.Hertz) {
 			FrontendCallback: config.Security.OIDC.FrontendCallback,
 		}))
 	}
-	r.GET("/api/v1/user/oidc/login", customHandler.OIDCLogin)
-	r.GET("/api/v1/user/oidc/callback", customHandler.OIDCCallback)
+	// OIDC 登录/回调路由是访客登录入口（公开面）；service 注入保留无条件
+	// （applyPropagatedConfig 热重建复用同一构造，admin 面不注册路由时注入无害）
+	if config.ServesPublicPlane() {
+		r.GET("/api/v1/user/oidc/login", customHandler.OIDCLogin)
+		r.GET("/api/v1/user/oidc/callback", customHandler.OIDCCallback)
+	}
 
 	// ===== check-auth 端点（前端启动时校验 token 有效性并取回用户信息）=====
 	r.GET("/api/v1/user/check-auth", customMw.UserAuth(), func(ctx context.Context, c *app.RequestContext) {
@@ -987,77 +1029,79 @@ func customizedRegister(r *server.Hertz) {
 	})
 
 	// ===== 管理端操作审计日志查询（P0-C：此前审计只写不查/没写）=====
-	// + 管理端增强：用户 CRUD / 文件管理 / 富统计（AdminMiddleware 保护）
-	adminAPI := r.Group("/admin", middleware.AdminMiddleware())
-	{
-		// 本地文件管理（对标上游 2.7.0 data/local；路径=root索引+白名单内相对路径）
-		adminAPI.GET("/local-files", customHandler.AdminListLocalFiles)
-		adminAPI.DELETE("/local-files", customHandler.AdminDeleteLocalFile)
-		adminAPI.POST("/local-files/import", customHandler.AdminImportLocalFile)
-		// 设置测试端点（SMTP 发信 / OIDC discovery）
-		adminAPI.POST("/notify/smtp/test", customHandler.AdminTestSMTP)
-		adminAPI.POST("/oidc/test", customHandler.AdminTestOIDC)
-		adminAPI.GET("/activities", func(ctx context.Context, c *app.RequestContext) {
-			page, pageSize := 1, 20
-			if v, err := strconv.Atoi(c.Query("page")); err == nil && v > 0 {
-				page = v
-			}
-			if v, err := strconv.Atoi(c.Query("page_size")); err == nil && v > 0 && v <= 200 {
-				pageSize = v
-			}
-			query := model.AdminOperationLogQuery{
-				Action:   c.Query("action"),
-				Actor:    c.Query("actor"),
-				Page:     page,
-				PageSize: pageSize,
-			}
-			if s := c.Query("success"); s == "true" || s == "false" {
-				b := s == "true"
-				query.Success = &b
-			}
-			repo := dao.NewAdminOperationLogRepository()
-			logs, total, err := repo.List(ctx, query)
-			if err != nil {
-				resp.NewErrorWithMessage(c, 50001, "查询审计日志失败: "+err.Error())
-				return
-			}
-			resp.Page(c, logs, total, page, pageSize)
-		})
+	// + 管理端增强：用户 CRUD / 文件管理 / 富统计（AdminMiddleware 保护）（管理面）
+	if config.ServesAdminPlane() {
+		adminAPI := r.Group("/admin", middleware.AdminMiddleware())
+		{
+			// 本地文件管理（对标上游 2.7.0 data/local；路径=root索引+白名单内相对路径）
+			adminAPI.GET("/local-files", customHandler.AdminListLocalFiles)
+			adminAPI.DELETE("/local-files", customHandler.AdminDeleteLocalFile)
+			adminAPI.POST("/local-files/import", customHandler.AdminImportLocalFile)
+			// 设置测试端点（SMTP 发信 / OIDC discovery）
+			adminAPI.POST("/notify/smtp/test", customHandler.AdminTestSMTP)
+			adminAPI.POST("/oidc/test", customHandler.AdminTestOIDC)
+			adminAPI.GET("/activities", func(ctx context.Context, c *app.RequestContext) {
+				page, pageSize := 1, 20
+				if v, err := strconv.Atoi(c.Query("page")); err == nil && v > 0 {
+					page = v
+				}
+				if v, err := strconv.Atoi(c.Query("page_size")); err == nil && v > 0 && v <= 200 {
+					pageSize = v
+				}
+				query := model.AdminOperationLogQuery{
+					Action:   c.Query("action"),
+					Actor:    c.Query("actor"),
+					Page:     page,
+					PageSize: pageSize,
+				}
+				if s := c.Query("success"); s == "true" || s == "false" {
+					b := s == "true"
+					query.Success = &b
+				}
+				repo := dao.NewAdminOperationLogRepository()
+				logs, total, err := repo.List(ctx, query)
+				if err != nil {
+					resp.NewErrorWithMessage(c, 50001, "查询审计日志失败: "+err.Error())
+					return
+				}
+				resp.Page(c, logs, total, page, pageSize)
+			})
 
-		// 用户管理 CRUD（此前只有 list + status 切换）
-		adminAPI.POST("/users", customHandler.AdminCreateUser)
-		adminAPI.PUT("/users/:id", customHandler.AdminUpdateUser)
-		adminAPI.DELETE("/users/:id", customHandler.AdminDeleteUser)
-		adminAPI.POST("/users/:id/reset-password", customHandler.AdminResetUserPassword)
-		adminAPI.GET("/users/filter", customHandler.AdminListUsersFiltered)
+			// 用户管理 CRUD（此前只有 list + status 切换）
+			adminAPI.POST("/users", customHandler.AdminCreateUser)
+			adminAPI.PUT("/users/:id", customHandler.AdminUpdateUser)
+			adminAPI.DELETE("/users/:id", customHandler.AdminDeleteUser)
+			adminAPI.POST("/users/:id/reset-password", customHandler.AdminResetUserPassword)
+			adminAPI.GET("/users/filter", customHandler.AdminListUsersFiltered)
 
-		// 文件管理（此前只有 list + 单删）
-		adminAPI.GET("/files/:id/download", customHandler.AdminDownloadFile)
-		adminAPI.GET("/files/:id", customHandler.AdminFileDetail)
-		adminAPI.PUT("/files/:id", customHandler.AdminUpdateFile)
-		adminAPI.POST("/files/batch-delete", customHandler.AdminBatchDeleteFiles)
-		// 回收站（2026-10-06）：软删恢复 / 彻底删除（DB 硬删+存储对象删除）
-		adminAPI.POST("/files/restore", customHandler.AdminRestoreFiles)
-		adminAPI.POST("/files/purge", customHandler.AdminPurgeFiles)
-		adminAPI.POST("/files/batch-extend", customHandler.AdminBatchExtendFiles)
+			// 文件管理（此前只有 list + 单删）
+			adminAPI.GET("/files/:id/download", customHandler.AdminDownloadFile)
+			adminAPI.GET("/files/:id", customHandler.AdminFileDetail)
+			adminAPI.PUT("/files/:id", customHandler.AdminUpdateFile)
+			adminAPI.POST("/files/batch-delete", customHandler.AdminBatchDeleteFiles)
+			// 回收站（2026-10-06）：软删恢复 / 彻底删除（DB 硬删+存储对象删除）
+			adminAPI.POST("/files/restore", customHandler.AdminRestoreFiles)
+			adminAPI.POST("/files/purge", customHandler.AdminPurgeFiles)
+			adminAPI.POST("/files/batch-extend", customHandler.AdminBatchExtendFiles)
 
-		// 分享治理（2026-10-03）：组合过滤列表（含 owner_ip/status/upload_type）
-		// + 管控状态机（单个/批量禁用、恢复）
-		adminAPI.GET("/files/filter", customHandler.AdminListFilesFiltered)
-		// 用户配置（注册开关/配额默认/会话时长）：读写 system_configs 的
-		// user 段并即时生效（2026-10-03 假开关接线；IDL 契约不含该段，
-		// 手写端点模式同 /users CRUD，重生成 IDL 后需同步）
-		adminAPI.GET("/config/user", customHandler.AdminGetUserSettings)
-		adminAPI.PUT("/config/user", customHandler.AdminUpdateUserSettings)
-		adminAPI.PUT("/files/:id/status", customHandler.AdminSetFileStatus)
-		adminAPI.POST("/files/batch-status", customHandler.AdminBatchSetFilesStatus)
+			// 分享治理（2026-10-03）：组合过滤列表（含 owner_ip/status/upload_type）
+			// + 管控状态机（单个/批量禁用、恢复）
+			adminAPI.GET("/files/filter", customHandler.AdminListFilesFiltered)
+			// 用户配置（注册开关/配额默认/会话时长）：读写 system_configs 的
+			// user 段并即时生效（2026-10-03 假开关接线；IDL 契约不含该段，
+			// 手写端点模式同 /users CRUD，重生成 IDL 后需同步）
+			adminAPI.GET("/config/user", customHandler.AdminGetUserSettings)
+			adminAPI.PUT("/config/user", customHandler.AdminUpdateUserSettings)
+			adminAPI.PUT("/files/:id/status", customHandler.AdminSetFileStatus)
+			adminAPI.POST("/files/batch-status", customHandler.AdminBatchSetFilesStatus)
 
-		// Dashboard 富指标
-		adminAPI.GET("/stats/enhanced", customHandler.AdminEnhancedStats)
-		adminAPI.GET("/stats/trend", customHandler.AdminStatsTrend)
+			// Dashboard 富指标
+			adminAPI.GET("/stats/enhanced", customHandler.AdminEnhancedStats)
+			adminAPI.GET("/stats/trend", customHandler.AdminStatsTrend)
 
-		// 传输日志（此前前端调用的端点不存在、表无写入方，页面一直空数据）
-		adminAPI.GET("/logs/transfer", customHandler.AdminTransferLogs)
+			// 传输日志（此前前端调用的端点不存在、表无写入方，页面一直空数据）
+			adminAPI.GET("/logs/transfer", customHandler.AdminTransferLogs)
+		}
 	}
 
 	// ===== 前端构建产物静态资源 =====
@@ -1368,6 +1412,8 @@ func initThriftIDLServices(database *gorm.DB) {
 	notifyApp := notifyAppService.NewService()
 	// 1.1 注入定制路由的 notify service
 	customHandler.SetNotifyService(notifyApp)
+	// 1.2 供配置广播热重建使用（public 副本收到变更后重挂 Webhook/SMTP 渠道）
+	notifySvcInstance = notifyApp
 
 	// 2. presign service（需要 Redis + baseURL + signingKey + share service）
 	// baseURL 优先用配置的对外地址（server.base_url），否则用 host:port
@@ -1494,23 +1540,27 @@ func initThriftIDLServices(database *gorm.DB) {
 	customHandler.SetManageServices(adminSvc, userSvc, getBootstrapStorageService())
 
 	// 5. 自动迁移 notify 表 + file_codes viewer 字段
-	if err := database.AutoMigrate(&model.Notify{}); err != nil {
-		logger.Error("Failed to migrate notify table", zap.Error(err))
-	} else {
-		logger.Info("Notify table migrated")
-	}
-	if err := database.AutoMigrate(&model.FileCode{}); err != nil {
-		logger.Error("Failed to migrate file_codes table", zap.Error(err))
-	} else {
-		logger.Info("FileCode table migrated (viewer fields added)")
-	}
-	// 多文件子表（P0 多文件）：1 分享 ↔ N 文件
-	if err := database.AutoMigrate(&model.FileCodeFile{}); err != nil {
-		logger.Error("Failed to migrate file_code_files table", zap.Error(err))
-	}
-	// 寄件码表（P2 反向收件）
-	if err := database.AutoMigrate(&model.FileRequest{}); err != nil {
-		logger.Error("Failed to migrate file_requests table", zap.Error(err))
+	//    （迁移只在 standalone/admin：public 副本的 database.auto_migrate 已被
+	//    applyDeploymentConstraints 强制关闭，这里同步跳过，防多副本迁移竞态）
+	if config.Database.AutoMigrate {
+		if err := database.AutoMigrate(&model.Notify{}); err != nil {
+			logger.Error("Failed to migrate notify table", zap.Error(err))
+		} else {
+			logger.Info("Notify table migrated")
+		}
+		if err := database.AutoMigrate(&model.FileCode{}); err != nil {
+			logger.Error("Failed to migrate file_codes table", zap.Error(err))
+		} else {
+			logger.Info("FileCode table migrated (viewer fields added)")
+		}
+		// 多文件子表（P0 多文件）：1 分享 ↔ N 文件
+		if err := database.AutoMigrate(&model.FileCodeFile{}); err != nil {
+			logger.Error("Failed to migrate file_code_files table", zap.Error(err))
+		}
+		// 寄件码表（P2 反向收件）
+		if err := database.AutoMigrate(&model.FileRequest{}); err != nil {
+			logger.Error("Failed to migrate file_requests table", zap.Error(err))
+		}
 	}
 
 	// 6. 注入 storage 到 admin service（过期清理删物理文件；app 服务直注，
@@ -1537,17 +1587,29 @@ func initThriftIDLServices(database *gorm.DB) {
 	}
 
 	// 7. 启动过期文件定时清理（默认每小时，删 DB 记录 + 物理文件），
-	//    复用全站唯一 admin 实例（storage 注入幂等）
+	//    复用全站唯一 admin 实例（storage 注入幂等）。
+	//    后台任务全局只跑一份：仅 standalone/admin 执行（public 副本不跑，
+	//    否则 N 副本重复清理/对账）。
 	adminSvc.SetStorage(bootstrapStorage)
-	go startExpiredFileCleanup(adminSvc)
-	// API Key 临期站内通知（波次3）：6h 周期，提前 7 天提醒属主
-	go startAPIKeyExpiryNotify()
-	// 存储对账 + 日志保留（治理 2026-10-03）：24h 周期，启动 10 分钟后首跑
-	go startMaintenanceJanitor()
+	if config.ServesAdminPlane() {
+		go startExpiredFileCleanup(adminSvc)
+		// API Key 临期站内通知（波次3）：6h 周期，提前 7 天提醒属主
+		go startAPIKeyExpiryNotify()
+		// 存储对账 + 日志保留（治理 2026-10-03）：24h 周期，启动 10 分钟后首跑
+		go startMaintenanceJanitor()
+	}
+
+	// 8. 多副本：admin 实例持久化配置后发布变更广播（public 副本订阅热应用）
+	if config.IsAdminReplica() {
+		adminSvc.SetOnConfigPersisted(publishConfigChanged)
+	}
 }
 
 // mcpService MCP server 实例（initThriftIDLServices 装配，customizedRegister 挂路由）
 var mcpService *mcpApp.Service
+
+// notifySvcInstance 通知服务实例（initThriftIDLServices 装配；配置广播热重建用）
+var notifySvcInstance *notifyAppService.Service
 
 // requestSvcInstance 寄件码服务实例（initThriftIDLServices 装配）
 var requestSvcInstance *requestApp.Service
