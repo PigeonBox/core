@@ -168,7 +168,7 @@ func (s *Service) CreateMultiFileShare(ctx context.Context, req *MultiShareReq) 
 	// P2P 联邦公告（未启用为 no-op）
 	s.federationCreated(fileCode.Code, fileCode.ExpiredAt)
 
-	return s.modelToResp(fileCode), nil
+	return s.modelToResp(ctx, fileCode), nil
 }
 
 // ListShareFiles 取分享的文件列表（取件端展示/下载入口）。

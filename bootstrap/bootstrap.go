@@ -774,6 +774,21 @@ func BootstrapWithOptions(configPath string, opts ...Option) (*server.Hertz, err
 	h.Use(middleware.SecurityHeaders())
 	h.Use(CORS())
 
+	// server.base_url 未配置时按请求来源动态推断公开 base（share/presign 的
+	// 分享链接/直传回调地址用）。禁止静态拼接 server.host——那是监听地址
+	// （0.0.0.0），对外不可达（2026-10-07 真机事故：分享成功弹窗 0.0.0.0 链接）。
+	if config.Server.BaseURL == "" {
+		h.Use(func(ctx context.Context, c *app.RequestContext) {
+			if host := string(c.Host()); host != "" {
+				scheme := "http"
+				if string(c.Request.Header.Peek("X-Forwarded-Proto")) == "https" {
+					scheme = "https"
+				}
+				c.Set(shareService.PublicBaseCtxKey, scheme+"://"+host)
+			}
+		})
+	}
+
 	// 部署模式门卫（public 副本拒绝管理面路径；早于限流与全部业务链）
 	if gate := deploymentGate(); gate != nil {
 		h.Use(gate)
@@ -1431,11 +1446,11 @@ func initThriftIDLServices(database *gorm.DB) {
 	notifySvcInstance = notifyApp
 
 	// 2. presign service（需要 Redis + baseURL + signingKey + share service）
-	// baseURL 优先用配置的对外地址（server.base_url），否则用 host:port
+	// baseURL 只认显式配置的对外地址（server.base_url）；未配置时保持空串，
+	// 由 share/presign 域按请求来源动态推断（上方中间件注入 ctx）。
+	// 禁止回退到 host:port 拼接——server.host 是监听地址（0.0.0.0），
+	// 拼进分享链接对外不可达（2026-10-07 真机事故：分享成功弹窗 0.0.0.0 链接）。
 	baseURL := config.Server.BaseURL
-	if baseURL == "" {
-		baseURL = fmt.Sprintf("http://%s:%d", config.Server.Host, config.Server.Port)
-	}
 	// presign 签名密钥：优先专用 FCB_PRESIGN_SIGNING_KEY，否则复用 jwt_secret
 	signingKey := os.Getenv("FCB_PRESIGN_SIGNING_KEY")
 	if signingKey == "" {

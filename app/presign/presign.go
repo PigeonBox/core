@@ -223,7 +223,7 @@ func (s *Service) Init(ctx context.Context, meta InitMeta) (*InitResult, error) 
 	//    - 否则回退自家中转 URL（X-Upload-Token）
 	//    模式由服务端判定并无条件覆写（客户端传入的 scheme 不可信）
 	token := s.signToken(uploadID, meta.ObjectKey, meta.ExpireAt)
-	uploadURL := fmt.Sprintf("%s/api/v1/presign/upload-direct/%s", s.baseURL, uploadID)
+	uploadURL := fmt.Sprintf("%s/api/v1/presign/upload-direct/%s", share.ResolveBase(ctx, s.baseURL), uploadID)
 	headers := map[string]string{"X-Upload-Token": token}
 	meta.Scheme = SchemeSelf
 	if s.objects != nil {
@@ -390,7 +390,7 @@ func (s *Service) Complete(ctx context.Context, uploadID, token, ownerIP string)
 func (s *Service) createShareRecord(ctx context.Context, meta *InitMeta, ownerIP string) (string, string, string, error) {
 	if s.shareService == nil {
 		// share service 未注入：返回 mock 数据（用于单测 / 未配置场景）
-		return "mock_" + meta.UploadID, "/share/mock", s.baseURL + "/share/mock", nil
+		return "mock_" + meta.UploadID, "/share/mock", share.ResolveBase(ctx, s.baseURL) + "/share/mock", nil
 	}
 
 	// 计算过期时间（与 share.ShareTextWithAuth 行为一致）
@@ -584,7 +584,7 @@ func (s *Service) CheckQuickUpload(ctx context.Context, fileHash string, fileSiz
 	}
 	return &QuickUploadResult{
 		ShareCode:    fc.Code,
-		FullShareURL: s.baseURL + "/share/" + fc.Code,
+		FullShareURL: share.ResolveBase(ctx, s.baseURL) + "/share/" + fc.Code,
 	}, nil
 }
 

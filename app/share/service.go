@@ -86,7 +86,7 @@ type Service struct {
 	fileFileRepo *dao.FileCodeFileRepository // 多文件子表 DAO（惰性初始化）
 	userService  UserServiceInterface
 	storage      storage.StorageInterface
-	baseURL      string // 基础 URL，用于生成分享链接
+	baseURL      string // 基础 URL，用于生成分享链接（空=按请求来源动态推断，见 ResolveBase）
 	notifySvc    NotifyServiceInterface
 	quotaChecker QuotaChecker
 	moderator    moderation.Moderator // 内容审核钩子（nil = 不审核）
@@ -96,6 +96,27 @@ type Service struct {
 	// 存储兜底（storageClient 惰性本地后端，仅未注入时使用；见 files.go）
 	fallbackOnce    sync.Once
 	fallbackStorage storage.StorageInterface
+}
+
+// PublicBaseCtxKey hertz ctx 中请求级公开 base 的键。bootstrap 在
+// server.base_url 未配置时挂中间件，把每条请求的来源(scheme://host)写入
+// ctx（hertz RequestContext.Value 读取 Set 的 kv）。
+const PublicBaseCtxKey = "fcb.public_base"
+
+// ResolveBase 公开链接 base 解析：显式配置 > 请求来源（中间件注入）> 空串。
+// 禁止回退到 server.host——那是监听地址（0.0.0.0），拼进分享链接对外不可达
+// （2026-10-07 iStoreOS 真机事故：分享成功弹窗给出 http://0.0.0.0:12345/#/s/x）。
+// 双缺省时退相对路径（/share/CODE），浏览器侧可由 location.origin 补全。
+func ResolveBase(ctx context.Context, configured string) string {
+	if configured != "" {
+		return configured
+	}
+	if ctx != nil {
+		if v, ok := ctx.Value(PublicBaseCtxKey).(string); ok && v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // NotifyServiceInterface 取件通知接口（避免 share → notify 直接依赖）
@@ -329,7 +350,7 @@ func (s *Service) ShareText(ctx context.Context, req *ShareTextReq) (*ShareResp,
 	// P2P 联邦公告（未启用为 no-op；实现方自滤低熵码）
 	s.federationCreated(fileCode.Code, fileCode.ExpiredAt)
 
-	return s.modelToResp(fileCode), nil
+	return s.modelToResp(ctx, fileCode), nil
 }
 
 // ShareTextWithAuth 带认证的文本分享（用于 Handler）。
@@ -395,7 +416,7 @@ func (s *Service) ShareTextWithAuth(ctx context.Context, text string, expireValu
 
 	// 生成分享 URL
 	resp.ShareURL = fmt.Sprintf("/share/%s", resp.Code)
-	resp.FullShareURL = fmt.Sprintf("%s/share/%s", s.baseURL, resp.Code)
+	resp.FullShareURL = fmt.Sprintf("%s/share/%s", ResolveBase(ctx, s.baseURL), resp.Code)
 
 	return resp, nil
 }
@@ -607,7 +628,7 @@ func (s *Service) CreateShare(ctx context.Context, req *ShareFileReq) (*ShareRes
 	// P2P 联邦公告（未启用为 no-op）
 	s.federationCreated(fileCode.Code, fileCode.ExpiredAt)
 
-	return s.modelToResp(fileCode), nil
+	return s.modelToResp(ctx, fileCode), nil
 }
 
 // GetFileByCode 通过代码获取文件
@@ -812,7 +833,7 @@ func (s *Service) RecordViewerAndNotify(ctx context.Context, code, viewerIP, vie
 }
 
 // modelToResp 将模型转换为响应
-func (s *Service) modelToResp(fileCode *model.FileCode) *ShareResp {
+func (s *Service) modelToResp(ctx context.Context, fileCode *model.FileCode) *ShareResp {
 	status := fileCode.Status
 	if status == "" {
 		status = model.StatusNormal
@@ -840,7 +861,7 @@ func (s *Service) modelToResp(fileCode *model.FileCode) *ShareResp {
 		OwnerIP:      fileCode.OwnerIP,
 		// 分享链接三通道统一在此生成（文本通道尾部原有一份同值覆盖，保持无害）
 		ShareURL:     fmt.Sprintf("/share/%s", fileCode.Code),
-		FullShareURL: fmt.Sprintf("%s/share/%s", s.baseURL, fileCode.Code),
+		FullShareURL: fmt.Sprintf("%s/share/%s", ResolveBase(ctx, s.baseURL), fileCode.Code),
 	}
 }
 
