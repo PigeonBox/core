@@ -443,6 +443,15 @@ func (r *FileCodeRepository) ListWithFilter(ctx context.Context, q model.FileCod
 
 	query := r.db().WithContext(ctx).Model(&model.FileCode{})
 
+	// 回收站（软删）筛选：only=仅已删 / all=含已删；默认仅存活（gorm 默认 scope）。
+	// Unscoped 同时解除软删过滤，后续条件在可见全集上叠加。
+	switch q.Deleted {
+	case "only":
+		query = query.Unscoped().Where("file_codes.deleted_at IS NOT NULL")
+	case "all":
+		query = query.Unscoped()
+	}
+
 	if q.Keyword != "" {
 		like := "%" + q.Keyword + "%"
 		query = query.Where("code LIKE ? OR prefix LIKE ? OR suffix LIKE ? OR uuid_file_name LIKE ? OR text LIKE ?",
@@ -533,4 +542,39 @@ func (r *FileCodeRepository) CountSoftDeleted(ctx context.Context) (int64, error
 	err := r.db().WithContext(ctx).Unscoped().Model(&model.FileCode{}).
 		Where("deleted_at IS NOT NULL").Count(&n).Error
 	return n, err
+}
+
+// RestoreByIDs 从回收站恢复（软删 → 存活）：deleted_at 置空。
+// 仅作用于当前处于软删态的行；返回受影响行数。
+func (r *FileCodeRepository) RestoreByIDs(ctx context.Context, ids []uint) (int64, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	res := r.db().WithContext(ctx).Unscoped().Model(&model.FileCode{}).
+		Where("id IN ? AND deleted_at IS NOT NULL", ids).
+		Update("deleted_at", nil)
+	return res.RowsAffected, res.Error
+}
+
+// GetByIDUnscoped 按 id 查（含软删行）——回收站/彻底删除前置校验用。
+func (r *FileCodeRepository) GetByIDUnscoped(ctx context.Context, id uint) (*model.FileCode, error) {
+	var fc model.FileCode
+	err := r.db().WithContext(ctx).Unscoped().Where("id = ?", id).First(&fc).Error
+	if err != nil {
+		return nil, err
+	}
+	return &fc, nil
+}
+
+// HardDeleteByIDs 物理删除 DB 行（回收站「彻底删除」用；对象删除由调用方负责）。
+// 子文件行一并硬删（彻底删除不留软删残留）。
+func (r *FileCodeRepository) HardDeleteByIDs(ctx context.Context, ids []uint) (int64, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	res := r.db().WithContext(ctx).Unscoped().
+		Where("id IN ?", ids).Delete(&model.FileCode{})
+	_ = r.db().WithContext(ctx).Unscoped().
+		Where("file_code_id IN ?", ids).Delete(&model.FileCodeFile{}).Error
+	return res.RowsAffected, res.Error
 }

@@ -317,6 +317,44 @@ func AdminBatchDeleteFiles(ctx context.Context, c *app.RequestContext) {
 	resp.Success(c, map[string]interface{}{"deleted": n})
 }
 
+// AdminRestoreFiles 从回收站恢复（软删 → 存活）
+// POST /admin/files/restore {ids:[]}
+func AdminRestoreFiles(ctx context.Context, c *app.RequestContext) {
+	var req struct {
+		IDs []uint `json:"ids"`
+	}
+	if err := c.BindAndValidate(&req); err != nil || len(req.IDs) == 0 {
+		resp.NewErrorWithMessage(c, 10001, "ids 必填")
+		return
+	}
+	n, err := getManageSvc().RestoreFiles(ctx, req.IDs)
+	if err != nil {
+		resp.NewErrorWithMessage(c, 50001, "恢复失败: "+err.Error())
+		return
+	}
+	audit(ctx, "file.restore", fmt.Sprintf("%d files restored", n), true)
+	resp.Success(c, map[string]interface{}{"restored": n})
+}
+
+// AdminPurgeFiles 彻底删除（DB 硬删 + 存储对象删除，不可恢复）
+// POST /admin/files/purge {ids:[]}
+func AdminPurgeFiles(ctx context.Context, c *app.RequestContext) {
+	var req struct {
+		IDs []uint `json:"ids"`
+	}
+	if err := c.BindAndValidate(&req); err != nil || len(req.IDs) == 0 {
+		resp.NewErrorWithMessage(c, 10001, "ids 必填")
+		return
+	}
+	n, err := getManageSvc().PurgeFiles(ctx, req.IDs)
+	if err != nil {
+		resp.NewErrorWithMessage(c, 50001, "彻底删除失败: "+err.Error())
+		return
+	}
+	audit(ctx, "file.purge", fmt.Sprintf("%d files purged permanently", n), true)
+	resp.Success(c, map[string]interface{}{"purged": n})
+}
+
 // AdminBatchExtendFiles 批量延期
 // POST /admin/files/batch-extend  {ids:[], expire_value, expire_style}
 func AdminBatchExtendFiles(ctx context.Context, c *app.RequestContext) {
@@ -473,6 +511,8 @@ func AdminListFilesFiltered(ctx context.Context, c *app.RequestContext) {
 		b := s == "true"
 		q.Expired = &b
 	}
+	// 回收站筛选（回收站=仅已删 / all=含已删；缺省仅存活）
+	q.Deleted = c.Query("deleted")
 	q.Page, _ = strconv.Atoi(c.Query("page"))
 	q.PageSize, _ = strconv.Atoi(c.Query("page_size"))
 

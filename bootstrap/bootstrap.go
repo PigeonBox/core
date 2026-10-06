@@ -1036,6 +1036,9 @@ func customizedRegister(r *server.Hertz) {
 		adminAPI.GET("/files/:id", customHandler.AdminFileDetail)
 		adminAPI.PUT("/files/:id", customHandler.AdminUpdateFile)
 		adminAPI.POST("/files/batch-delete", customHandler.AdminBatchDeleteFiles)
+		// 回收站（2026-10-06）：软删恢复 / 彻底删除（DB 硬删+存储对象删除）
+		adminAPI.POST("/files/restore", customHandler.AdminRestoreFiles)
+		adminAPI.POST("/files/purge", customHandler.AdminPurgeFiles)
 		adminAPI.POST("/files/batch-extend", customHandler.AdminBatchExtendFiles)
 
 		// 分享治理（2026-10-03）：组合过滤列表（含 owner_ip/status/upload_type）

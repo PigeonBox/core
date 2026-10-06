@@ -130,8 +130,11 @@ type FileCodeQuery struct {
 	CreatedAfter  *time.Time // 创建时间区间
 	CreatedBefore *time.Time
 	Expired       *bool // true=仅过期(时间或次数)，false=仅未过期
-	Page          int
-	PageSize      int
+	// Deleted 软删筛选：""=默认仅存活 / "only"=仅回收站(已软删) / "all"=全部。
+	// 回收站视图用 "only"；配合 status/keyword 等既有筛选叠加。
+	Deleted  string // "", "only", "all"
+	Page     int
+	PageSize int
 }
 
 // FileCodeUpdate 文件代码更新数据

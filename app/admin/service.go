@@ -245,6 +245,47 @@ func (s *Service) GetFilesFiltered(ctx context.Context, q model.FileCodeQuery) (
 	return s.fileCodeRepo.ListWithFilter(ctx, q)
 }
 
+// RestoreFiles 从回收站恢复（软删 → 存活）：deleted_at 置空，COS 对象未动无需处理。
+// 仅恢复"当前处于软删态"的 id，忽略其余；返回实际恢复数。
+func (s *Service) RestoreFiles(ctx context.Context, ids []uint) (int64, error) {
+	n, err := s.fileCodeRepo.RestoreByIDs(ctx, ids)
+	if err != nil {
+		return 0, err
+	}
+	if n > 0 {
+		s.logAdminOperation(ctx, "file.restore",
+			fmt.Sprintf("ids=%v restored from recycle bin", ids), true)
+	}
+	return n, nil
+}
+
+// PurgeFiles 彻底删除（回收站 → 物理删除）：DB 行硬删 + COS/本地对象删除。
+// 对象删除失败不阻断 DB 硬删（孤儿由桶生命周期/对账兜底）；返回成功数。
+func (s *Service) PurgeFiles(ctx context.Context, ids []uint) (int64, error) {
+	var purged int64
+	for _, id := range ids {
+		file, err := s.fileCodeRepo.GetByIDUnscoped(ctx, id)
+		if err != nil {
+			continue
+		}
+		if s.storage != nil {
+			if fp := file.GetFilePath(); fp != "" {
+				if err := s.storage.DeleteFile(ctx, fp); err != nil {
+					logger.Warn("purge physical object failed", zap.String("path", fp), zap.Error(err))
+				}
+			}
+		}
+		if _, err := s.fileCodeRepo.HardDeleteByIDs(ctx, []uint{id}); err != nil {
+			logger.Warn("purge db row failed", zap.Uint("id", id), zap.Error(err))
+			continue
+		}
+		purged++
+		s.logAdminOperation(ctx, "file.purge",
+			fmt.Sprintf("file %d (code=%s) purged permanently", id, file.Code), true)
+	}
+	return purged, nil
+}
+
 // SetFilesStatus 管理员设置分享管控状态（单个/批量禁用、恢复共用）。
 // 返回受影响行数；审计按动作分别落账（file.block / file.unblock / file.status）。
 func (s *Service) SetFilesStatus(ctx context.Context, ids []uint, status string) (int64, error) {
