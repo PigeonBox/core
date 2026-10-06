@@ -662,6 +662,14 @@ func (s *Service) ensureConfigLoaded(ctx context.Context) {
 		logger.Info("system config loaded from database",
 			zap.String("site_name", persisted.Base.Name))
 	}
+	// UploadEx 从未在线保存过时回填全局 conf 生效值：管理后台能看到真实
+	// 生效的上传准入配置，整段保存也不会把 yaml 值冲成零值
+	if s.config.UploadEx == nil {
+		if g := conf.GetGlobalConfig(); g != nil {
+			ue := g.Upload
+			s.config.UploadEx = &ue
+		}
+	}
 	s.applyUserSideEffects(s.config.User)
 }
 
