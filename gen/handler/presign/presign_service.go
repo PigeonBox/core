@@ -5,7 +5,6 @@ package presign
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"strings"
@@ -95,27 +94,20 @@ func Init(ctx context.Context, c *app.RequestContext) {
 		resp.NewErrorWithMessage(c, errcode.CodeInvalidParam, "文件大小必须大于0")
 		return
 	}
-	// 兼容读取 body 中的 file_hash（InitReq thrift 模型无此字段，直读 JSON）。
-	// 客户端预计算 SHA-256 用于秒传判断。
-	fileHash := ""
-	var hashBody struct {
-		FileHash string `json:"file_hash"`
-	}
-	if b := c.Request.Body(); len(b) > 0 {
-		_ = json.Unmarshal(b, &hashBody)
-		fileHash = strings.TrimSpace(hashBody.FileHash)
-	}
+	// 秒传指纹：客户端预计算 SHA-256（契约字段,contracts v0.5.0 起;超限为空串）
+	fileHash := strings.TrimSpace(strDeref(req.FileHash))
 
 	// 秒传：同哈希+同大小的未过期分享已存在 → 免直传直接出码。
-	// 响应用自定义 map（InitData thrift 模型无 existed/share_code 字段）。
+	// typed 契约响应（contracts v0.5.0 起 InitData 含秒传 optional 字段;
+	// required 字段以零值序列化,前端与 openapi 均按契约只读秒传字段）。
 	if fileHash != "" {
 		if qu, err := getService().CheckQuickUpload(ctx, fileHash, req.FileSize); err == nil && qu != nil {
-			resp.Success(c, map[string]interface{}{
-				"upload_id":  "",
-				"is_quick":   true,
-				"existed":    true,
-				"share_code": qu.ShareCode,
-				"share_url":  qu.FullShareURL,
+			resp.Success(c, &presignmodel.InitData{
+				UploadID:  "",
+				IsQuick:   boolPtr(true),
+				Existed:   boolPtr(true),
+				ShareCode: strPtr(qu.ShareCode),
+				ShareURL:  strPtr(qu.FullShareURL),
 				// 安全修复（2026-10-03）：不再对秒传命中的原分享签发下载令牌——
 				// 持同哈希文件者可借令牌跳过原分享的密码校验（穿透）。
 			})
@@ -127,16 +119,10 @@ func Init(ctx context.Context, c *app.RequestContext) {
 	// (修复:此前密码未传,导致大文件分享的密码保护形同虚设)
 	passwordHash := ""
 	if boolDeref(req.RequireAuth) {
-		// 密码经 JSON body 传递(InitReq 模型无此字段);兼容 form 提交
-		password := c.DefaultPostForm("password", "")
+		// 契约字段(contracts v0.5.0 起);form 提交兼容保留
+		password := strDeref(req.Password)
 		if password == "" {
-			var pwBody struct {
-				Password string `json:"password"`
-			}
-			if b := c.Request.Body(); len(b) > 0 {
-				_ = json.Unmarshal(b, &pwBody)
-				password = pwBody.Password
-			}
+			password = c.DefaultPostForm("password", "")
 		}
 		if password == "" {
 			resp.NewErrorWithMessage(c, errcode.CodeInvalidParam, "开启密码保护时必须提供密码")
@@ -271,6 +257,11 @@ func strDeref(p *string) string {
 	}
 	return *p
 }
+
+// strPtr/boolPtr 契约 optional 字段构造（与上方 deref 系配套）
+func strPtr(s string) *string { return &s }
+
+func boolPtr(b bool) *bool { return &b }
 
 func i32Deref(p *int32) int32 {
 	if p == nil {
