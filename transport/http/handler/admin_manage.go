@@ -575,6 +575,8 @@ func fileGovernanceItem(f *model.FileCode) map[string]interface{} {
 	if f.ExpiredAt != nil {
 		item["expired_at"] = f.ExpiredAt.Format("2006-01-02 15:04:05")
 	}
+	// 回收站标记（软删行 deleted_at 非空；deleted=only 筛选的行据此灰显/恢复）
+	item["deleted"] = f.DeletedAt.Valid
 	return item
 }
 
