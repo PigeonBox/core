@@ -8,6 +8,8 @@ import (
 	"errors"
 	"io"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/redis/go-redis/v9"
@@ -15,11 +17,14 @@ import (
 	"github.com/filescodebox/contracts/errcode"
 	presignmodel "github.com/filescodebox/contracts/gen/presign"
 	presignapp "github.com/filescodebox/core/app/presign"
+	"github.com/filescodebox/core/conf"
 	"github.com/filescodebox/core/pkg/gate"
+	"github.com/filescodebox/core/pkg/logger"
 	"github.com/filescodebox/core/pkg/middleware"
 	"github.com/filescodebox/core/pkg/resp"
 	"github.com/filescodebox/core/pkg/security"
 	"github.com/filescodebox/core/pkg/utils"
+	"go.uber.org/zap"
 )
 
 var presignSvc *presignapp.Service
@@ -63,6 +68,33 @@ func getService() *presignapp.Service {
 	return presignSvc
 }
 
+// presignInitBurst 匿名 presign Init 每 IP 小时窗频控（防签名机滥用：
+// 每个匿名 Init 都会向站点桶签发 1h PUT 直传 URL）。登录用户不受此限，
+// 走匿名日字节配额。进程内实现（重启归零可接受——攻击者重启后重新积累）。
+var (
+	presignBurstMu   sync.Mutex
+	presignBurstHits = map[string][]time.Time{}
+)
+
+func presignInitBurstAllow(ip string) bool {
+	const maxPerHour = 10
+	now := time.Now()
+	presignBurstMu.Lock()
+	defer presignBurstMu.Unlock()
+	keep := presignBurstHits[ip][:0]
+	for _, t := range presignBurstHits[ip] {
+		if now.Sub(t) < time.Hour {
+			keep = append(keep, t)
+		}
+	}
+	if len(keep) >= 10 {
+		presignBurstHits[ip] = keep
+		return false
+	}
+	presignBurstHits[ip] = append(keep, now)
+	return true
+}
+
 // Init .
 // @router /api/v1/presign/upload [POST]
 func Init(ctx context.Context, c *app.RequestContext) {
@@ -81,6 +113,21 @@ func Init(ctx context.Context, c *app.RequestContext) {
 	if err := gate.CheckUploadLogin(gateUserID); err != nil {
 		resp.NewTypedError(c, err)
 		return
+	}
+	// 匿名直传开关（download.presign_anonymous_enabled）：关闭时匿名用户不走
+	// 预签名直传——前端感知 10015 后自动回退分片中转（大文件仍可传，只是过服务器）。
+	// 关闭动机：匿名可无限签发 1h PUT 直传 URL，桶会沦为免费匿名网盘（孤儿对象
+	// 只增不减、存储费/内容责任在站点），2026-10-06 实测确认。
+	if err := gate.CheckPresignAnonymous(gateUserID); err != nil {
+		resp.NewTypedError(c, err)
+		return
+	}
+	// 匿名 Init 每 IP 小时窗频控（登录用户走既有匿名日字节配额）
+	if gateUserID == nil {
+		if !presignInitBurstAllow(middleware.ClientIP(c)) {
+			resp.NewErrorWithMessage(c, errcode.CodeRateLimit, "直传请求过于频繁，请稍后再试")
+			return
+		}
 	}
 
 	var req presignmodel.InitReq
@@ -143,11 +190,19 @@ func Init(ctx context.Context, c *app.RequestContext) {
 			return
 		}
 	}
+	// 直传签发审计（滥用溯源：孤儿对象只能靠这里定位 IP）
+	logger.Info("presign init issued",
+		zap.String("ip", middleware.ClientIP(c)),
+		zap.Bool("anonymous", gateUserID == nil),
+		zap.String("file_name", req.FileName),
+		zap.Int64("file_size", int64(req.FileSize)),
+	)
 
 	meta := presignapp.InitMeta{
 		FileName:     req.FileName,
 		FileSize:     req.FileSize,
 		ContentType:  req.ContentType,
+		SessionTTL:   conf.GetGlobalConfig().Download.PresignTTLOrDefault(),
 		Scheme:       strDeref(req.Scheme),
 		ExpireValue:  i32Deref(req.ExpireValue),
 		ExpireStyle:  strDeref(req.ExpireStyle),

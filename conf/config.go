@@ -1,6 +1,9 @@
 package conf
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 // globalConfig 全局配置单例。
 // 设计权衡：bootstrap 启动时 SetGlobalConfig 注入，各处用 GetGlobalConfig 读取。
@@ -240,6 +243,42 @@ type DownloadConfig struct {
 	// S3DirectDownload s3 直下：存储后端为 s3 且开启时，文件下载 302 到短时效
 	// 预签名 GET URL（下载流量不经过服务器）。env: FCB_DOWNLOAD_S3_DIRECT
 	S3DirectDownload bool `mapstructure:"s3_direct_download" json:"s3_direct_download"`
+	// PresignAnonymousEnabled 匿名 presign 直传开关：false 时匿名用户 Init 返回
+	// 10015，前端自动回退分片中转（大文件仍可传，只是过服务器）。
+	// 指针三态：nil=未设置（默认开启，兼容存量 download 段无此键的库）。
+	// env: FCB_DOWNLOAD_PRESIGN_ANONYMOUS
+	PresignAnonymousEnabled *bool `mapstructure:"presign_anonymous_enabled" json:"presign_anonymous_enabled"`
+	// PresignExpireSeconds 直传签名时效（秒）。0=默认 600；钳位 60..3600。
+	PresignExpireSeconds int `mapstructure:"presign_expire_seconds" json:"presign_expire_seconds"`
+	// PresignThresholdMB 前端直传阈值（MB）。0=默认 100；经 /api/config 下发。
+	PresignThresholdMB int `mapstructure:"presign_threshold_mb" json:"presign_threshold_mb"`
+}
+
+// PresignAnonymousOn 匿名直传是否可用（nil 视为开启，兼容存量配置）。
+func (c DownloadConfig) PresignAnonymousOn() bool {
+	return c.PresignAnonymousEnabled == nil || *c.PresignAnonymousEnabled
+}
+
+// PresignTTLOrDefault 直传签名时效（钳位 60..3600，0=默认 600）。
+func (c DownloadConfig) PresignTTLOrDefault() time.Duration {
+	if c.PresignExpireSeconds <= 0 {
+		return 600 * time.Second
+	}
+	switch {
+	case c.PresignExpireSeconds < 60:
+		return 60 * time.Second
+	case c.PresignExpireSeconds > 3600:
+		return time.Hour
+	}
+	return time.Duration(c.PresignExpireSeconds) * time.Second
+}
+
+// PresignThresholdMBOrDefault 前端直传阈值（0=默认 100MB）。
+func (c DownloadConfig) PresignThresholdMBOrDefault() int {
+	if c.PresignThresholdMB <= 0 {
+		return 100
+	}
+	return c.PresignThresholdMB
 }
 
 // StorageConfig 存储配置

@@ -15,7 +15,9 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/filescodebox/core/pkg/logger"
@@ -31,6 +33,8 @@ type StorageProvider interface {
 	storage.StorageInterface
 	EffectiveType() storage.StorageType
 	DataPath() string
+	// ListRemoteObjects 远端对象列举（presign 孤儿清理；本地后端返回错误）。
+	ListRemoteObjects(ctx context.Context, prefix string) ([]storage.RemoteObjectInfo, error)
 }
 
 // Janitor 存储对账 + 日志保留。svc 为 nil 或非 local 时对账自动跳过。
@@ -199,4 +203,68 @@ func (j *Janitor) CleanupStaleUploads(ctx context.Context, maxAge time.Duration)
 			zap.Int("sessions", len(stale)), zap.Int("dirs_removed", dirsRemoved))
 	}
 	return dirsRemoved, nil
+}
+
+// CleanRemotePresignOrphans 清理远端后端的 presign 孤儿对象：
+// Init 后未 Complete 的直传残留（对象 key 形如 uploads/日期/up_<uuid>.ext，
+// basename up_ 前缀与普通上传的 uuid 名可区分），无 DB 引用且超过宽限期的删除。
+// 远端后端此前完全不对账（ReconcileOrphans 对远端只报告），孤儿只增不减——
+// 且匿名 presign Init 可被滥用为免费网盘（2026-10-06 审计确认），此方法为其兜底。
+// 本地后端不适用（ReconcileOrphans 磁盘对账已覆盖）。
+func (j *Janitor) CleanRemotePresignOrphans(ctx context.Context, olderThan time.Duration) (int, error) {
+	if j.svc == nil {
+		return 0, fmt.Errorf("存储实例未就绪")
+	}
+	if j.svc.EffectiveType() == storage.StorageTypeLocal {
+		return 0, nil // 本地由 ReconcileOrphans 覆盖
+	}
+	lister, ok := j.svc.(interface {
+		ListRemoteObjects(ctx context.Context, prefix string) ([]storage.RemoteObjectInfo, error)
+	})
+	if !ok {
+		return 0, fmt.Errorf("存储实例不支持远端列举")
+	}
+
+	objs, err := lister.ListRemoteObjects(ctx, "uploads/")
+	if err != nil {
+		return 0, err
+	}
+
+	// 引用集：file_codes.file_path（含软删行——与 ReconcileOrphans 同口径）。
+	// presign 孤儿 key 的 basename 恒为 up_<uuid>.<ext>，不可能出现在合法引用里
+	//（uuid v4 字符集不含 u/p），故 up_ 前缀+无引用 即可判定孤儿。
+	referenced := make(map[string]bool)
+	rows, err := dao.NewFileCodeRepository().ListAllIncludingDeleted(ctx)
+	if err != nil {
+		return 0, err
+	}
+	for _, r := range rows {
+		if p := r.GetFilePath(); p != "" {
+			referenced[filepath.ToSlash(filepath.Clean(p))] = true
+		}
+	}
+
+	cutoff := time.Now().Add(-olderThan)
+	removed := 0
+	for _, o := range objs {
+		base := path.Base(o.Key)
+		if !strings.HasPrefix(base, "up_") {
+			continue
+		}
+		if referenced[strings.TrimSuffix(o.Key, "/")] {
+			continue
+		}
+		if o.ModTime.After(cutoff) {
+			continue // 宽限期内（可能正在直传）
+		}
+		if err := j.svc.DeleteFile(ctx, o.Key); err != nil {
+			logger.Warn("remote presign orphan delete failed", zap.String("key", o.Key), zap.Error(err))
+			continue
+		}
+		removed++
+	}
+	if removed > 0 {
+		logger.Info("remote presign orphan objects removed", zap.Int("count", removed))
+	}
+	return removed, nil
 }

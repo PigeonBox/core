@@ -1209,12 +1209,16 @@ func publicConfigHandler(ctx context.Context, c *app.RequestContext) {
 	// 站名/描述走生效值：管理后台"站点配置"持久化段优先，
 	// 无记录回退 yaml app 段（修复首页展示 yaml 旧品牌名的分裂）
 	name, description := config.App.Name, config.App.Description
+	effectiveDownload := config.Download
 	if cfg, err := adminApp.Default().GetConfig(ctx); err == nil && cfg != nil {
 		if cfg.Base.Name != "" {
 			name = cfg.Base.Name
 		}
 		if cfg.Base.Description != "" {
 			description = cfg.Base.Description
+		}
+		if cfg.Download != nil {
+			effectiveDownload = *cfg.Download
 		}
 	}
 	resp.Success(c, map[string]interface{}{
@@ -1233,6 +1237,10 @@ func publicConfigHandler(ctx context.Context, c *app.RequestContext) {
 		"oidcEnabled": conf.GetGlobalConfig().Security.OIDC.Enabled,
 		// 管理入口可见性（ui.show_admin_addr；/admin 路由始终可达，仅控制页脚入口展示）
 		"showAdminAddr": config.UI.ShowAdminAddr,
+		// 直传设置下发（前端通道决策）：匿名 presign 直传开关 + 直传阈值(MB)。
+		// 管理后台持久化段优先，无记录回退全局 conf（缺省=开启/100MB）
+		"presignEnabled":     effectiveDownload.PresignAnonymousOn(),
+		"presignThresholdMb": effectiveDownload.PresignThresholdMBOrDefault(),
 		// API 文档开关（ui.expose_openapi）：false 时后端 /openapi.json 404，
 		// 前端据此隐藏 API 文档入口并将 /api-docs 页降级为未开启提示
 		"apiDocsEnabled": config.UI.ExposeOpenAPI,
@@ -1586,6 +1594,13 @@ func startMaintenanceJanitor() {
 			logger.Warn("stale chunk session cleanup failed", zap.Error(err))
 		} else if dirs > 0 {
 			logger.Info("stale chunk dirs cleaned", zap.Int("count", dirs))
+		}
+		// 远端 presign 孤儿清理（Init 后未 Complete 的直传残留；
+		// 本地后端自动跳过，由 ReconcileOrphans 覆盖）
+		if n, err := j.CleanRemotePresignOrphans(ctx, 24*time.Hour); err != nil {
+			logger.Warn("remote presign orphan cleanup failed", zap.Error(err))
+		} else if n > 0 {
+			logger.Info("remote presign orphan objects removed", zap.Int("count", n))
 		}
 	}
 	run()

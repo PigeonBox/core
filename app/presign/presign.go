@@ -157,6 +157,8 @@ type InitMeta struct {
 	// PasswordHash 为 require_auth=true 时分享密码的 bcrypt 哈希(明文不落存储)
 	PasswordHash string `json:"password_hash,omitempty"`
 	// FileHash 直传完成后服务端计算的 SHA-256（写入 file_codes.file_hash，秒传依据）
+	// SessionTTL 直传会话/签名时效（handler 按管理配置下发；0=服务端默认 1h）
+	SessionTTL time.Duration `json:"-"`
 	FileHash string `json:"file_hash,omitempty"`
 }
 
@@ -202,7 +204,12 @@ func (s *Service) Init(ctx context.Context, meta InitMeta) (*InitResult, error) 
 		return nil, err
 	}
 	meta.UploadID = uploadID
-	meta.ExpireAt = time.Now().Add(s.defaultExpire)
+	// 会话/签名时效：handler 按管理配置(下载设置-直传)下发，0=服务端默认 1h
+	ttl := s.defaultExpire
+	if meta.SessionTTL > 0 {
+		ttl = meta.SessionTTL
+	}
+	meta.ExpireAt = time.Now().Add(ttl)
 	meta.Complete = false
 	meta.ObjectKey = genObjectKey(uploadID, meta.FileName)
 
@@ -216,7 +223,7 @@ func (s *Service) Init(ctx context.Context, meta InitMeta) (*InitResult, error) 
 	headers := map[string]string{"X-Upload-Token": token}
 	meta.Scheme = SchemeSelf
 	if s.objects != nil {
-		if u, perr := s.objects.PresignPutURL(ctx, meta.ObjectKey, s.defaultExpire); perr == nil {
+		if u, perr := s.objects.PresignPutURL(ctx, meta.ObjectKey, ttl); perr == nil {
 			uploadURL = u
 			meta.Scheme = SchemeS3
 			headers = map[string]string{}
@@ -228,7 +235,7 @@ func (s *Service) Init(ctx context.Context, meta InitMeta) (*InitResult, error) 
 
 	// 3. 存 meta（含最终 Scheme）
 	metaJSON, _ := json.Marshal(meta)
-	if err := s.rdb.Set(ctx, fmt.Sprintf(keyUploadMeta, uploadID), metaJSON, s.defaultExpire).Err(); err != nil {
+	if err := s.rdb.Set(ctx, fmt.Sprintf(keyUploadMeta, uploadID), metaJSON, ttl).Err(); err != nil {
 		return nil, err
 	}
 
@@ -237,7 +244,7 @@ func (s *Service) Init(ctx context.Context, meta InitMeta) (*InitResult, error) 
 		UploadURL:     uploadURL,
 		Method:        "PUT",
 		Headers:       headers,
-		ExpireSeconds: int32(s.defaultExpire.Seconds()),
+		ExpireSeconds: int32(ttl.Seconds()),
 		ObjectKey:     meta.ObjectKey,
 		Scheme:        meta.Scheme,
 		Token:         token,

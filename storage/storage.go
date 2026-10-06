@@ -806,6 +806,34 @@ func (s *StorageService) GetFileURL(ctx context.Context, filePath string) (strin
 	return fmt.Sprintf("%s/files/%s", cfg.BaseURL, filePath), nil
 }
 
+// RemoteObjectInfo 远端对象列举项（presign 孤儿清理用）。
+type RemoteObjectInfo struct {
+	Key     string
+	Size    int64
+	ModTime time.Time
+}
+
+// ListRemoteObjects 列举远端后端 prefix 下对象（递归）。
+// 仅远端后端支持；本地后端返回错误（本地对账走 ReconcileOrphans 磁盘遍历）。
+func (s *StorageService) ListRemoteObjects(ctx context.Context, prefix string) ([]RemoteObjectInfo, error) {
+	_, op := s.current()
+	if op == nil {
+		return nil, fmt.Errorf("存储未初始化")
+	}
+	mds, err := op.List(ctx, prefix)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]RemoteObjectInfo, 0, len(mds))
+	for _, md := range mds {
+		if md == nil || md.IsDir {
+			continue
+		}
+		out = append(out, RemoteObjectInfo{Key: md.Path, Size: md.Size, ModTime: md.ModTime})
+	}
+	return out, nil
+}
+
 // GetFileReader 获取文件读取器（用于流式下载）
 func (s *StorageService) GetFileReader(ctx context.Context, filePath string) (io.ReadCloser, int64, error) {
 	_, op := s.current()
