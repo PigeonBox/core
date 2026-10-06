@@ -169,20 +169,20 @@ func UserInfo(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
-	// role 已入 IDL UserData(optional, contracts 下一 tag 起类型可用);本 handler
-	// 暂以 map 补发保持 wire 不变,typed 化改造随发版列车(contracts tag → core bump)
-	c.JSON(consts.StatusOK, map[string]interface{}{
-		"code":    200,
-		"message": "获取成功",
-		"data": map[string]interface{}{
-			"id":         int64(user.ID),
-			"username":   user.Username,
-			"email":      user.Email,
-			"nickname":   user.Nickname,
-			"avatar":     user.Avatar,
-			"status":     1,
-			"role":       user.Role,
-			"created_at": user.CreatedAt.Format("2006-01-02 15:04:05"),
+	// typed 契约响应(contracts v0.4.0 起 UserData 含 optional role,Role 取址
+	// 保持与原 map 补发相同的"恒发送"语义——omitempty 仅略过 nil 指针)
+	c.JSON(consts.StatusOK, &usermodel.UserInfoResp{
+		Code:    200,
+		Message: "获取成功",
+		Data: &usermodel.UserData{
+			ID:        int64(user.ID),
+			Username:  user.Username,
+			Email:     user.Email,
+			Nickname:  user.Nickname,
+			Avatar:    user.Avatar,
+			Status:    1,
+			CreatedAt: user.CreatedAt.Format("2006-01-02 15:04:05"),
+			Role:      &user.Role,
 		},
 	})
 }
