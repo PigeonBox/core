@@ -159,7 +159,7 @@ type InitMeta struct {
 	// FileHash 直传完成后服务端计算的 SHA-256（写入 file_codes.file_hash，秒传依据）
 	// SessionTTL 直传会话/签名时效（handler 按管理配置下发；0=服务端默认 1h）
 	SessionTTL time.Duration `json:"-"`
-	FileHash string `json:"file_hash,omitempty"`
+	FileHash   string        `json:"file_hash,omitempty"`
 }
 
 // InitResult init 返回
@@ -299,8 +299,11 @@ func (s *Service) Complete(ctx context.Context, uploadID, token, ownerIP string)
 		if herr != nil {
 			return nil, fmt.Errorf("对象尚未上传或不可读: %w", herr)
 		}
-		if err := utils.CheckUploadSize(actual, utils.GetMaxUploadSize()); err != nil {
-			return nil, fmt.Errorf("文件过大")
+		// 整文件上限走 upload.max_file_size（0=不限），与分片通道同语义——
+		// 此前误用单请求体上限 GetMaxUploadSize，大文件直传在 Complete 被
+		// upload_size(如 10MB) 误杀，违背该通道"突破单请求限制"的存在意义
+		if err := utils.CheckWholeFileSize(actual); err != nil {
+			return nil, fmt.Errorf("文件过大: %w", err)
 		}
 		meta.FileSize = actual
 		// 注意：服务器未接触内容，meta.FileHash 保持客户端提供的值（可为空，
@@ -317,8 +320,9 @@ func (s *Service) Complete(ctx context.Context, uploadID, token, ownerIP string)
 				return nil, fmt.Errorf("对象尚未上传或不可读: %w", rerr)
 			}
 			_ = rc.Close()
-			if err := utils.CheckUploadSize(size, utils.GetMaxUploadSize()); err != nil {
-				return nil, fmt.Errorf("文件过大")
+			// 整文件上限（同 s3 路径语义），非单请求体上限
+			if err := utils.CheckWholeFileSize(size); err != nil {
+				return nil, fmt.Errorf("文件过大: %w", err)
 			}
 			meta.FileSize = size
 		}
