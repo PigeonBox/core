@@ -1239,7 +1239,8 @@ func publicConfigHandler(ctx context.Context, c *app.RequestContext) {
 		"showAdminAddr": config.UI.ShowAdminAddr,
 		// 直传设置下发（前端通道决策）：匿名 presign 直传开关 + 直传阈值(MB)。
 		// 管理后台持久化段优先，无记录回退全局 conf（缺省=开启/100MB）
-		"presignEnabled":     effectiveDownload.PresignAnonymousOn(),
+		"presignPolicy":      effectiveDownload.PresignPolicyOrDefault(),
+		"presignEnabled":     effectiveDownload.PresignPolicyOrDefault() != conf.PresignPolicyDisabled,
 		"presignThresholdMb": effectiveDownload.PresignThresholdMBOrDefault(),
 		// API 文档开关（ui.expose_openapi）：false 时后端 /openapi.json 404，
 		// 前端据此隐藏 API 文档入口并将 /api-docs 页降级为未开启提示

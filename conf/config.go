@@ -243,8 +243,11 @@ type DownloadConfig struct {
 	// S3DirectDownload s3 直下：存储后端为 s3 且开启时，文件下载 302 到短时效
 	// 预签名 GET URL（下载流量不经过服务器）。env: FCB_DOWNLOAD_S3_DIRECT
 	S3DirectDownload bool `mapstructure:"s3_direct_download" json:"s3_direct_download"`
-	// PresignAnonymousEnabled 匿名 presign 直传开关：false 时匿名用户 Init 返回
-	// 10015，前端自动回退分片中转（大文件仍可传，只是过服务器）。
+	// PresignPolicy 直传策略：everyone=所有人可直传 / authenticated=仅登录用户 /
+	// disabled=完全关闭直传（全部走服务器中转）。空串=未设置，按
+	// PresignAnonymousEnabled 旧开关推导（兼容存量库），都没有则 everyone。
+	PresignPolicy string `mapstructure:"presign_policy" json:"presign_policy"`
+	// PresignAnonymousEnabled 旧版匿名直传开关（被 PresignPolicy 取代，仍读取兼容）。
 	// 指针三态：nil=未设置（默认开启，兼容存量 download 段无此键的库）。
 	// env: FCB_DOWNLOAD_PRESIGN_ANONYMOUS
 	PresignAnonymousEnabled *bool `mapstructure:"presign_anonymous_enabled" json:"presign_anonymous_enabled"`
@@ -254,9 +257,34 @@ type DownloadConfig struct {
 	PresignThresholdMB int `mapstructure:"presign_threshold_mb" json:"presign_threshold_mb"`
 }
 
+// 直传策略取值（download.presign_policy）
+const (
+	PresignPolicyEveryone      = "everyone"      // 所有人可直传
+	PresignPolicyAuthenticated = "authenticated" // 仅登录用户可直传
+	PresignPolicyDisabled      = "disabled"      // 完全关闭直传
+)
+
 // PresignAnonymousOn 匿名直传是否可用（nil 视为开启，兼容存量配置）。
+// Deprecated: 改用 PresignPolicyOrDefault。
 func (c DownloadConfig) PresignAnonymousOn() bool {
 	return c.PresignAnonymousEnabled == nil || *c.PresignAnonymousEnabled
+}
+
+// PresignPolicyOrDefault 解析生效的直传策略：
+// 显式 presign_policy 优先；空串回退旧开关 presign_anonymous_enabled
+// （false→authenticated，nil/true→everyone）；都无→everyone。
+func (c DownloadConfig) PresignPolicyOrDefault() string {
+	switch c.PresignPolicy {
+	case PresignPolicyEveryone, PresignPolicyAuthenticated, PresignPolicyDisabled:
+		return c.PresignPolicy
+	case "":
+		if c.PresignAnonymousEnabled != nil && !*c.PresignAnonymousEnabled {
+			return PresignPolicyAuthenticated
+		}
+		return PresignPolicyEveryone
+	default:
+		return PresignPolicyEveryone // 未知值按开放处理（前端仍有 10015 兜底）
+	}
 }
 
 // PresignTTLOrDefault 直传签名时效（钳位 60..3600，0=默认 600）。

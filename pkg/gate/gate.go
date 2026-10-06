@@ -40,20 +40,25 @@ var ErrLoginRequired = newGateErr(errcode.CodeUnauthorized, "该操作需要登�
 // ErrPresignDisabled 匿名直传已被管理员关闭（download.presign_anonymous_enabled=false）。
 var ErrPresignDisabled = newGateErr(errcode.CodePresignDisabled, "匿名直传未开放，文件将改用普通通道上传")
 
-func presignAnonymousOn() bool {
+// CheckPresignPolicy 直传策略闸门（download.presign_policy 三档）：
+//   - everyone：所有人可直传
+//   - authenticated：仅登录用户（匿名 Init 返回 10015，前端回退分片中转）
+//   - disabled：完全关闭直传（登录用户也拒绝——密钥轮换/通道故障时的总闸）
+func CheckPresignPolicy(userID *uint) error {
 	cfg := conf.GetGlobalConfig()
-	if cfg == nil {
-		return true // 配置未初始化（测试/启动早期）保持可用
+	policy := conf.DownloadConfig{}.PresignPolicyOrDefault()
+	if cfg != nil {
+		policy = cfg.Download.PresignPolicyOrDefault()
 	}
-	return cfg.Download.PresignAnonymousOn()
-}
-
-// CheckPresignAnonymous 匿名 presign 直传开关（download.presign_anonymous_enabled）。
-// 关闭时匿名用户 Init 返回 10015，前端自动回退分片中转（大文件仍可传，只是过服务器）。
-func CheckPresignAnonymous(userID *uint) error {
-	if userID == nil && !presignAnonymousOn() {
+	switch policy {
+	case conf.PresignPolicyDisabled:
 		metrics.RecordRejected(metrics.RejectDisabled)
 		return ErrPresignDisabled
+	case conf.PresignPolicyAuthenticated:
+		if userID == nil {
+			metrics.RecordRejected(metrics.RejectDisabled)
+			return ErrPresignDisabled
+		}
 	}
 	return nil
 }

@@ -118,7 +118,7 @@ func Init(ctx context.Context, c *app.RequestContext) {
 	// 预签名直传——前端感知 10015 后自动回退分片中转（大文件仍可传，只是过服务器）。
 	// 关闭动机：匿名可无限签发 1h PUT 直传 URL，桶会沦为免费匿名网盘（孤儿对象
 	// 只增不减、存储费/内容责任在站点），2026-10-06 实测确认。
-	if err := gate.CheckPresignAnonymous(gateUserID); err != nil {
+	if err := gate.CheckPresignPolicy(gateUserID); err != nil {
 		resp.NewTypedError(c, err)
 		return
 	}
