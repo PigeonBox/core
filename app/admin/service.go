@@ -1062,11 +1062,20 @@ func (s *Service) CleanExpiredFiles(ctx context.Context) (int64, int64, error) {
 			}
 		}
 		// 删物理文件（失败不阻断 DB 删除）
+		// TEMP-DEBUG 2026-10-06: 215 COS 清理不删对象的诊断插桩
+		logger.Info("cleanup physical delete diagnostic",
+			zap.Bool("storage_nil", s.storage == nil),
+			zap.String("raw_file_path", file.FilePath),
+			zap.String("uuid", file.UUIDFileName))
 		if s.storage != nil && file.FilePath != "" {
 			fp := file.GetFilePath()
+			logger.Info("cleanup physical delete diagnostic fp",
+				zap.String("fp", fp))
 			if fp != "" {
 				if err := s.storage.DeleteFile(ctx, fp); err != nil {
 					logger.Warn("delete physical file failed during cleanup", zap.String("path", fp), zap.Error(err))
+				} else {
+					logger.Info("cleanup physical delete ok", zap.String("path", fp))
 				}
 			}
 		}
