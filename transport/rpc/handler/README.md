@@ -1,11 +1,11 @@
-# internal/transport/rpc/handler/ - RPC 请求处理器
+# transport/rpc/handler/ - RPC 请求处理器
 
 此目录存放 Kitex RPC 服务接口的实现代码。
 
 ## 职责
 
 - 实现 `gen/rpc/` 中定义的服务接口
-- 调用 `internal/app/` 中的业务服务
+- 调用 `app/` 中的业务服务
 - 组装 RPC 响应
 
 ## 示例实现
@@ -18,7 +18,7 @@ import (
     
     "github.com/zy84338719/fileCodeBox/backend/gen/rpc/base"
     "github.com/zy84338719/fileCodeBox/backend/gen/rpc/user"
-    userSvc "github.com/zy84338719/fileCodeBox/backend/internal/app/user"
+    userSvc "github.com/filescodebox/core/app/user"
 )
 
 type UserServiceImpl struct {
@@ -84,7 +84,7 @@ package main
 
 import (
     "github.com/zy84338719/fileCodeBox/backend/gen/rpc/user/userservice"
-    "github.com/zy84338719/fileCodeBox/backend/internal/transport/rpc/handler"
+    "github.com/filescodebox/core/transport/rpc/handler"
 )
 
 func main() {

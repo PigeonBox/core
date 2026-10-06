@@ -1,4 +1,4 @@
-# internal/transport/http/ - HTTP 协议适配
+# transport/http/ - HTTP 协议适配
 
 此目录存放 HTTP 协议相关的适配代码。
 

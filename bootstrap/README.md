@@ -1,4 +1,4 @@
-# cmd/server/bootstrap/ - 服务初始化
+# bootstrap/ - 服务初始化（库入口）
 
 此目录存放服务启动时的初始化代码。
 
@@ -19,7 +19,7 @@
 ```go
 // main.go
 func main() {
-    h, err := bootstrap.Bootstrap()
+    h, err := bootstrap.Bootstrap("/path/to/config.yaml")
     if err != nil {
         log.Fatal(err)
     }
@@ -33,7 +33,7 @@ func main() {
 
 ```go
 // bootstrap.go
-func Bootstrap() (*server.Hertz, error) {
+func Bootstrap(configPath string) (*server.Hertz, error) {
     // ... 现有初始化
 
     // 添加新组件

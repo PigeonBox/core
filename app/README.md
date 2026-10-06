@@ -1,4 +1,4 @@
-# internal/app/ - 应用层（业务逻辑）
+# app/ - 应用层（业务逻辑）
 
 此目录存放业务逻辑代码，是整个应用的核心层。
 
@@ -22,7 +22,7 @@ app/
 ## 示例
 
 ```go
-// internal/app/user/service.go
+// app/user/service.go
 type Service struct {
     userRepo *dao.UserRepository
 }
@@ -40,6 +40,6 @@ func (s *Service) Create(ctx context.Context, req *CreateUserReq) (*model.UserRe
 
 ## 依赖规则
 
-- 可以依赖：`internal/repo/`、`internal/pkg/`
-- 不应依赖：`internal/transport/`、`gen/`
-- 应被依赖于：`internal/transport/`、`gen/http/handler/`
+- 可以依赖：`repo/`、`pkg/`
+- 不应依赖：`transport/`、`gen/`
+- 应被依赖于：`transport/`、`gen/http/handler/`

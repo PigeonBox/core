@@ -1,4 +1,4 @@
-# internal/repo/redis/ - Redis 缓存访问
+# repo/redis/ - Redis 缓存访问
 
 此目录存放 Redis 相关代码。
 

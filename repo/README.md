@@ -1,4 +1,4 @@
-# internal/repo/ - 数据访问层（Repository）
+# repo/ - 数据访问层（Repository）
 
 此目录存放数据访问相关代码，实现 Repository 模式。
 
@@ -23,9 +23,9 @@ repo/
 
 ## 依赖规则
 
-- 可以依赖：`internal/pkg/`、`internal/conf/`
-- 不应依赖：`internal/app/`、`internal/transport/`
-- 应被依赖于：`internal/app/`
+- 可以依赖：`pkg/`、`conf/`
+- 不应依赖：`app/`、`transport/`
+- 应被依赖于：`app/`
 
 ## 设计原则
 

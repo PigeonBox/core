@@ -1,4 +1,4 @@
-# internal/repo/external/ - 外部服务调用
+# repo/external/ - 外部服务调用
 
 此目录存放外部服务（第三方 API、微服务等）的调用封装。
 

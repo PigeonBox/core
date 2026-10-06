@@ -1,29 +1,35 @@
-# internal/pkg/ - 项目内部工具库
+# pkg/ - core 横切设施
 
-此目录存放项目专用的工具函数和通用组件。
+此目录存放 core 内部的横切工具和通用组件。
 
 ## 目录结构
 
 ```
 pkg/
-├── errors/     # 错误码定义和错误处理
-├── logger/     # 日志工具封装
-└── resp/       # HTTP 响应工具
+├── auth/        # 认证（JWT/API Key）
+├── errors/      # 错误处理（错误码定义在 contracts errcode）
+├── gate/        # 功能门控
+├── logger/      # 日志工具封装
+├── metrics/     # 指标
+├── middleware/  # HTTP 中间件
+├── resp/        # HTTP 响应工具
+├── security/    # 安全设施（SSRF 校验等）
+├── transfer/    # 传输相关
+└── utils/       # 通用工具函数
 ```
 
-## 与根目录 pkg/ 的区别
+## 与 kit 的边界
 
-| 目录 | 用途 | 可见性 |
-|------|------|--------|
-| `pkg/` | 跨项目可复用的库 | 外部项目可导入 |
-| `internal/pkg/` | 项目专用工具 | 仅本项目可用 |
+| 位置 | 用途 | 定位 |
+|------|------|------|
+| [`filescodebox/kit`](https://github.com/filescodebox/kit) | 通用工具库（async/retry/ratelimit/… 共 28 包） | 零生态依赖，任何项目可 `go get` 消费 |
+| 本 `pkg/` | core 横切设施 | 与 core 业务/配置绑定的专用设施，随 core 版本走 |
 
-## 现有组件
+## 主要组件
 
 ### errors/
-- 业务错误码定义
 - AppError 错误结构
-- 错误消息映射
+- errcode（定义在 contracts）到错误消息/HTTP 响应的映射
 
 ### logger/
 - Zap 日志封装
@@ -37,10 +43,10 @@ pkg/
 
 ## 添加新工具
 
-1. 在 `internal/pkg/` 下创建新目录
+1. 在 `pkg/` 下创建新目录
 2. 实现工具函数
 3. 在需要的地方导入使用
 
 ```go
-import "github.com/zy84338719/fileCodeBox/backend/internal/pkg/yourpkg"
+import "github.com/filescodebox/core/pkg/yourpkg"
 ```

@@ -1,4 +1,4 @@
-# internal/repo/db/dao/ - 数据访问对象
+# repo/db/dao/ - 数据访问对象
 
 此目录存放数据访问对象（DAO），封装数据库 CRUD 操作。
 

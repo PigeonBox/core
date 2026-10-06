@@ -1,4 +1,4 @@
-# internal/repo/db/model/ - 数据库模型
+# repo/db/model/ - 数据库模型
 
 此目录存放 GORM 数据库模型定义。
 

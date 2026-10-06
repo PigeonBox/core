@@ -1,4 +1,4 @@
-# internal/transport/http/middleware/ - HTTP 中间件
+# transport/http/middleware/ - HTTP 中间件
 
 此目录存放 HTTP 全局中间件实现。
 

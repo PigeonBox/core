@@ -1,4 +1,4 @@
-# internal/transport/http/handler/ - HTTP 请求处理器
+# transport/http/handler/ - HTTP 请求处理器
 
 此目录存放复杂业务场景的 HTTP 请求处理器实现。
 
@@ -7,7 +7,7 @@
 | 目录 | 用途 | 修改 |
 |------|------|------|
 | `gen/http/handler/` | Hz 生成的骨架代码 | 可编辑调用逻辑 |
-| `internal/transport/http/handler/` | 复杂 handler 实现 | 完全手写 |
+| `transport/http/handler/` | 复杂 handler 实现 | 完全手写 |
 
 ## 使用场景
 
@@ -25,8 +25,8 @@ import (
     "context"
     
     "github.com/cloudwego/hertz/pkg/app"
-    "github.com/zy84338719/fileCodeBox/backend/internal/app/user"
-    "github.com/zy84338719/fileCodeBox/backend/internal/pkg/resp"
+    "github.com/filescodebox/core/app/user"
+    "github.com/filescodebox/core/pkg/resp"
 )
 
 type UserHandler struct {
@@ -65,5 +65,5 @@ r.GET("/api/v1/user/:id/profile", userHandler.GetUserProfile)
 
 ## 依赖规则
 
-- 可以依赖：`internal/app/`、`internal/pkg/`
-- 不应直接依赖：`internal/repo/`（通过 app 层访问）
+- 可以依赖：`app/`、`pkg/`
+- 不应直接依赖：`repo/`（通过 app 层访问）

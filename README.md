@@ -5,7 +5,7 @@
 [![Go](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](https://go.dev)
 [![License](https://img.shields.io/github/license/filescodebox/core)](LICENSE)
 
-FilesCodeBox 业务核心库:10 个域服务 + 数据访问 + 存储抽象 + HTTP/RPC 装配(bootstrap)。**不含 main、不含静态资源、不含配置文件**——本模块定位是**被复用的库**,消费方:
+FilesCodeBox 业务核心库:16 个域服务 + 数据访问 + 存储抽象 + HTTP 装配(bootstrap)。**不含 main、不含静态资源、不含配置文件**——本模块定位是**被复用的库**,消费方:
 
 - [`filescodebox/server`](https://github.com/filescodebox/server) —— 标准独立部署(自托管)
 - [`filescodebox/fnos`](https://github.com/filescodebox/fnos) —— 飞牛 fnOS 应用(单容器库式调用)
@@ -17,8 +17,8 @@ FilesCodeBox 业务核心库:10 个域服务 + 数据访问 + 存储抽象 + HTT
 | 目录 | 说明 |
 |------|------|
 | `bootstrap/` | 库入口:`Bootstrap(configPath)` 拉起全部业务,返回 `*server.Hertz` |
-| `app/` | 10 个域服务:share / chunk / anonymous / presign / admin / user / notify / qrcode / setup / storage(模块间近零耦合,仅 presign→share) |
-| `repo/` | 数据访问:db(gorm dao/model)、redis |
+| `app/` | 16 个域服务:share / chunk / anonymous / presign / admin / user / notify / qrcode / setup / storage / federation / mcp / moderation / oidc / preview / request(模块间近零耦合,仅 presign→share) |
+| `repo/` | 数据访问:db(gorm dao/model)、redis、external |
 | `storage/` | 存储抽象(OpenDAL 多后端) |
 | `pkg/` | auth / logger / middleware / resp / errors / utils 等横切设施 |
 | `transport/` | 手写 http handler 与中间件(生成代码之外的补充) |
