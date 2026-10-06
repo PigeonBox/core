@@ -16,10 +16,13 @@ func init() {
 	adminService = adminsvc.NewService()
 }
 
-// CleanExpiredFiles 清理过期文件
+// CleanExpiredFiles 清理过期文件（DB 记录 + 物理文件）。
+// 此前误接 DB-only 的 CleanupExpiredFiles：手动清理只删记录不删存储对象，
+// 远端后端（s3/webdav/多云）上制造永久孤儿对象——与每小时定时任务
+// （startExpiredFileCleanup → CleanExpiredFiles）行为不一致。2026-10-06 215 COS 实测确认。
 // @router /admin/maintenance/clean-expired [POST]
 func CleanExpiredFiles(ctx context.Context, c *app.RequestContext) {
-	count, err := adminService.CleanupExpiredFiles(ctx)
+	count, freed, err := adminService.CleanExpiredFiles(ctx)
 	if err != nil {
 		c.JSON(consts.StatusInternalServerError, map[string]interface{}{
 			"code":    500,
@@ -32,6 +35,7 @@ func CleanExpiredFiles(ctx context.Context, c *app.RequestContext) {
 		"message": "清理完成",
 		"data": map[string]interface{}{
 			"deleted_count": count,
+			"freed_bytes":   freed,
 		},
 	})
 }
