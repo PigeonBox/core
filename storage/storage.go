@@ -923,6 +923,13 @@ func (r *chunkChainReader) Read(p []byte) (int, error) {
 		}
 		n, err := r.cur.Read(p)
 		if err == io.EOF {
+			// Read 允许数据与 EOF 同帧返回（(n>0, io.EOF)）：必须先交付这批
+			// 字节、下轮 Read 再切下一片。此前直接丢弃 n，合并产物在
+			// 「末段+EOF 同帧」场景静默缺尾（COS 实测 100000 字节分片只合
+			// 并出 98304，Put 报 Body length 与 ContentLength 不符）。
+			if n > 0 {
+				return n, nil
+			}
 			_ = r.cur.Close()
 			r.cur = nil
 			r.i++
