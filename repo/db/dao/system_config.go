@@ -32,7 +32,8 @@ func (r *SystemConfigRepository) Optimize(ctx context.Context) (string, string, 
 	if g == nil {
 		return "", "", ErrDBNotInitialized
 	}
-	dialect := g.Dialector.Name()
+	dialector := g.Dialector
+	dialect := dialector.Name()
 	switch dialect {
 	case "sqlite":
 		if err := g.Exec("VACUUM").Error; err != nil {
