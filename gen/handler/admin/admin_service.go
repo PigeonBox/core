@@ -295,35 +295,15 @@ func AdminUpdateUserStatus(ctx context.Context, c *app.RequestContext) {
 // AdminGetConfig .
 // @router /admin/config [GET]
 func AdminGetConfig(ctx context.Context, c *app.RequestContext) {
-	var err error
-	var req admin.AdminGetConfigReq
-	err = c.BindAndValidate(&req)
-	if err != nil {
-		c.JSON(consts.StatusOK, &admin.AdminGetConfigResp{Code: 400, Message: err.Error()})
-		return
-	}
-
+	// data = SystemConfig 全量 JSON(v0.13.5 起;此前仅 3 段 typed,ex 段
+	// 永不下发——Config 页 ex 表单永不回填)。自由格式契约,data 随段演进。
 	cfg, err := adminService.GetConfig(ctx)
-	resp := &admin.AdminGetConfigResp{Code: 200, Message: "success"}
+	resp := map[string]interface{}{"code": 200, "message": "success"}
 	if err != nil {
-		resp.Code = 500
-		resp.Message = err.Error()
+		resp["code"] = 500
+		resp["message"] = err.Error()
 	} else {
-		resp.Data = &admin.ConfigData{
-			Base: &admin.BaseConfig{
-				Name:        cfg.Base.Name,
-				Description: cfg.Base.Description,
-				Port:        int32(cfg.Base.Port),
-			},
-			Storage: &admin.StorageConfig{
-				Type:    cfg.Storage.Type,
-				MaxSize: cfg.Storage.MaxSize,
-			},
-			Transfer: &admin.TransferConfig{
-				MaxCount:      int32(cfg.Transfer.MaxCount),
-				ExpireDefault: int32(cfg.Transfer.ExpireDefault),
-			},
-		}
+		resp["data"] = cfg
 	}
 
 	c.JSON(consts.StatusOK, resp)
@@ -332,63 +312,18 @@ func AdminGetConfig(ctx context.Context, c *app.RequestContext) {
 // AdminUpdateConfig .
 // @router /admin/config [PUT]
 func AdminUpdateConfig(ctx context.Context, c *app.RequestContext) {
-	// 扩展形态（新契约）分派：body 含任一新段键（ui/upload_ex/download/notify/
-	// local_import/oidc/api_token）时直接绑 SystemConfig 走领域服务——
-	// 新段在 thrift 模型中不存在，且旧模型将 config 标为 required 会先拒掉请求。
-	var probe map[string]json.RawMessage
-	if err := json.Unmarshal(c.Request.Body(), &probe); err == nil {
-		newKeys := []string{"ui", "upload_ex", "download", "notify", "local_import", "oidc", "api_token"}
-		for _, k := range newKeys {
-			if _, ok := probe[k]; ok {
-				cfg := &adminsvc.SystemConfig{}
-				if err := json.Unmarshal(c.Request.Body(), cfg); err != nil {
-					c.JSON(consts.StatusBadRequest, &admin.AdminUpdateConfigResp{Code: 400, Message: err.Error()})
-					return
-				}
-				if err := adminService.UpdateConfig(ctx, cfg); err != nil {
-					c.JSON(consts.StatusInternalServerError, &admin.AdminUpdateConfigResp{Code: 500, Message: err.Error()})
-					return
-				}
-				c.JSON(consts.StatusOK, &admin.AdminUpdateConfigResp{Code: 200, Message: "success"})
-				return
-			}
-		}
-	}
-
-	var err error
-	var req admin.AdminUpdateConfigReq
-	err = c.BindAndValidate(&req)
-	if err != nil {
-		c.String(consts.StatusBadRequest, err.Error())
+	// 统一走领域 SystemConfig 整体解绑（v0.13.5 起）。此前双轨：新段键探测
+	// 直绑 + 旧三段 typed 映射——后者叠加前端 {config:...} 包壳后，ex 段写入
+	// 落不进任何一条路而被静默丢弃（假开关）。契约形态：body = SystemConfig
+	// 局部扁平 JSON（nil 段保留现状），未知键由 json 反序列化自然忽略。
+	cfg := &adminsvc.SystemConfig{}
+	if err := json.Unmarshal(c.Request.Body(), cfg); err != nil {
+		c.JSON(consts.StatusBadRequest, &admin.AdminUpdateConfigResp{Code: 400, Message: err.Error()})
 		return
 	}
-
-	resp := new(admin.AdminUpdateConfigResp)
-
-	// 手写扩展：请求映射为领域配置并写穿 DB 持久化（重生成 IDL 后需同步）。
-	cfg := &adminsvc.SystemConfig{}
-	if req.Config != nil {
-		if req.Config.Base != nil {
-			cfg.Base.Name = req.Config.Base.Name
-			cfg.Base.Description = req.Config.Base.Description
-			cfg.Base.Port = int(req.Config.Base.Port)
-		}
-		if req.Config.Storage != nil {
-			cfg.Storage.Type = req.Config.Storage.Type
-			cfg.Storage.MaxSize = req.Config.Storage.MaxSize
-		}
-		if req.Config.Transfer != nil {
-			cfg.Transfer.MaxCount = int(req.Config.Transfer.MaxCount)
-			cfg.Transfer.ExpireDefault = int(req.Config.Transfer.ExpireDefault)
-		}
-	}
 	if err := adminService.UpdateConfig(ctx, cfg); err != nil {
-		resp.Code = 500
-		resp.Message = err.Error()
-	} else {
-		resp.Code = 200
-		resp.Message = "success"
+		c.JSON(consts.StatusInternalServerError, &admin.AdminUpdateConfigResp{Code: 500, Message: err.Error()})
+		return
 	}
-
-	c.JSON(consts.StatusOK, resp)
+	c.JSON(consts.StatusOK, &admin.AdminUpdateConfigResp{Code: 200, Message: "success"})
 }

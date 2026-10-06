@@ -13,7 +13,7 @@ import (
 var adminService *adminsvc.Service
 
 func init() {
-	adminService = adminsvc.NewService()
+	adminService = adminsvc.Default()
 }
 
 // CleanExpiredFiles 清理过期文件（DB 记录 + 物理文件）。
