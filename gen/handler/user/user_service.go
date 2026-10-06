@@ -169,7 +169,8 @@ func UserInfo(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
-	// 用 map 返回，补充 role 字段（thrift model UserData 无 Role，前端 admin 登录依赖）
+	// role 已入 IDL UserData(optional, contracts 下一 tag 起类型可用);本 handler
+	// 暂以 map 补发保持 wire 不变,typed 化改造随发版列车(contracts tag → core bump)
 	c.JSON(consts.StatusOK, map[string]interface{}{
 		"code":    200,
 		"message": "获取成功",
