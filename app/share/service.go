@@ -983,6 +983,7 @@ func (s *Service) RecordViewer(ctx context.Context, code, viewerIP string) (*mod
 
 // toUserShareListItem model → 列表项
 func toUserShareListItem(f *model.FileCode) *UserShareListItem {
+	isTextShare := f.IsTextShare()
 	item := &UserShareListItem{
 		ID:           f.ID,
 		Code:         f.Code,
@@ -1004,14 +1005,22 @@ func toUserShareListItem(f *model.FileCode) *UserShareListItem {
 		ViewerCount:  f.ViewerCount,
 		IsExpired:    f.IsExpired(),
 		Status:       f.Status,
-		IsTextShare:  f.Text != "",
+		// 文件分享的 Text 存原始文件名（非空），须用 IsTextShare 判定（Text 非空且无文件路径）
+		IsTextShare: isTextShare,
 	}
-	// 提取文件名
-	fileName := f.UUIDFileName
-	if fileName == "" && f.FilePath != "" {
-		parts := strings.Split(f.FilePath, "/")
-		if len(parts) > 0 {
-			fileName = parts[len(parts)-1]
+	// 文件名提取：文件分享依次取原始文件名（Text）、UUID 名、路径尾段；
+	// 纯文本分享的 Text 是内容，不留文件名
+	fileName := ""
+	if !isTextShare {
+		fileName = f.Text
+		if fileName == "" {
+			fileName = f.UUIDFileName
+		}
+		if fileName == "" && f.FilePath != "" {
+			parts := strings.Split(f.FilePath, "/")
+			if len(parts) > 0 {
+				fileName = parts[len(parts)-1]
+			}
 		}
 	}
 	item.FileName = fileName

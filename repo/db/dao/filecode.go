@@ -209,8 +209,8 @@ type UserShareFilter struct {
 // GetUserSharesWithFilter 获取用户的分享列表（带筛选）
 //   - "active": 未过期且有剩余次数
 //   - "expired": 时间过期 或 次数用尽
-//   - "text": 文本分享（Text != ""）
-//   - "file": 文件分享（Text == ""）
+//   - "text": 文本分享（无文件路径且 Text 非空；文件分享的 Text 存原始文件名，不能只看 Text）
+//   - "file": 文件分享（file_path 非空）
 //   - "deleted": 软删除的（deleted_at != null）
 //   - "all" / "": 不过滤状态
 func (r *FileCodeRepository) GetUserSharesWithFilter(ctx context.Context, userID uint, filter UserShareFilter) ([]*model.FileCode, int64, error) {
@@ -228,15 +228,16 @@ func (r *FileCodeRepository) GetUserSharesWithFilter(ctx context.Context, userID
 	case "expired":
 		q = q.Where("((expired_at IS NOT NULL AND expired_at <= ?) OR expired_count = 0)")
 	case "text":
-		q = q.Where("text <> ''")
+		q = q.Where("(file_path IS NULL OR file_path = '') AND text IS NOT NULL AND text != ''")
 	case "file":
-		q = q.Where("(text = '' OR text IS NULL)")
+		q = q.Where("file_path IS NOT NULL AND file_path != ''")
 	}
 
 	if filter.Search != "" {
 		like := "%" + filter.Search + "%"
-		q = q.Where("code LIKE ? OR prefix LIKE ? OR suffix LIKE ? OR uuid_file_name LIKE ?",
-			like, like, like, like)
+		// 文件分享的原始文件名存 text（uuid_file_name 常为空），搜索需覆盖 text
+		q = q.Where("code LIKE ? OR prefix LIKE ? OR suffix LIKE ? OR uuid_file_name LIKE ? OR text LIKE ?",
+			like, like, like, like, like)
 	}
 
 	return paginate[model.FileCode](q.Order("created_at DESC"), page, pageSize)
@@ -517,4 +518,19 @@ func (r *FileCodeRepository) ListAllIncludingDeleted(ctx context.Context) ([]*mo
 		return nil, err
 	}
 	return rows, nil
+}
+
+// CountAlive 存活分享数（deleted_at IS NULL）。
+func (r *FileCodeRepository) CountAlive(ctx context.Context) (int64, error) {
+	var n int64
+	err := r.db().WithContext(ctx).Model(&model.FileCode{}).Count(&n).Error
+	return n, err
+}
+
+// CountSoftDeleted 软删分享数（deleted_at 非空）——回收站/审计用。
+func (r *FileCodeRepository) CountSoftDeleted(ctx context.Context) (int64, error) {
+	var n int64
+	err := r.db().WithContext(ctx).Unscoped().Model(&model.FileCode{}).
+		Where("deleted_at IS NOT NULL").Count(&n).Error
+	return n, err
 }
