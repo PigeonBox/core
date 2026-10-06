@@ -23,6 +23,11 @@ func Init(cfg *conf.RedisConfig) error {
 	defer cancel()
 
 	if err := Client.Ping(ctx).Err(); err != nil {
+		// 连接失败必须清掉残留 Client：否则 GetClient() 返回非 nil 的死客户端，
+		// 消费方按"Redis 可用"注入后每次调用报错——消费方依赖 nil 判定回落
+		// 内存模式（单机内存形态），nil 化即自动降级
+		_ = Client.Close()
+		Client = nil
 		return fmt.Errorf("failed to connect redis: %w", err)
 	}
 

@@ -39,6 +39,16 @@ const shareCodeLength = 8
 const (
 	keyPickupCodeMapping = "anon:code:%s" // pickup_code -> share_code
 	keyPickupCodeMeta    = "anon:meta:%s" // pickup_code -> 展示信息(share_code|file_name|file_size|content_type|require_auth)
+	keyPickupCodeNeg     = "anon:neg:%s"  // 负缓存标记：KV 未命中且 DB 也无此码（防枚举穿透打库）
+)
+
+// 回源缓存的 TTL：
+//   - 负缓存短（2min）：新分享建好后最多遮蔽 2min（仅影响"建前被探测过同名的
+//     自定义码"这一罕见时序，正常取件码走映射键不受影响），自愈。
+//   - 回源回填短（5min）：DB 是真相源，回填只是缓存加速；TTL 到期自动回落直查。
+const (
+	negCacheTTL   = 2 * time.Minute
+	dbBackfillTTL = 5 * time.Minute
 )
 
 // 错误哨兵
@@ -86,6 +96,8 @@ type Service struct {
 
 // NewService 创建 service。fileCodeRepo 为 nil 时内部自建（Retrieve 需查 DB）。
 // rdb nil 归一化：typed-nil 接口会骗过"Redis 可用"守卫（!= nil 判真）。
+// rdb 为 nil（redis.host 未配置）时进入单机内存模式：映射/展示信息存进程内
+// TTL KV，匿名取件全功能可用（单进程语义等价；重启丢失、不跨副本共享）。
 func NewService(rdb *redis.Client, fileCodeRepo *dao.FileCodeRepository) *Service {
 	if fileCodeRepo == nil {
 		fileCodeRepo = dao.NewFileCodeRepository()
@@ -93,6 +105,8 @@ func NewService(rdb *redis.Client, fileCodeRepo *dao.FileCodeRepository) *Servic
 	var kv redisKV
 	if rdb != nil {
 		kv = rdb
+	} else {
+		kv = newMemoryKV()
 	}
 	return &Service{rdb: kv, fileCodeRepo: fileCodeRepo}
 }
@@ -139,26 +153,38 @@ func (s *Service) GenerateCode(ctx context.Context, meta CodeMeta, expireAt time
 }
 
 // lookupShareCode 把用户输入解析为分享码：
-// 6 位输入按取件码处理（容忍小写，规范化后查 Redis 映射）；
-// Redis 未命中且输入形如 8 位分享码时回退 DB 直查——
-// 文本分享没有取件码（不写 Redis），用户手里只有分享成功弹窗里的 8 位码。
+// 6 位输入按取件码处理（容忍小写，规范化后查映射）；
+// 映射未命中且输入形如分享码时回源 DB 直查——
+// 文本分享没有取件码（不写 KV），用户手里只有分享成功弹窗里的 8 位码。
+// 回源路径带双向缓存：命中回填映射（短 TTL，重复查询不再打库）；
+// DB 也无此码则放负缓存标记（短 TTL，防取件码枚举穿透打库）。
+// 真实状态（过期/次数/密码）始终以 DB 为准，缓存仅加速"码→分享码"解析。
 func (s *Service) lookupShareCode(ctx context.Context, code string) (string, error) {
 	trimmed := strings.TrimSpace(code)
 	if len(trimmed) == codeLength {
 		trimmed = strings.ToUpper(trimmed)
 	}
-	shareCode, err := s.rdb.Get(ctx, fmt.Sprintf(keyPickupCodeMapping, trimmed)).Result()
+	mappingKey := fmt.Sprintf(keyPickupCodeMapping, trimmed)
+	shareCode, err := s.rdb.Get(ctx, mappingKey).Result()
 	if err == nil {
 		return shareCode, nil
 	}
 	if !errors.Is(err, redis.Nil) {
 		return "", err
 	}
+	// 负缓存快速路径：近期已确认"映射与 DB 均无此码"
+	if _, err := s.rdb.Get(ctx, fmt.Sprintf(keyPickupCodeNeg, trimmed)).Result(); err == nil {
+		return "", ErrCodeNotFound
+	}
 	if isShareCodeShape(trimmed) {
 		fc, dbErr := s.fileCodeRepo.GetByCode(ctx, trimmed)
 		if dbErr != nil || fc == nil {
+			// 回源 DB 也没有：放负缓存标记
+			s.rdb.Set(ctx, fmt.Sprintf(keyPickupCodeNeg, trimmed), "1", negCacheTTL)
 			return "", ErrCodeNotFound
 		}
+		// 回源命中：回填映射缓存（真实状态仍查 DB）
+		s.rdb.Set(ctx, mappingKey, fc.Code, dbBackfillTTL)
 		return fc.Code, nil
 	}
 	return "", ErrCodeNotFound

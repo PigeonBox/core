@@ -73,7 +73,10 @@ func applyDeploymentConstraints(cfg *conf.AppConfiguration) error {
 		cfg.Database.Migrate = false
 	}
 	if cfg.Redis.Host == "" {
-		logger.Warn("Redis not configured: config-change propagation DISABLED; admin-side changes require restarting these replicas")
+		// 多副本硬约束运行时化（values.yaml 已声明，此前仅 Warn）：无 Redis 时
+		// 配置广播失效 + 取件码映射/presign 会话/限流计数按副本分裂，静默运行
+		// 的后果比启动失败严重
+		return fmt.Errorf("deployment.mode=%s requires redis.host (配置广播与跨实例状态共享依赖 Redis，缺失会导致多副本状态分裂)", mode)
 	}
 	return nil
 }

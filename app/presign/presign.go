@@ -112,10 +112,14 @@ type ShareServiceInterface interface {
 
 // NewService 创建 service。rdb nil 归一化：typed-nil 接口会骗过
 // "Redis 可用"守卫（!= nil 判真）。
+// rdb 为 nil（redis.host 未配置）时进入单机内存模式：直传会话存进程内
+// TTL KV，预签名直传全功能可用（单进程语义等价；重启未完成会话作废）。
 func NewService(rdb *redis.Client, baseURL string, signingKey string) *Service {
 	var kv redisKV
 	if rdb != nil {
 		kv = rdb
+	} else {
+		kv = newMemoryKV()
 	}
 	return &Service{
 		rdb:           kv,

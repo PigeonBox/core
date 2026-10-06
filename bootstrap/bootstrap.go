@@ -662,17 +662,24 @@ func BootstrapWithOptions(configPath string, opts ...Option) (*server.Hertz, err
 	// 3.5 初始化 Redis（匿名取件码 / presign 会话 / 分布式限流依赖）。
 	// 此前 bootstrap 从不调用 redis.Init，GetClient() 恒为 nil，
 	// 导致匿名取件与预签名直传在运行期必然失败（P0）。
-	// Redis 连不上时降级启动并告警：server 主体功能仍可用，
-	// 匿名取件接口会返回"Redis 未配置"的明确错误。
+	// redis.host 为空 → 单机内存模式：匿名取件/直传会话存进程内 TTL KV
+	// （全功能可用，重启丢失、不跨副本共享）。
+	// 连不上 → standalone 降级启动并告警（同内存模式语义）；
+	// public/admin 多副本硬依赖 Redis（广播/跨实例状态），fail-fast。
 	if config.Redis.Host != "" {
 		if err := redis.Init(&config.Redis); err != nil {
-			logger.Error("Redis init failed — anonymous pickup & presign degraded",
+			if config.NormalizedDeploymentMode() != conf.DeployModeStandalone {
+				return nil, fmt.Errorf("deployment.mode=%s requires a reachable redis (addr=%s): %w",
+					config.NormalizedDeploymentMode(), config.Redis.Addr(), err)
+			}
+			logger.Error("Redis init failed — anonymous pickup & presign degraded to in-memory mode",
 				zap.String("addr", config.Redis.Addr()), zap.Error(err))
 		} else {
 			logger.Info("Redis initialized", zap.String("addr", config.Redis.Addr()))
 		}
 	} else {
-		logger.Warn("Redis not configured (redis.host empty) — anonymous pickup & presign disabled")
+		logger.Info("Redis not configured (redis.host empty) — in-memory mode: " +
+			"匿名取件/直传会话存进程内（重启丢失，不跨副本共享）")
 	}
 
 	// 3.6 安全中间件配置注入：
