@@ -892,15 +892,8 @@ func DownloadFile(ctx context.Context, c *app.RequestContext) {
 
 	// 统一下传送流：本地后端 c.File 原生 Range/断点续传；远端后端服务端
 	// 区间流（206，驱动支持时），不支持区间读的驱动回退全量 200。
-	payload, err := getShareService().OpenShareDownload(ctx, filePath)
-	if err != nil {
-		c.JSON(consts.StatusInternalServerError, map[string]interface{}{
-			"code":    500,
-			"message": fmt.Sprintf("获取文件失败: %v", err),
-		})
-		return
-	}
-	streamFileDownload(ctx, c, payload, filePath, fileName, logTransfer)
+	// 惰性开流：Range 请求只做 Stat+区间 GET，不预开全量读器。
+	streamFileDownload(ctx, c, filePath, fileName, logTransfer)
 }
 
 // closeOnEOFReader 包装 ReadCloser：读至 EOF 时自动 Close。
@@ -911,7 +904,9 @@ type closeOnEOFReader struct {
 
 func (w *closeOnEOFReader) Read(p []byte) (int, error) {
 	n, err := w.rc.Read(p)
-	if err == io.EOF {
+	if err != nil {
+		// EOF 与传输中断（客户端断开等）都要释放底层连接：
+		// 只在 EOF 关闭会让中断的下载把连接池占到 GC。
 		_ = w.rc.Close()
 	}
 	return n, err

@@ -7,8 +7,6 @@ import (
 	"fmt"
 
 	"github.com/cloudwego/hertz/pkg/app"
-	"github.com/cloudwego/hertz/pkg/protocol/consts"
-	shareService "github.com/filescodebox/core/app/share"
 	"github.com/filescodebox/core/pkg/middleware"
 	"github.com/filescodebox/core/pkg/transfer"
 	"github.com/filescodebox/core/repo/db/model"
@@ -17,22 +15,15 @@ import (
 // streamChildFile 子文件单流下载（/share/download?file=<id>）。
 // 写出响应返回 true；文件不存在/不属于该分享返回 false（调用方 404）。
 func streamChildFile(ctx context.Context, c *app.RequestContext, code string, fileID uint, viewerIP string) bool {
-	fc, child, payload, err := getShareService().OpenChildDownload(ctx, code, fileID)
-	if err == shareService.ErrShareFileNotFound {
+	// 统一下传送流：本地后端 c.File 原生 Range；远端后端服务端区间流（206）
+	// 或全量 200 回退（驱动不支持区间读时）。惰性开流：这里只做归属校验取
+	// 子文件元数据，不预开全量读器（Range 请求会多一次无用打开）。
+	fc, child, gerr := getShareService().GetShareChild(ctx, code, fileID)
+	if gerr != nil || fc == nil || child == nil {
 		return false
 	}
-	if err != nil {
-		c.JSON(consts.StatusInternalServerError, map[string]interface{}{
-			"code":    500,
-			"message": fmt.Sprintf("获取文件失败: %v", err),
-		})
-		return true
-	}
 	name := child.DisplayName()
-
-	// 统一下传送流：本地后端 c.File 原生 Range；远端后端服务端区间流（206）
-	// 或全量 200 回退（驱动不支持区间读时）。
-	streamFileDownload(ctx, c, payload, child.FilePath, name,
+	streamFileDownload(ctx, c, child.FilePath, name,
 		func() { logDownload(ctx, fc, code, name, child.Size, viewerIP) })
 	return true
 }

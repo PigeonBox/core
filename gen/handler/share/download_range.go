@@ -16,7 +16,6 @@ import (
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
-	shareService "github.com/filescodebox/core/app/share"
 	"github.com/filescodebox/core/storage"
 )
 
@@ -84,22 +83,13 @@ func parseByteRange(header string, size int64) (start, length int64, result rang
 }
 
 // streamFileDownload 单文件下载统一收口（本地/远端后端，支持 Range 206）。
-// payload 为已打开的下载载荷；filePath 为存储相对路径（Range 分支按它做区间读）；
-// fileName 为下载呈现名；logTransfer 在确认开始传输内容时调用一次
-// （200/206 记一次下载；416 不计）。
-func streamFileDownload(ctx context.Context, c *app.RequestContext, payload *shareService.FilePayload, filePath, fileName string, logTransfer func()) {
+// 惰性开流：Range 请求只做 1 次 Stat + 1 次区间 GET，不会预开全量读器；
+// filePath 为存储相对路径；fileName 为下载呈现名；logTransfer 在确认开始
+// 传输内容时调用一次（200/206 记一次下载；416 不计）。
+func streamFileDownload(ctx context.Context, c *app.RequestContext, filePath, fileName string, logTransfer func()) {
 	disposition := fmt.Sprintf(`attachment; filename="%s"`, fileName)
 
-	// 本地后端：绝对路径直传，c.File 原生 Range/断点续传（P3）
-	if payload.LocalAbs != "" {
-		logTransfer()
-		c.Header("Content-Type", "application/octet-stream")
-		c.Header("Content-Disposition", disposition)
-		c.File(payload.LocalAbs)
-		return
-	}
-
-	// 远端后端：Range 分支
+	// 远端后端：Range 分支先行（避免为 Range 请求多开一次全量读器）
 	if rh := string(c.GetHeader("Range")); rh != "" {
 		if total, serr := getShareService().StatShareFile(ctx, filePath); serr == nil {
 			start, length, res := parseByteRange(rh, total)
@@ -137,7 +127,22 @@ func streamFileDownload(ctx context.Context, c *app.RequestContext, payload *sha
 		}
 	}
 
-	// 全量流式 200
+	// 全量路径：本地后端绝对路径直传（c.File 原生 Range/断点续传）；远端全量流式 200
+	payload, err := getShareService().OpenShareDownload(ctx, filePath)
+	if err != nil {
+		c.JSON(consts.StatusInternalServerError, map[string]interface{}{
+			"code":    500,
+			"message": fmt.Sprintf("获取文件失败: %v", err),
+		})
+		return
+	}
+	if payload.LocalAbs != "" {
+		logTransfer()
+		c.Header("Content-Type", "application/octet-stream")
+		c.Header("Content-Disposition", disposition)
+		c.File(payload.LocalAbs)
+		return
+	}
 	logTransfer()
 	c.Header("Content-Type", "application/octet-stream")
 	c.Header("Content-Disposition", disposition)
