@@ -29,9 +29,6 @@ import (
 
 var shareSvc *shareService.Service
 
-// 配置常量（应从配置读取，这里使用默认值）
-const defaultBaseURL = "http://localhost:12345"
-
 // SetShareService 注入共享的 share service 实例（bootstrap 调用）。
 // 回归（治理 2026-10-03）：此前未注入，/share/text|file|select|download 走
 // getShareService() 懒加载裸实例，quotaChecker/notify/userService/moderator
@@ -42,10 +39,23 @@ func SetShareService(s *shareService.Service) {
 
 func getShareService() *shareService.Service {
 	if shareSvc == nil {
-		// 兜底实例仅测试/降级路径可达：未注入存储时由 app 层懒加载本地后端
-		shareSvc = shareService.NewService(defaultBaseURL, nil)
+		// 兜底实例仅测试/降级路径可达：未注入存储时由 app 层懒加载本地后端。
+		// baseURL 传空串：与生产注入路径同策略，公开链接按请求来源动态推断
+		// （ResolveBase），绝不静态拼 host:port。
+		shareSvc = shareService.NewService("", nil)
 	}
 	return shareSvc
+}
+
+// publicShareURL 公开分享链接：显式 base_url > 请求来源动态推断（bootstrap
+// 中间件注入 ctx）> 相对路径。禁止 PublicBaseURL 的 server.host:port 兜底
+// ——监听地址(0.0.0.0)对外不可达（2026-10-07 fnOS 真机事故）。
+func publicShareURL(ctx context.Context, code string) string {
+	var configured string
+	if cfg := conf.GetGlobalConfig(); cfg != nil {
+		configured = cfg.Server.BaseURL
+	}
+	return fmt.Sprintf("%s/share/%s", shareService.ResolveBase(ctx, configured), code)
 }
 
 // ShareText .
@@ -373,13 +383,11 @@ func ShareFile(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
-	// 13. 构建响应（base_url 取配置值；此前硬编码 localhost:12345，
-	// 反代/容器部署下 API 返回的分享链接不可直接用，前端仅靠自行改写兜底）
-	var cfgRef *conf.ServerConfig
-	if cfg := conf.GetGlobalConfig(); cfg != nil {
-		cfgRef = &cfg.Server
-	}
-	fullShareURL := fmt.Sprintf("%s/share/%s", cfgRef.PublicBaseURL(defaultBaseURL), shareResult.Code)
+	// 13. 构建响应：与 share service 同策略（publicShareURL——base_url 显式配置 >
+	//     请求来源动态推断 > 相对路径）。此前经 PublicBaseURL 兜底静态拼
+	//     server.host:port——监听地址 0.0.0.0 对外不可达（2026-10-07 fnOS 真机
+	//     事故：文件分享响应给出 http://0.0.0.0:12345/... 链接）。
+	fullShareURL := publicShareURL(ctx, shareResult.Code)
 
 	// 传输日志（上传，异步）
 	transfer.Record(transfer.Entry{

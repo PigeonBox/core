@@ -35,9 +35,6 @@ import (
 var chunkSvc *chunkService.Service
 var shareSvc *shareService.Service
 
-// 配置常量（应从配置读取，这里使用默认值）
-const defaultBaseURL = "http://localhost:12345"
-
 func getChunkService() *chunkService.Service {
 	if chunkSvc == nil {
 		chunkSvc = chunkService.NewService()
@@ -60,10 +57,22 @@ func SetShareService(s *shareService.Service) {
 
 func getShareService() *shareService.Service {
 	if shareSvc == nil {
-		// 兜底实例仅测试/降级路径可达：未注入存储时由 app 层懒加载本地后端
-		shareSvc = shareService.NewService(defaultBaseURL, nil)
+		// 兜底实例仅测试/降级路径可达：未注入存储时由 app 层懒加载本地后端。
+		// baseURL 传空串：公开链接按请求来源动态推断（ResolveBase），不静态拼 host。
+		shareSvc = shareService.NewService("", nil)
 	}
 	return shareSvc
+}
+
+// publicShareURL 公开分享链接：显式 base_url > 请求来源动态推断（bootstrap
+// 中间件注入 ctx）> 相对路径。禁止 PublicBaseURL 的 server.host:port 兜底
+// ——监听地址(0.0.0.0)对外不可达（2026-10-07 fnOS 真机事故）。
+func publicShareURL(ctx context.Context, code string) string {
+	var configured string
+	if cfg := conf.GetGlobalConfig(); cfg != nil {
+		configured = cfg.Server.BaseURL
+	}
+	return fmt.Sprintf("%s/share/%s", shareService.ResolveBase(ctx, configured), code)
 }
 
 // ChunkUploadInit .
@@ -737,13 +746,10 @@ func ChunkUploadComplete(ctx context.Context, c *app.RequestContext) {
 	}
 
 	// 生成分享URL（附下载令牌，security.download_token.enabled 时必需）。
-	// 回归：此前恒用 defaultBaseURL 常量（localhost:12345），base_url 未配置的
-	// 部署里 API 返回的链接不可用
-	var chunkCfgRef *conf.ServerConfig
-	if cfg := conf.GetGlobalConfig(); cfg != nil {
-		chunkCfgRef = &cfg.Server
-	}
-	fullShareURL := fmt.Sprintf("%s/share/%s", chunkCfgRef.PublicBaseURL(defaultBaseURL), shareResult.Code)
+	// 回归：此前经 PublicBaseURL 兜底静态拼 server.host:port（更早恒用
+	// localhost:12345 常量）——0.0.0.0/localhost 链接对外均不可达，现与
+	// share service 同策略（请求来源动态推断，详见 publicShareURL）。
+	fullShareURL := publicShareURL(ctx, shareResult.Code)
 	if tk := security.GenerateDownloadToken(shareResult.Code); tk != "" {
 		fullShareURL += "?token=" + tk
 	}
