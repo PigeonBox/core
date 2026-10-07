@@ -11,9 +11,9 @@ package gate
 import (
 	"fmt"
 
-	"github.com/filescodebox/contracts/errcode"
-	"github.com/filescodebox/core/conf"
-	"github.com/filescodebox/core/pkg/metrics"
+	"github.com/pigeonbox/contracts/errcode"
+	"github.com/pigeonbox/core/conf"
+	"github.com/pigeonbox/core/pkg/metrics"
 )
 
 // GateError 携带业务码的闸门拒绝错误，handler 侧按 ErrCode 透传给前端。

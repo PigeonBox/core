@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/filescodebox/core/conf"
+	"github.com/pigeonbox/core/conf"
 )
 
 func TestFlatUnmarshal(t *testing.T) {

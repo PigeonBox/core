@@ -1,4 +1,4 @@
-// Package mcp 实现 FileCodeBox 的 Model Context Protocol (MCP) server。
+// Package mcp 实现 PigeonBox 的 Model Context Protocol (MCP) server。
 //
 // 传输：Streamable HTTP（POST 单端点，JSON-RPC 2.0；与 MCP 规范对齐，
 // Claude Desktop / 任意标准 MCP 客户端可直接接入）。legacy 文档中的裸 TCP
@@ -22,15 +22,15 @@ import (
 	"strings"
 	"time"
 
-	"github.com/filescodebox/core/pkg/utils"
-	"github.com/filescodebox/core/repo/db/dao"
-	"github.com/filescodebox/core/repo/db/model"
+	"github.com/pigeonbox/core/pkg/utils"
+	"github.com/pigeonbox/core/repo/db/dao"
+	"github.com/pigeonbox/core/repo/db/model"
 )
 
 // 协议常量
 const (
 	protocolVersion = "2025-03-26"
-	serverName      = "filecodebox"
+	serverName      = "pigeonbox"
 )
 
 // JSON-RPC 错误码（-32000 段为 server 自定义）

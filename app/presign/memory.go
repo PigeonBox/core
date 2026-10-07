@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/filescodebox/core/pkg/memkv"
+	"github.com/pigeonbox/core/pkg/memkv"
 	"github.com/redis/go-redis/v9"
 )
 

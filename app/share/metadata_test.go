@@ -7,7 +7,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/filescodebox/core/pkg/utils"
+	"github.com/pigeonbox/core/pkg/utils"
 )
 
 // 回归：/share/metadata 语义——查询不扣次数、不要求密码、不外泄文本内容/密码哈希。

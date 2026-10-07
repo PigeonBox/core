@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/filescodebox/core/storage"
+	"github.com/pigeonbox/core/storage"
 )
 
 // fakeObjectStore 真预签名直传能力的测试替身

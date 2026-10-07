@@ -4,7 +4,7 @@ package qrcode
 
 import (
 	"github.com/cloudwego/hertz/pkg/app/server"
-	qrcode "github.com/filescodebox/core/gen/handler/qrcode"
+	qrcode "github.com/pigeonbox/core/gen/handler/qrcode"
 )
 
 /*

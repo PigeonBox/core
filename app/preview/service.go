@@ -11,14 +11,14 @@ import (
 	"io"
 	"os"
 
-	"github.com/filescodebox/core/pkg/gate"
-	"github.com/filescodebox/core/pkg/middleware"
-	"github.com/filescodebox/core/pkg/utils"
-	previewService "github.com/filescodebox/core/preview"
-	"github.com/filescodebox/core/repo/db/dao"
-	dao_preview "github.com/filescodebox/core/repo/db/dao_preview"
-	"github.com/filescodebox/core/repo/db/model"
-	"github.com/filescodebox/core/storage"
+	"github.com/pigeonbox/core/pkg/gate"
+	"github.com/pigeonbox/core/pkg/middleware"
+	"github.com/pigeonbox/core/pkg/utils"
+	previewService "github.com/pigeonbox/core/preview"
+	"github.com/pigeonbox/core/repo/db/dao"
+	dao_preview "github.com/pigeonbox/core/repo/db/dao_preview"
+	"github.com/pigeonbox/core/repo/db/model"
+	"github.com/pigeonbox/core/storage"
 )
 
 // 业务错误（HTTP 适配层据此映射状态码与文案，不泄露内部细节）。

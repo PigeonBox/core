@@ -11,8 +11,8 @@ import (
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
 
-	"github.com/filescodebox/core/app/share"
-	"github.com/filescodebox/core/transport/http/middleware"
+	"github.com/pigeonbox/core/app/share"
+	"github.com/pigeonbox/core/transport/http/middleware"
 )
 
 var shareSvc *share.Service

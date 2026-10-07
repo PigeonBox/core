@@ -21,13 +21,13 @@ import (
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 
-	shareService "github.com/filescodebox/core/app/share"
-	"github.com/filescodebox/core/conf"
-	"github.com/filescodebox/core/pkg/transfer"
-	"github.com/filescodebox/core/repo/db"
-	"github.com/filescodebox/core/repo/db/dao"
-	"github.com/filescodebox/core/repo/db/model"
-	"github.com/filescodebox/core/storage"
+	shareService "github.com/pigeonbox/core/app/share"
+	"github.com/pigeonbox/core/conf"
+	"github.com/pigeonbox/core/pkg/transfer"
+	"github.com/pigeonbox/core/repo/db"
+	"github.com/pigeonbox/core/repo/db/dao"
+	"github.com/pigeonbox/core/repo/db/model"
+	"github.com/pigeonbox/core/storage"
 )
 
 const regRelPath = "uploads/2026/10/03/reg-test-uuid.txt"

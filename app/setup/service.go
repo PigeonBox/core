@@ -5,8 +5,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/filescodebox/core/repo/db/dao"
-	"github.com/filescodebox/core/repo/db/model"
+	"github.com/pigeonbox/core/repo/db/dao"
+	"github.com/pigeonbox/core/repo/db/model"
 	"golang.org/x/crypto/bcrypt"
 )
 

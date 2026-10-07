@@ -4,7 +4,7 @@ package notify
 
 import (
 	"github.com/cloudwego/hertz/pkg/app/server"
-	notify "github.com/filescodebox/core/gen/handler/notify"
+	notify "github.com/pigeonbox/core/gen/handler/notify"
 )
 
 /*

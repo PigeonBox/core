@@ -14,7 +14,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/filescodebox/core/app/share"
+	"github.com/pigeonbox/core/app/share"
 )
 
 // mockShareService 用于单测的 share service mock

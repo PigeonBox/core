@@ -15,7 +15,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/filescodebox/kit/retry"
+	"github.com/pigeonbox/kit/retry"
 )
 
 // onedriveDriver OneDrive / SharePoint（Microsoft Graph）驱动，零 SDK 依赖。

@@ -11,14 +11,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/filescodebox/core/conf"
-	"github.com/filescodebox/core/pkg/auth"
-	"github.com/filescodebox/core/pkg/logger"
-	"github.com/filescodebox/core/pkg/middleware"
-	"github.com/filescodebox/core/pkg/security"
-	"github.com/filescodebox/core/repo/db/dao"
-	"github.com/filescodebox/core/repo/db/model"
-	"github.com/filescodebox/core/storage"
+	"github.com/pigeonbox/core/conf"
+	"github.com/pigeonbox/core/pkg/auth"
+	"github.com/pigeonbox/core/pkg/logger"
+	"github.com/pigeonbox/core/pkg/middleware"
+	"github.com/pigeonbox/core/pkg/security"
+	"github.com/pigeonbox/core/repo/db/dao"
+	"github.com/pigeonbox/core/repo/db/model"
+	"github.com/pigeonbox/core/storage"
 	"go.uber.org/zap"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -673,7 +673,7 @@ func Audit(ctx context.Context, action, target string, success bool) {
 // defaultSystemConfig 站点配置默认值。
 func defaultSystemConfig() *SystemConfig {
 	cfg := &SystemConfig{}
-	cfg.Base.Name = "FilesCodeBox"
+	cfg.Base.Name = "PigeonBox"
 	cfg.Base.Description = "文件分享平台"
 	cfg.Base.Port = 8888
 	cfg.Storage.Type = "local"

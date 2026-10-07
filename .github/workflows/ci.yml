@@ -27,6 +27,6 @@ jobs:
           args: --timeout 9m
       - name: Dep guard(core 不许依赖下游)
         run: |
-          BAD=$(go list -deps ./... | grep -E '^github.com/filescodebox/(server|frontend|fnos)' || true)
+          BAD=$(go list -deps ./... | grep -E '^github.com/pigeonbox/(server|frontend|fnos)' || true)
           if [ -n "$BAD" ]; then echo "✗ core 违规依赖:"; echo "$BAD"; exit 1; fi
           echo "✓ 依赖方向合规"

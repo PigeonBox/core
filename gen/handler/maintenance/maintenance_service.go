@@ -7,7 +7,7 @@ import (
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
-	adminsvc "github.com/filescodebox/core/app/admin"
+	adminsvc "github.com/pigeonbox/core/app/admin"
 )
 
 var adminService *adminsvc.Service

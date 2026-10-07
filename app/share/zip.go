@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/filescodebox/core/pkg/logger"
-	"github.com/filescodebox/core/repo/db/model"
+	"github.com/pigeonbox/core/pkg/logger"
+	"github.com/pigeonbox/core/repo/db/model"
 	"go.uber.org/zap"
 )
 

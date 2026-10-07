@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/filescodebox/contracts/openapi"
+	"github.com/pigeonbox/contracts/openapi"
 )
 
 // TestMergeWithIDLSpec 骨架 × IDL 规范合并语义守卫：

@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/filescodebox/core/repo/db/model"
+	"github.com/pigeonbox/core/repo/db/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

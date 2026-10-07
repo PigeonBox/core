@@ -4,7 +4,7 @@ package health
 
 import (
 	"github.com/cloudwego/hertz/pkg/app/server"
-	health "github.com/filescodebox/core/gen/handler/health"
+	health "github.com/pigeonbox/core/gen/handler/health"
 )
 
 /*

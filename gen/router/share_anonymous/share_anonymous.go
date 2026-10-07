@@ -4,7 +4,7 @@ package share_anonymous
 
 import (
 	"github.com/cloudwego/hertz/pkg/app/server"
-	share_anonymous "github.com/filescodebox/core/gen/handler/share_anonymous"
+	share_anonymous "github.com/pigeonbox/core/gen/handler/share_anonymous"
 )
 
 /*

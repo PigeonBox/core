@@ -10,12 +10,12 @@ import (
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
-	"github.com/filescodebox/contracts/errcode"
-	usermodel "github.com/filescodebox/contracts/gen/user"
-	admin "github.com/filescodebox/core/app/admin"
-	userservice "github.com/filescodebox/core/app/user"
-	"github.com/filescodebox/core/pkg/auth"
-	"github.com/filescodebox/core/pkg/middleware"
+	"github.com/pigeonbox/contracts/errcode"
+	usermodel "github.com/pigeonbox/contracts/gen/user"
+	admin "github.com/pigeonbox/core/app/admin"
+	userservice "github.com/pigeonbox/core/app/user"
+	"github.com/pigeonbox/core/pkg/auth"
+	"github.com/pigeonbox/core/pkg/middleware"
 )
 
 var userService = userservice.NewService()

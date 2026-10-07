@@ -4,7 +4,7 @@ package admin
 
 import (
 	"github.com/cloudwego/hertz/pkg/app/server"
-	admin "github.com/filescodebox/core/gen/handler/admin"
+	admin "github.com/pigeonbox/core/gen/handler/admin"
 )
 
 /*

@@ -8,9 +8,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/filescodebox/core/conf"
-	"github.com/filescodebox/core/repo/db"
-	"github.com/filescodebox/core/repo/db/model"
+	"github.com/pigeonbox/core/conf"
+	"github.com/pigeonbox/core/repo/db"
+	"github.com/pigeonbox/core/repo/db/model"
 )
 
 // 回归：站点级全局存储配额（storage.quota）——全通道闸口 checkUploadCaps，

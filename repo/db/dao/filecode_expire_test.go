@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/filescodebox/core/repo/db"
-	"github.com/filescodebox/core/repo/db/model"
+	"github.com/pigeonbox/core/repo/db"
+	"github.com/pigeonbox/core/repo/db/model"
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

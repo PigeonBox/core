@@ -9,8 +9,8 @@ import (
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
-	setupmodel "github.com/filescodebox/contracts/gen/setup"
-	setupservice "github.com/filescodebox/core/app/setup"
+	setupmodel "github.com/pigeonbox/contracts/gen/setup"
+	setupservice "github.com/pigeonbox/core/app/setup"
 )
 
 var setupService = setupservice.NewService()

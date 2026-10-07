@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"github.com/cloudwego/hertz/pkg/app"
-	"github.com/filescodebox/contracts/errcode"
-	"github.com/filescodebox/core/conf"
+	"github.com/pigeonbox/contracts/errcode"
+	"github.com/pigeonbox/core/conf"
 	"golang.org/x/time/rate"
 )
 

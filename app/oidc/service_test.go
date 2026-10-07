@@ -14,9 +14,9 @@ import (
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 
-	"github.com/filescodebox/core/pkg/auth"
-	"github.com/filescodebox/core/repo/db"
-	"github.com/filescodebox/core/repo/db/model"
+	"github.com/pigeonbox/core/pkg/auth"
+	"github.com/pigeonbox/core/repo/db"
+	"github.com/pigeonbox/core/repo/db/model"
 )
 
 // fakeIdP 假 OIDC Provider：discovery + token + userinfo 三端点

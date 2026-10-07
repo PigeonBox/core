@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/filescodebox/core/conf"
-	corestorage "github.com/filescodebox/core/storage"
+	"github.com/pigeonbox/core/conf"
+	corestorage "github.com/pigeonbox/core/storage"
 	"github.com/stretchr/testify/require"
 )
 

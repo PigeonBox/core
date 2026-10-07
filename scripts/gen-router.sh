@@ -19,7 +19,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-MODULE="github.com/filescodebox/core"
+MODULE="github.com/pigeonbox/core"
 HZ_VERSION="v0.9.7"
 
 fail() { echo -e "\033[1;31m[ERROR]\033[0m $1" >&2; exit 1; }

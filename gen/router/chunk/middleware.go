@@ -5,7 +5,7 @@ package chunk
 import (
 	"github.com/cloudwego/hertz/pkg/app"
 
-	"github.com/filescodebox/core/pkg/middleware"
+	"github.com/pigeonbox/core/pkg/middleware"
 )
 
 func rootMw() []app.HandlerFunc {

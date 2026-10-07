@@ -6,11 +6,11 @@ import (
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
-	shareService "github.com/filescodebox/core/app/share"
-	"github.com/filescodebox/core/pkg/middleware"
-	"github.com/filescodebox/core/pkg/resp"
-	"github.com/filescodebox/core/pkg/transfer"
-	"github.com/filescodebox/core/pkg/utils"
+	shareService "github.com/pigeonbox/core/app/share"
+	"github.com/pigeonbox/core/pkg/middleware"
+	"github.com/pigeonbox/core/pkg/resp"
+	"github.com/pigeonbox/core/pkg/transfer"
+	"github.com/pigeonbox/core/pkg/utils"
 )
 
 // UserImportLocal 本地文件导入为分享（POST /api/v1/user/shares/import-local）。

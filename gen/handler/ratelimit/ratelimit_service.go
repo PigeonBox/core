@@ -9,9 +9,9 @@ import (
 
 	"github.com/cloudwego/hertz/pkg/app"
 
-	ratelimitmodel "github.com/filescodebox/contracts/gen/ratelimit"
-	"github.com/filescodebox/core/pkg/middleware"
-	"github.com/filescodebox/core/pkg/resp"
+	ratelimitmodel "github.com/pigeonbox/contracts/gen/ratelimit"
+	"github.com/pigeonbox/core/pkg/middleware"
+	"github.com/pigeonbox/core/pkg/resp"
 )
 
 var limiter *middleware.RateLimiter

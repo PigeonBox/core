@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/filescodebox/contracts/errcode"
-	"github.com/filescodebox/core/conf"
+	"github.com/pigeonbox/contracts/errcode"
+	"github.com/pigeonbox/core/conf"
 	"github.com/redis/go-redis/v9"
 )
 

@@ -4,7 +4,7 @@ package user
 
 import (
 	"github.com/cloudwego/hertz/pkg/app/server"
-	user "github.com/filescodebox/core/gen/handler/user"
+	user "github.com/pigeonbox/core/gen/handler/user"
 )
 
 /*

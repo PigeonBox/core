@@ -15,8 +15,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/filescodebox/core/conf"
-	"github.com/filescodebox/core/storage/opendal"
+	"github.com/pigeonbox/core/conf"
+	"github.com/pigeonbox/core/storage/opendal"
 )
 
 // ErrPresignUnsupported 当前存储后端不支持真预签名直传/直下（local/webdav 走服务端中转）。
@@ -92,7 +92,7 @@ type StorageConfig struct {
 	WebDAVURL      string
 	WebDAVUsername string
 	WebDAVPassword string
-	// Root 远端根目录（webdav：所有对象挂其下，避免绝对路径写入；空 = "filecodebox"）
+	// Root 远端根目录（webdav：所有对象挂其下，避免绝对路径写入；空 = "pigeonbox"）
 	Root string
 
 	// FTP/SFTP/Azure Blob/HDFS/OneDrive 配置（存储驱动扩展；指针复用 conf 结构）
@@ -252,7 +252,7 @@ func buildOperator(cfg *StorageConfig) (*opendal.Operator, error) {
 		// "/uploads/..." 绝对路径，多数 WebDAV 服务端拒绝 MkdirAll）
 		root := cfg.Root
 		if root == "" {
-			root = "filecodebox"
+			root = "pigeonbox"
 		}
 		return opendal.New(opendal.Config{
 			Scheme: opendal.SchemeWebDAV,
@@ -272,7 +272,7 @@ func buildOperator(cfg *StorageConfig) (*opendal.Operator, error) {
 			"username": cfg.FTP.Username,
 			"password": cfg.FTP.Password,
 			"tls":      cfg.FTP.TLS,
-			"root":     defaultRoot(cfg.FTP.Root, "filecodebox"),
+			"root":     defaultRoot(cfg.FTP.Root, "pigeonbox"),
 		}
 		return opendal.New(opendal.Config{Scheme: opendal.SchemeFTP, Options: opts})
 	case StorageTypeSFTP:
@@ -287,7 +287,7 @@ func buildOperator(cfg *StorageConfig) (*opendal.Operator, error) {
 				"password":    cfg.SFTP.Password,
 				"private_key": cfg.SFTP.PrivateKey,
 				"host_key":    cfg.SFTP.HostKey,
-				"root":        defaultRoot(cfg.SFTP.Root, "filecodebox"),
+				"root":        defaultRoot(cfg.SFTP.Root, "pigeonbox"),
 			},
 		})
 	case StorageTypeAzBlob:
@@ -302,7 +302,7 @@ func buildOperator(cfg *StorageConfig) (*opendal.Operator, error) {
 				"key":       cfg.Azure.Key,
 				"sas":       cfg.Azure.SAS,
 				"endpoint":  cfg.Azure.Endpoint,
-				"root":      defaultRoot(cfg.Azure.Root, "filecodebox"),
+				"root":      defaultRoot(cfg.Azure.Root, "pigeonbox"),
 			},
 		})
 	case StorageTypeHDFS:
@@ -314,7 +314,7 @@ func buildOperator(cfg *StorageConfig) (*opendal.Operator, error) {
 			Options: map[string]string{
 				"endpoint": cfg.HDFS.Endpoint,
 				"user":     cfg.HDFS.User,
-				"root":     defaultRoot(cfg.HDFS.Root, "filecodebox"),
+				"root":     defaultRoot(cfg.HDFS.Root, "pigeonbox"),
 			},
 		})
 	case StorageTypeOneDrv:
@@ -329,7 +329,7 @@ func buildOperator(cfg *StorageConfig) (*opendal.Operator, error) {
 				"refresh_token": cfg.OneDrive.RefreshToken,
 				"tenant":        cfg.OneDrive.Tenant,
 				"drive_id":      cfg.OneDrive.DriveID,
-				"root":          defaultRoot(cfg.OneDrive.Root, "filecodebox"),
+				"root":          defaultRoot(cfg.OneDrive.Root, "pigeonbox"),
 			},
 		})
 	case StorageTypeGCS:

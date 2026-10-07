@@ -7,9 +7,9 @@ import (
 	"fmt"
 
 	"github.com/cloudwego/hertz/pkg/app"
-	"github.com/filescodebox/core/pkg/middleware"
-	"github.com/filescodebox/core/pkg/transfer"
-	"github.com/filescodebox/core/repo/db/model"
+	"github.com/pigeonbox/core/pkg/middleware"
+	"github.com/pigeonbox/core/pkg/transfer"
+	"github.com/pigeonbox/core/repo/db/model"
 )
 
 // streamChildFile 子文件单流下载（/share/download?file=<id>）。

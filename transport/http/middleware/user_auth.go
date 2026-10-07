@@ -4,7 +4,7 @@ import (
 	"context"
 
 	"github.com/cloudwego/hertz/pkg/app"
-	"github.com/filescodebox/core/pkg/auth"
+	"github.com/pigeonbox/core/pkg/auth"
 )
 
 const (

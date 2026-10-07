@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/filescodebox/core/conf"
+	"github.com/pigeonbox/core/conf"
 	"github.com/redis/go-redis/v9"
 )
 

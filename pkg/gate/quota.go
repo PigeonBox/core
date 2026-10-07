@@ -13,10 +13,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/filescodebox/contracts/errcode"
-	"github.com/filescodebox/core/conf"
-	"github.com/filescodebox/core/pkg/logger"
-	"github.com/filescodebox/core/pkg/metrics"
+	"github.com/pigeonbox/contracts/errcode"
+	"github.com/pigeonbox/core/conf"
+	"github.com/pigeonbox/core/pkg/logger"
+	"github.com/pigeonbox/core/pkg/metrics"
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 )

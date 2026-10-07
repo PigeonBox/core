@@ -4,7 +4,7 @@ package setup
 
 import (
 	"github.com/cloudwego/hertz/pkg/app/server"
-	setup "github.com/filescodebox/core/gen/handler/setup"
+	setup "github.com/pigeonbox/core/gen/handler/setup"
 )
 
 /*

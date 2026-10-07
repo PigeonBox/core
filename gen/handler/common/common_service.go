@@ -7,7 +7,7 @@ import (
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
-	common "github.com/filescodebox/contracts/gen/common"
+	common "github.com/pigeonbox/contracts/gen/common"
 )
 
 // Health .

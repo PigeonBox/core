@@ -7,8 +7,8 @@ import (
 
 	"github.com/cloudwego/hertz/pkg/app/server"
 
-	"github.com/filescodebox/core/conf"
-	"github.com/filescodebox/core/gen/router"
+	"github.com/pigeonbox/core/conf"
+	"github.com/pigeonbox/core/gen/router"
 )
 
 // TestRegisteredRoutesMatchContract 契约守卫（学习上游 API 契约守卫测试）：

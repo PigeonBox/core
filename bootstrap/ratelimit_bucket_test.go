@@ -6,8 +6,8 @@ import (
 
 	"github.com/cloudwego/hertz/pkg/app/server"
 
-	"github.com/filescodebox/core/conf"
-	"github.com/filescodebox/core/gen/router"
+	"github.com/pigeonbox/core/conf"
+	"github.com/pigeonbox/core/gen/router"
 )
 
 // TestRateLimitBucketCoversRoutes 限流矩阵守卫（2026-10-06 审计产物的永久回归）：

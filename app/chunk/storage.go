@@ -10,8 +10,8 @@ import (
 	"context"
 	"io"
 
-	"github.com/filescodebox/core/pkg/utils"
-	"github.com/filescodebox/core/storage"
+	"github.com/pigeonbox/core/pkg/utils"
+	"github.com/pigeonbox/core/storage"
 )
 
 // SetStorage 注入统一存储实例（bootstrap 调用）。回归要点：chunk 与 share

@@ -7,7 +7,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/filescodebox/core/conf"
+	"github.com/pigeonbox/core/conf"
 )
 
 // 回归：本地文件管理三层防穿越——root 索引只来自服务端配置、relPath 拒绝 ..、

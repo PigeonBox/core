@@ -4,7 +4,7 @@ package storage
 
 import (
 	"github.com/cloudwego/hertz/pkg/app/server"
-	storage "github.com/filescodebox/core/gen/handler/storage"
+	storage "github.com/pigeonbox/core/gen/handler/storage"
 )
 
 /*

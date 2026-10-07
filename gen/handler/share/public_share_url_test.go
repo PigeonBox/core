@@ -12,8 +12,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	shareService "github.com/filescodebox/core/app/share"
-	"github.com/filescodebox/core/conf"
+	shareService "github.com/pigeonbox/core/app/share"
+	"github.com/pigeonbox/core/conf"
 )
 
 func TestPublicShareURL(t *testing.T) {

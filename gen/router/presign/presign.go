@@ -4,7 +4,7 @@ package presign
 
 import (
 	"github.com/cloudwego/hertz/pkg/app/server"
-	presign "github.com/filescodebox/core/gen/handler/presign"
+	presign "github.com/pigeonbox/core/gen/handler/presign"
 )
 
 /*

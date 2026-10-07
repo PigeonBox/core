@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/filescodebox/core/conf"
+	"github.com/pigeonbox/core/conf"
 )
 
 // LocalFileEntry 本地文件列表项（Path 为相对 root 的路径，正斜杠）

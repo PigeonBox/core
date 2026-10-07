@@ -27,7 +27,7 @@ import (
 	"testing"
 )
 
-const modulePrefix = "github.com/filescodebox/core/"
+const modulePrefix = "github.com/pigeonbox/core/"
 
 // pkgForbidden 规则 1：pkg/ 禁止依赖的内部包。
 var pkgForbidden = []string{"app", "bootstrap", "gen", "repo", "storage", "transport"}

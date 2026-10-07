@@ -4,9 +4,9 @@ import (
 	"net/http"
 
 	"github.com/cloudwego/hertz/pkg/app"
-	"github.com/filescodebox/core/pkg/auth"
-	"github.com/filescodebox/core/pkg/errors"
-	pkgmw "github.com/filescodebox/core/pkg/middleware"
+	"github.com/pigeonbox/core/pkg/auth"
+	"github.com/pigeonbox/core/pkg/errors"
+	pkgmw "github.com/pigeonbox/core/pkg/middleware"
 )
 
 const (

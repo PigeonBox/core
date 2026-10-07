@@ -9,7 +9,7 @@ import (
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
 
-	"github.com/filescodebox/core/pkg/resp"
+	"github.com/pigeonbox/core/pkg/resp"
 )
 
 // ShareMetadata 元数据查询：供取件页渲染文件名/大小/有效期/剩余次数

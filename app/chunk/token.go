@@ -11,8 +11,8 @@ import (
 	"encoding/hex"
 	"os"
 
-	"github.com/filescodebox/core/conf"
-	"github.com/filescodebox/core/repo/db/model"
+	"github.com/pigeonbox/core/conf"
+	"github.com/pigeonbox/core/repo/db/model"
 )
 
 // SessionToken 分片会话令牌：HMAC("chunk-session:"+uploadID, key)。客户端从

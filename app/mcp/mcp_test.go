@@ -16,12 +16,12 @@ import (
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 
-	adminApp "github.com/filescodebox/core/app/admin"
-	shareApp "github.com/filescodebox/core/app/share"
-	"github.com/filescodebox/core/repo/db"
-	"github.com/filescodebox/core/repo/db/dao"
-	"github.com/filescodebox/core/repo/db/model"
-	"github.com/filescodebox/core/storage"
+	adminApp "github.com/pigeonbox/core/app/admin"
+	shareApp "github.com/pigeonbox/core/app/share"
+	"github.com/pigeonbox/core/repo/db"
+	"github.com/pigeonbox/core/repo/db/dao"
+	"github.com/pigeonbox/core/repo/db/model"
+	"github.com/pigeonbox/core/storage"
 )
 
 type nopStorage struct{}

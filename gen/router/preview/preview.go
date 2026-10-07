@@ -4,7 +4,7 @@ package preview
 
 import (
 	"github.com/cloudwego/hertz/pkg/app/server"
-	preview "github.com/filescodebox/core/gen/handler/preview"
+	preview "github.com/pigeonbox/core/gen/handler/preview"
 )
 
 /*

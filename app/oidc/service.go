@@ -23,11 +23,11 @@ import (
 
 	"gorm.io/gorm"
 
-	"github.com/filescodebox/core/pkg/auth"
-	"github.com/filescodebox/core/repo/db/dao"
-	"github.com/filescodebox/core/repo/db/model"
-	"github.com/filescodebox/kit/httpjson"
-	"github.com/filescodebox/kit/singleflight"
+	"github.com/pigeonbox/core/pkg/auth"
+	"github.com/pigeonbox/core/repo/db/dao"
+	"github.com/pigeonbox/core/repo/db/model"
+	"github.com/pigeonbox/kit/httpjson"
+	"github.com/pigeonbox/kit/singleflight"
 )
 
 // Config OIDC 配置（conf.SecurityConfig.OIDC）

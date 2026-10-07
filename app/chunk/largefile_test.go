@@ -10,8 +10,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/filescodebox/core/repo/db"
-	"github.com/filescodebox/core/repo/db/model"
+	"github.com/pigeonbox/core/repo/db"
+	"github.com/pigeonbox/core/repo/db/model"
 )
 
 // 大文件分片生命周期回归（对标上游 issue 区最高频踩坑：大文件上传失败/卡 0%、

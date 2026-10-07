@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/filescodebox/core/pkg/utils"
-	"github.com/filescodebox/core/repo/db/dao"
-	"github.com/filescodebox/core/repo/db/model"
-	"github.com/filescodebox/core/storage"
+	"github.com/pigeonbox/core/pkg/utils"
+	"github.com/pigeonbox/core/repo/db/dao"
+	"github.com/pigeonbox/core/repo/db/model"
+	"github.com/pigeonbox/core/storage"
 )
 
 type InitiateUploadReq struct {

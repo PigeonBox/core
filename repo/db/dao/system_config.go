@@ -5,8 +5,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/filescodebox/core/repo/db"
-	"github.com/filescodebox/core/repo/db/model"
+	"github.com/pigeonbox/core/repo/db"
+	"github.com/pigeonbox/core/repo/db/model"
 	"gorm.io/gorm"
 )
 

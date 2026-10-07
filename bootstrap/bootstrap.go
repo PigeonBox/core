@@ -16,21 +16,21 @@ import (
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/app/server"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
-	"github.com/filescodebox/contracts/openapi"
-	"github.com/filescodebox/core/conf"
-	"github.com/filescodebox/core/pkg/auth"
-	"github.com/filescodebox/core/pkg/gate"
-	"github.com/filescodebox/core/pkg/logger"
-	"github.com/filescodebox/core/pkg/middleware"
-	"github.com/filescodebox/core/pkg/resp"
-	securityPkg "github.com/filescodebox/core/pkg/security"
-	"github.com/filescodebox/core/pkg/transfer"
-	previewPkg "github.com/filescodebox/core/preview"
-	"github.com/filescodebox/core/repo/db"
-	"github.com/filescodebox/core/repo/db/model"
-	"github.com/filescodebox/core/repo/redis"
-	"github.com/filescodebox/core/storage"
-	"github.com/filescodebox/kit/async"
+	"github.com/pigeonbox/contracts/openapi"
+	"github.com/pigeonbox/core/conf"
+	"github.com/pigeonbox/core/pkg/auth"
+	"github.com/pigeonbox/core/pkg/gate"
+	"github.com/pigeonbox/core/pkg/logger"
+	"github.com/pigeonbox/core/pkg/middleware"
+	"github.com/pigeonbox/core/pkg/resp"
+	securityPkg "github.com/pigeonbox/core/pkg/security"
+	"github.com/pigeonbox/core/pkg/transfer"
+	previewPkg "github.com/pigeonbox/core/preview"
+	"github.com/pigeonbox/core/repo/db"
+	"github.com/pigeonbox/core/repo/db/model"
+	"github.com/pigeonbox/core/repo/redis"
+	"github.com/pigeonbox/core/storage"
+	"github.com/pigeonbox/kit/async"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/common/expfmt"
 	"github.com/spf13/viper"
@@ -38,30 +38,30 @@ import (
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 
-	adminApp "github.com/filescodebox/core/app/admin"
-	chunkApp "github.com/filescodebox/core/app/chunk"
-	federationApp "github.com/filescodebox/core/app/federation"
-	mcpApp "github.com/filescodebox/core/app/mcp"
-	moderationApp "github.com/filescodebox/core/app/moderation"
-	notifyAppService "github.com/filescodebox/core/app/notify"
-	oidcApp "github.com/filescodebox/core/app/oidc"
-	previewApp "github.com/filescodebox/core/app/preview"
-	requestApp "github.com/filescodebox/core/app/request"
-	setupApp "github.com/filescodebox/core/app/setup"
-	shareService "github.com/filescodebox/core/app/share"
-	storageApp "github.com/filescodebox/core/app/storage"
-	userService "github.com/filescodebox/core/app/user"
-	chunkHandler "github.com/filescodebox/core/gen/handler/chunk"
-	presignHandler "github.com/filescodebox/core/gen/handler/presign"
-	previewHandler "github.com/filescodebox/core/gen/handler/preview"
-	ratelimitHandler "github.com/filescodebox/core/gen/handler/ratelimit"
-	shareHandler "github.com/filescodebox/core/gen/handler/share"
-	anonHandler "github.com/filescodebox/core/gen/handler/share_anonymous"
-	storageHandler "github.com/filescodebox/core/gen/handler/storage"
-	userHandler "github.com/filescodebox/core/gen/handler/user"
-	"github.com/filescodebox/core/repo/db/dao"
-	customHandler "github.com/filescodebox/core/transport/http/handler"
-	customMw "github.com/filescodebox/core/transport/http/middleware"
+	adminApp "github.com/pigeonbox/core/app/admin"
+	chunkApp "github.com/pigeonbox/core/app/chunk"
+	federationApp "github.com/pigeonbox/core/app/federation"
+	mcpApp "github.com/pigeonbox/core/app/mcp"
+	moderationApp "github.com/pigeonbox/core/app/moderation"
+	notifyAppService "github.com/pigeonbox/core/app/notify"
+	oidcApp "github.com/pigeonbox/core/app/oidc"
+	previewApp "github.com/pigeonbox/core/app/preview"
+	requestApp "github.com/pigeonbox/core/app/request"
+	setupApp "github.com/pigeonbox/core/app/setup"
+	shareService "github.com/pigeonbox/core/app/share"
+	storageApp "github.com/pigeonbox/core/app/storage"
+	userService "github.com/pigeonbox/core/app/user"
+	chunkHandler "github.com/pigeonbox/core/gen/handler/chunk"
+	presignHandler "github.com/pigeonbox/core/gen/handler/presign"
+	previewHandler "github.com/pigeonbox/core/gen/handler/preview"
+	ratelimitHandler "github.com/pigeonbox/core/gen/handler/ratelimit"
+	shareHandler "github.com/pigeonbox/core/gen/handler/share"
+	anonHandler "github.com/pigeonbox/core/gen/handler/share_anonymous"
+	storageHandler "github.com/pigeonbox/core/gen/handler/storage"
+	userHandler "github.com/pigeonbox/core/gen/handler/user"
+	"github.com/pigeonbox/core/repo/db/dao"
+	customHandler "github.com/pigeonbox/core/transport/http/handler"
+	customMw "github.com/pigeonbox/core/transport/http/middleware"
 )
 
 // Config 与 internal/conf 包中的统一配置类型互为别名。
@@ -254,7 +254,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("server.mode", "debug")
 	v.SetDefault("server.base_url", "")
 	v.SetDefault("database.driver", "sqlite")
-	v.SetDefault("database.db_name", "./data/filecodebox.db")
+	v.SetDefault("database.db_name", "./data/pigeonbox.db")
 	// auto_migrate 默认 true:env-only 形态(无 config.yaml,如 openwrt/fnos 容器)
 	// 此键无 yaml/env 来源,若取 Go 零值 false 会跳过 standalone 迁移步骤,
 	// 全新安装缺 notifies 表 → /notifies/* 500(2026-10-07 真机事故)
@@ -462,9 +462,9 @@ func bindEnvironment(v *viper.Viper) {
 
 // insecureDefaultSecrets 已知的不安全默认/占位密钥（全环境禁止使用）。
 var insecureDefaultSecrets = map[string]string{
-	"FileCodeBox2025JWT":                    "user.jwt_secret",
-	"filecodebox-dev-signing-key-change-me": "presign signing key",
-	"FileCodeBox2025SecretKey":              "auth default secret",
+	"PigeonBox2025JWT":                    "user.jwt_secret",
+	"pigeonbox-dev-signing-key-change-me": "presign signing key",
+	"PigeonBox2025SecretKey":              "auth default secret",
 	"please-change-me":                      "placeholder secret",
 	"dev-only-change-me":                    "dev placeholder secret",
 	"dev-only-change-me-to-random-32chars":  "dev placeholder secret",
@@ -564,7 +564,7 @@ func CreateDefaultAdmin(database *gorm.DB) error {
 
 	admin := &model.User{
 		Username:     "admin",
-		Email:        "admin@filecodebox.local",
+		Email:        "admin@pigeonbox.local",
 		PasswordHash: string(hashed),
 		Nickname:     "Administrator",
 		Role:         "admin",
@@ -615,7 +615,7 @@ func BootstrapWithOptions(configPath string, opts ...Option) (*server.Hertz, err
 	}
 
 	// 1.1 注入 JWT secret 到 auth 包（覆盖硬编码默认值）。
-	// 此前 jwt.go 使用硬编码 "FileCodeBox2025SecretKey"，且与 config 的 jwt_secret
+	// 此前 jwt.go 使用硬编码 "PigeonBox2025SecretKey"，且与 config 的 jwt_secret
 	// 不一致，导致配置中的 secret 从未生效。此处统一从配置/env 读取。
 	auth.SetJWTSecret(config.User.JWTSecret)
 

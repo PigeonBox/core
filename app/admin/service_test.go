@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/filescodebox/core/repo/db"
-	"github.com/filescodebox/core/repo/db/model"
-	"github.com/filescodebox/core/storage"
+	"github.com/pigeonbox/core/repo/db"
+	"github.com/pigeonbox/core/repo/db/model"
+	"github.com/pigeonbox/core/storage"
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -169,7 +169,7 @@ func TestGetConfig_DefaultsWhenNoRecord(t *testing.T) {
 
 	cfg, err := NewService().GetConfig(context.Background())
 	require.NoError(t, err)
-	assert.Equal(t, "FilesCodeBox", cfg.Base.Name)
+	assert.Equal(t, "PigeonBox", cfg.Base.Name)
 	assert.Equal(t, "local", cfg.Storage.Type)
 	assert.Equal(t, 100, cfg.Transfer.MaxCount)
 }
@@ -181,7 +181,7 @@ func TestGetConfig_WithoutDB(t *testing.T) {
 
 	cfg, err := NewService().GetConfig(context.Background())
 	require.NoError(t, err)
-	assert.Equal(t, "FilesCodeBox", cfg.Base.Name)
+	assert.Equal(t, "PigeonBox", cfg.Base.Name)
 }
 
 // TestUpdateConfig_InvalidConfig 验证非法配置被拒绝且不落库
@@ -200,7 +200,7 @@ func TestUpdateConfig_InvalidConfig(t *testing.T) {
 	// 内存与 DB 均未被污染
 	cfg, err := svc.GetConfig(context.Background())
 	require.NoError(t, err)
-	assert.Equal(t, "FilesCodeBox", cfg.Base.Name)
+	assert.Equal(t, "PigeonBox", cfg.Base.Name)
 	var count int64
 	require.NoError(t, db.GetDB().Model(&model.SystemConfigRecord{}).Count(&count).Error)
 	assert.Equal(t, int64(0), count)

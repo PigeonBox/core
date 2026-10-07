@@ -9,10 +9,10 @@ import (
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
 
-	"github.com/filescodebox/contracts/errcode"
-	notifymodel "github.com/filescodebox/contracts/gen/notify"
-	notifyapp "github.com/filescodebox/core/app/notify"
-	"github.com/filescodebox/core/pkg/resp"
+	"github.com/pigeonbox/contracts/errcode"
+	notifymodel "github.com/pigeonbox/contracts/gen/notify"
+	notifyapp "github.com/pigeonbox/core/app/notify"
+	"github.com/pigeonbox/core/pkg/resp"
 )
 
 var notifySvc *notifyapp.Service

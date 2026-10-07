@@ -15,7 +15,7 @@ var (
 	ErrTokenRevoked = errors.New("token has been revoked")
 
 	jwtSecretMu sync.RWMutex
-	jwtSecret   = []byte("FileCodeBox2025SecretKey")
+	jwtSecret   = []byte("PigeonBox2025SecretKey")
 )
 
 // getSecret 读锁获取当前密钥（并发安全）
@@ -87,7 +87,7 @@ func GenerateToken(userID uint, username, role string) (string, error) {
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(sessionExpiry)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
-			Issuer:    "FileCodeBox",
+			Issuer:    "PigeonBox",
 		},
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)

@@ -17,12 +17,12 @@ import (
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 
-	"github.com/filescodebox/core/pkg/logger"
-	"github.com/filescodebox/core/pkg/security"
-	"github.com/filescodebox/core/repo/db/dao"
-	"github.com/filescodebox/core/repo/db/model"
-	"github.com/filescodebox/kit/async"
-	"github.com/filescodebox/kit/httpjson"
+	"github.com/pigeonbox/core/pkg/logger"
+	"github.com/pigeonbox/core/pkg/security"
+	"github.com/pigeonbox/core/repo/db/dao"
+	"github.com/pigeonbox/core/repo/db/model"
+	"github.com/pigeonbox/kit/async"
+	"github.com/pigeonbox/kit/httpjson"
 )
 
 // webhookHTTPClient webhook 推送专用客户端（5s 超时；推送失败静默记日志不重试）。

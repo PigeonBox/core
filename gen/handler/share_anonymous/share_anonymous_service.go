@@ -15,15 +15,15 @@ import (
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 
-	"github.com/filescodebox/contracts/errcode"
-	anonmodel "github.com/filescodebox/contracts/gen/share_anonymous"
-	anonapp "github.com/filescodebox/core/app/anonymous"
-	"github.com/filescodebox/core/pkg/gate"
-	"github.com/filescodebox/core/pkg/logger"
-	"github.com/filescodebox/core/pkg/middleware"
-	"github.com/filescodebox/core/pkg/resp"
-	"github.com/filescodebox/core/pkg/security"
-	"github.com/filescodebox/core/pkg/utils"
+	"github.com/pigeonbox/contracts/errcode"
+	anonmodel "github.com/pigeonbox/contracts/gen/share_anonymous"
+	anonapp "github.com/pigeonbox/core/app/anonymous"
+	"github.com/pigeonbox/core/pkg/gate"
+	"github.com/pigeonbox/core/pkg/logger"
+	"github.com/pigeonbox/core/pkg/middleware"
+	"github.com/pigeonbox/core/pkg/resp"
+	"github.com/pigeonbox/core/pkg/security"
+	"github.com/pigeonbox/core/pkg/utils"
 )
 
 var anonSvc *anonapp.Service

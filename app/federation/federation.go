@@ -1,4 +1,4 @@
-// Package federation 将本站点接入 FilesCodeBox P2P 联邦（github.com/filescodebox/p2p）。
+// Package federation 将本站点接入 PigeonBox P2P 联邦（github.com/pigeonbox/p2p）。
 //
 // 职责（M2，设计文档 docs/specs/2026-10-04-p2p-registry-service-design.md §5）：
 //   - 节点注册/心跳：Ed25519 签名租约，断线自动重注册 + 全量补公告（自愈）；
@@ -22,8 +22,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/filescodebox/core/conf"
-	"github.com/filescodebox/core/pkg/logger"
+	"github.com/pigeonbox/core/conf"
+	"github.com/pigeonbox/core/pkg/logger"
 	"go.uber.org/zap"
 )
 
@@ -36,7 +36,7 @@ const (
 	// announceHorizon 公告滚动视界：registry 公告 max_ttl 默认 168h，
 	// 长效分享（含永久）按此视界滚动重公告，实际不过期。
 	announceHorizon = 24 * time.Hour
-	defaultName     = "FilesCodeBox"
+	defaultName     = "PigeonBox"
 )
 
 // entry 已公告口令的本地索引（自愈重公告依据；不落库——进程重启后由

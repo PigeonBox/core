@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/filescodebox/core/conf"
+	"github.com/pigeonbox/core/conf"
 	"github.com/stretchr/testify/assert"
 )
 

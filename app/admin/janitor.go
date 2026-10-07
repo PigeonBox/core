@@ -20,9 +20,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/filescodebox/core/pkg/logger"
-	"github.com/filescodebox/core/repo/db/dao"
-	"github.com/filescodebox/core/storage"
+	"github.com/pigeonbox/core/pkg/logger"
+	"github.com/pigeonbox/core/repo/db/dao"
+	"github.com/pigeonbox/core/storage"
 	"go.uber.org/zap"
 )
 

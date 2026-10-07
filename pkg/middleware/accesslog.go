@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/cloudwego/hertz/pkg/app"
-	"github.com/filescodebox/core/pkg/logger"
+	"github.com/pigeonbox/core/pkg/logger"
 	"go.uber.org/zap"
 )
 

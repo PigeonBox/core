@@ -10,9 +10,9 @@ import (
 
 	"go.uber.org/zap"
 
-	notifyApp "github.com/filescodebox/core/app/notify"
-	"github.com/filescodebox/core/pkg/logger"
-	"github.com/filescodebox/core/repo/db/dao"
+	notifyApp "github.com/pigeonbox/core/app/notify"
+	"github.com/pigeonbox/core/pkg/logger"
+	"github.com/pigeonbox/core/repo/db/dao"
 )
 
 const (

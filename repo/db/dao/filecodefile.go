@@ -3,8 +3,8 @@ package dao
 import (
 	"context"
 
-	"github.com/filescodebox/core/repo/db"
-	"github.com/filescodebox/core/repo/db/model"
+	"github.com/pigeonbox/core/repo/db"
+	"github.com/pigeonbox/core/repo/db/model"
 )
 
 // FileCodeFileRepository 多文件分享子文件表 DAO（P0 多文件）。

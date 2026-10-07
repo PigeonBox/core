@@ -1,4 +1,4 @@
-// Package anonymous 实现匿名取件 service（仿 vastsa/FileCodeBox UX）。
+// Package anonymous 实现匿名取件 service（仿 vastsa/PigeonBox UX）。
 //
 // 核心流程：
 //  1. 上传方：上传文件后，调用 GenerateCode 获取 6 位取件码（建立 pickup_code → share_code 映射）
@@ -18,12 +18,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/filescodebox/contracts/errcode"
-	"github.com/filescodebox/core/pkg/logger"
-	"github.com/filescodebox/core/pkg/utils"
-	"github.com/filescodebox/core/repo/db/dao"
-	"github.com/filescodebox/core/repo/db/model"
-	"github.com/filescodebox/kit/uidgen"
+	"github.com/pigeonbox/contracts/errcode"
+	"github.com/pigeonbox/core/pkg/logger"
+	"github.com/pigeonbox/core/pkg/utils"
+	"github.com/pigeonbox/core/repo/db/dao"
+	"github.com/pigeonbox/core/repo/db/model"
+	"github.com/pigeonbox/kit/uidgen"
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 )

@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/filescodebox/core/conf"
-	"github.com/filescodebox/core/pkg/metrics"
+	"github.com/pigeonbox/core/conf"
+	"github.com/pigeonbox/core/pkg/metrics"
 )
 
 // ErrFileTooLarge 文件超过允许大小

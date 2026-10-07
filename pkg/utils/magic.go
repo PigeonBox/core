@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"strings"
 
-	"github.com/filescodebox/core/pkg/metrics"
+	"github.com/pigeonbox/core/pkg/metrics"
 )
 
 // magicSignature 内容魔数签名（前缀匹配）。

@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/cloudwego/hertz/pkg/app"
-	"github.com/filescodebox/core/pkg/auth"
+	"github.com/pigeonbox/core/pkg/auth"
 )
 
 // context key 类型（非导出，防止跨包键冲突）

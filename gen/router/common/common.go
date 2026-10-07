@@ -4,7 +4,7 @@ package common
 
 import (
 	"github.com/cloudwego/hertz/pkg/app/server"
-	common "github.com/filescodebox/core/gen/handler/common"
+	common "github.com/pigeonbox/core/gen/handler/common"
 )
 
 /*

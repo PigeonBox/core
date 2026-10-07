@@ -85,7 +85,7 @@ func BuildOpenAPISpec(routes []OpenAPIRoute, info SpecInfo) []byte {
 	spec := map[string]any{
 		"openapi": "3.0.3",
 		"info": map[string]any{
-			"title":   "FilesCodeBox API",
+			"title":   "PigeonBox API",
 			"version": info.Version,
 			"description": "契约级骨架规范：由运行时路由表自动生成，与实际注册路由零漂移。" +
 				"请求/响应字段 schema 的真相源在 contracts 仓 thrift IDL；本规范用于端点发现与认证方式说明。",

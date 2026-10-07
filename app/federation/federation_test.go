@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/filescodebox/core/conf"
+	"github.com/pigeonbox/core/conf"
 )
 
 // ---- 契约锁定 ----

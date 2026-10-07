@@ -4,7 +4,7 @@ package maintenance
 
 import (
 	"github.com/cloudwego/hertz/pkg/app/server"
-	maintenance "github.com/filescodebox/core/gen/handler/maintenance"
+	maintenance "github.com/pigeonbox/core/gen/handler/maintenance"
 )
 
 /*

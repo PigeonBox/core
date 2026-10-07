@@ -5,8 +5,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/filescodebox/core/conf"
-	"github.com/filescodebox/core/repo/db/model"
+	"github.com/pigeonbox/core/conf"
+	"github.com/pigeonbox/core/repo/db/model"
 	"github.com/glebarez/sqlite"
 	"go.uber.org/zap"
 	"gorm.io/driver/mysql"

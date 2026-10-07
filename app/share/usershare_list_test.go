@@ -3,7 +3,7 @@ package share
 import (
 	"testing"
 
-	"github.com/filescodebox/core/repo/db/model"
+	"github.com/pigeonbox/core/repo/db/model"
 	"github.com/stretchr/testify/assert"
 )
 

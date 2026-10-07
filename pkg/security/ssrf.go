@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/filescodebox/core/conf"
-	"github.com/filescodebox/kit/singleflight"
+	"github.com/pigeonbox/core/conf"
+	"github.com/pigeonbox/kit/singleflight"
 )
 
 // ErrEndpointURL 存储端点 URL 不合法

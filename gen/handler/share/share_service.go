@@ -14,17 +14,17 @@ import (
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
-	"github.com/filescodebox/contracts/errcode"
-	sharemodel "github.com/filescodebox/contracts/gen/share"
-	shareService "github.com/filescodebox/core/app/share"
-	"github.com/filescodebox/core/conf"
-	"github.com/filescodebox/core/pkg/gate"
-	"github.com/filescodebox/core/pkg/middleware"
-	"github.com/filescodebox/core/pkg/resp"
-	"github.com/filescodebox/core/pkg/security"
-	"github.com/filescodebox/core/pkg/transfer"
-	"github.com/filescodebox/core/pkg/utils"
-	"github.com/filescodebox/core/repo/db/model"
+	"github.com/pigeonbox/contracts/errcode"
+	sharemodel "github.com/pigeonbox/contracts/gen/share"
+	shareService "github.com/pigeonbox/core/app/share"
+	"github.com/pigeonbox/core/conf"
+	"github.com/pigeonbox/core/pkg/gate"
+	"github.com/pigeonbox/core/pkg/middleware"
+	"github.com/pigeonbox/core/pkg/resp"
+	"github.com/pigeonbox/core/pkg/security"
+	"github.com/pigeonbox/core/pkg/transfer"
+	"github.com/pigeonbox/core/pkg/utils"
+	"github.com/pigeonbox/core/repo/db/model"
 )
 
 var shareSvc *shareService.Service

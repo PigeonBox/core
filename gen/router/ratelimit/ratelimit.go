@@ -4,7 +4,7 @@ package ratelimit
 
 import (
 	"github.com/cloudwego/hertz/pkg/app/server"
-	ratelimit "github.com/filescodebox/core/gen/handler/ratelimit"
+	ratelimit "github.com/pigeonbox/core/gen/handler/ratelimit"
 )
 
 /*

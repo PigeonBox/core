@@ -18,16 +18,16 @@ import (
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
-	"github.com/filescodebox/contracts/errcode"
-	"github.com/filescodebox/core/app/chunk"
-	shareService "github.com/filescodebox/core/app/share"
-	"github.com/filescodebox/core/pkg/gate"
-	"github.com/filescodebox/core/pkg/middleware"
-	"github.com/filescodebox/core/pkg/resp"
-	"github.com/filescodebox/core/pkg/transfer"
-	"github.com/filescodebox/core/pkg/utils"
-	"github.com/filescodebox/core/repo/db/model"
-	"github.com/filescodebox/core/storage"
+	"github.com/pigeonbox/contracts/errcode"
+	"github.com/pigeonbox/core/app/chunk"
+	shareService "github.com/pigeonbox/core/app/share"
+	"github.com/pigeonbox/core/pkg/gate"
+	"github.com/pigeonbox/core/pkg/middleware"
+	"github.com/pigeonbox/core/pkg/resp"
+	"github.com/pigeonbox/core/pkg/transfer"
+	"github.com/pigeonbox/core/pkg/utils"
+	"github.com/pigeonbox/core/repo/db/model"
+	"github.com/pigeonbox/core/storage"
 )
 
 // userIDAny 读请求身份：JWT 走 c.Set（OptionalAuthMiddleware），API Key 走 ctx 值

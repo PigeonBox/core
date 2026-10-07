@@ -12,8 +12,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/filescodebox/core/conf"
-	"github.com/filescodebox/core/pkg/utils"
+	"github.com/pigeonbox/core/conf"
+	"github.com/pigeonbox/core/pkg/utils"
 )
 
 // ImportLocalOpts 本地导入参数

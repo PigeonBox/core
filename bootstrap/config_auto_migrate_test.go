@@ -7,7 +7,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/filescodebox/core/conf"
+	"github.com/pigeonbox/core/conf"
 )
 
 // database.auto_migrate 必须默认 true:env-only 形态(无 config.yaml,如

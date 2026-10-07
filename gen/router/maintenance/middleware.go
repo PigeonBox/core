@@ -4,7 +4,7 @@ package maintenance
 
 import (
 	"github.com/cloudwego/hertz/pkg/app"
-	adminsvc "github.com/filescodebox/core/pkg/middleware"
+	adminsvc "github.com/pigeonbox/core/pkg/middleware"
 )
 
 func rootMw() []app.HandlerFunc {

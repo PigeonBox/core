@@ -8,9 +8,9 @@ import (
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
-	notifyApp "github.com/filescodebox/core/app/notify"
-	"github.com/filescodebox/core/conf"
-	"github.com/filescodebox/core/pkg/resp"
+	notifyApp "github.com/pigeonbox/core/app/notify"
+	"github.com/pigeonbox/core/conf"
+	"github.com/pigeonbox/core/pkg/resp"
 )
 
 type adminTestSMTPReq struct {
@@ -31,8 +31,8 @@ func AdminTestSMTP(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 	mailer := notifyApp.NewSMTPMailer(smtp.Host, smtp.Port, smtp.Username, smtp.Password, smtp.From)
-	if err := mailer.SendTo(strings.TrimSpace(req.To), "FilesCodeBox SMTP 测试邮件",
-		"这是一封来自 FilesCodeBox 的测试邮件，收到即代表 SMTP 配置生效。"); err != nil {
+	if err := mailer.SendTo(strings.TrimSpace(req.To), "PigeonBox SMTP 测试邮件",
+		"这是一封来自 PigeonBox 的测试邮件，收到即代表 SMTP 配置生效。"); err != nil {
 		c.JSON(consts.StatusBadRequest, map[string]interface{}{"code": 400, "message": "发送失败: " + err.Error()})
 		return
 	}

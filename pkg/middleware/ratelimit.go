@@ -18,10 +18,10 @@ import (
 	"go.uber.org/zap"
 	"golang.org/x/time/rate"
 
-	"github.com/filescodebox/contracts/errcode"
-	"github.com/filescodebox/core/conf"
-	"github.com/filescodebox/core/pkg/logger"
-	"github.com/filescodebox/core/pkg/resp"
+	"github.com/pigeonbox/contracts/errcode"
+	"github.com/pigeonbox/core/conf"
+	"github.com/pigeonbox/core/pkg/logger"
+	"github.com/pigeonbox/core/pkg/resp"
 )
 
 // RateLimitConfig 限流配置（运行时可调）

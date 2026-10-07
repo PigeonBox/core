@@ -22,7 +22,7 @@ pkg/
 
 | 位置 | 用途 | 定位 |
 |------|------|------|
-| [`filescodebox/kit`](https://github.com/filescodebox/kit) | 通用工具库（async/retry/ratelimit/… 共 28 包） | 零生态依赖，任何项目可 `go get` 消费 |
+| [`pigeonbox/kit`](https://github.com/pigeonbox/kit) | 通用工具库（async/retry/ratelimit/… 共 28 包） | 零生态依赖，任何项目可 `go get` 消费 |
 | 本 `pkg/` | core 横切设施 | 与 core 业务/配置绑定的专用设施，随 core 版本走 |
 
 ## 主要组件
@@ -48,5 +48,5 @@ pkg/
 3. 在需要的地方导入使用
 
 ```go
-import "github.com/filescodebox/core/pkg/yourpkg"
+import "github.com/pigeonbox/core/pkg/yourpkg"
 ```

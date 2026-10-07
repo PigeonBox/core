@@ -18,7 +18,7 @@ import (
     
     "github.com/zy84338719/fileCodeBox/backend/gen/rpc/base"
     "github.com/zy84338719/fileCodeBox/backend/gen/rpc/user"
-    userSvc "github.com/filescodebox/core/app/user"
+    userSvc "github.com/pigeonbox/core/app/user"
 )
 
 type UserServiceImpl struct {
@@ -84,7 +84,7 @@ package main
 
 import (
     "github.com/zy84338719/fileCodeBox/backend/gen/rpc/user/userservice"
-    "github.com/filescodebox/core/transport/rpc/handler"
+    "github.com/pigeonbox/core/transport/rpc/handler"
 )
 
 func main() {

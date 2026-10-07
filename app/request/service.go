@@ -13,11 +13,11 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/filescodebox/core/pkg/utils"
-	"github.com/filescodebox/core/repo/db/dao"
-	"github.com/filescodebox/core/repo/db/model"
-	"github.com/filescodebox/core/storage"
-	"github.com/filescodebox/kit/uidgen"
+	"github.com/pigeonbox/core/pkg/utils"
+	"github.com/pigeonbox/core/repo/db/dao"
+	"github.com/pigeonbox/core/repo/db/model"
+	"github.com/pigeonbox/core/storage"
+	"github.com/pigeonbox/kit/uidgen"
 )
 
 // 收到投递生成的分享的默认寿命/次数（v1 固定；管理端后续可配）

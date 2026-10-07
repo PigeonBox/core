@@ -7,8 +7,8 @@ import (
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
 
-	notifyapp "github.com/filescodebox/core/app/notify"
-	"github.com/filescodebox/core/transport/http/middleware"
+	notifyapp "github.com/pigeonbox/core/app/notify"
+	"github.com/pigeonbox/core/transport/http/middleware"
 )
 
 var notifySvc *notifyapp.Service

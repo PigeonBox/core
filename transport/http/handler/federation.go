@@ -11,8 +11,8 @@ import (
 
 	"github.com/cloudwego/hertz/pkg/app"
 
-	"github.com/filescodebox/core/app/federation"
-	"github.com/filescodebox/core/pkg/resp"
+	"github.com/pigeonbox/core/app/federation"
+	"github.com/pigeonbox/core/pkg/resp"
 )
 
 var federationSvc *federation.Service

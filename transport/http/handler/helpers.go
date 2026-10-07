@@ -13,11 +13,11 @@ import (
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
-	"github.com/filescodebox/contracts/errcode"
-	shareService "github.com/filescodebox/core/app/share"
-	"github.com/filescodebox/core/pkg/resp"
-	"github.com/filescodebox/core/pkg/utils"
-	"github.com/filescodebox/core/storage"
+	"github.com/pigeonbox/contracts/errcode"
+	shareService "github.com/pigeonbox/core/app/share"
+	"github.com/pigeonbox/core/pkg/resp"
+	"github.com/pigeonbox/core/pkg/utils"
+	"github.com/pigeonbox/core/storage"
 )
 
 // requireLogin 统一登录守卫：未登录写 401 响应并返回 ok=false。

@@ -21,8 +21,8 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/filescodebox/core/pkg/logger"
-	"github.com/filescodebox/core/repo/db/dao"
+	"github.com/pigeonbox/core/pkg/logger"
+	"github.com/pigeonbox/core/repo/db/dao"
 )
 
 // SMTPMailer 邮件发送器（notify service 持有，可选）

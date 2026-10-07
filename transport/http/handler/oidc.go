@@ -7,10 +7,10 @@ import (
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
-	oidcApp "github.com/filescodebox/core/app/oidc"
-	"github.com/filescodebox/core/conf"
-	"github.com/filescodebox/core/pkg/auth"
-	"github.com/filescodebox/core/pkg/middleware"
+	oidcApp "github.com/pigeonbox/core/app/oidc"
+	"github.com/pigeonbox/core/conf"
+	"github.com/pigeonbox/core/pkg/auth"
+	"github.com/pigeonbox/core/pkg/middleware"
 )
 
 var oidcSvc *oidcApp.Service

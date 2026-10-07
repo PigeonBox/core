@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/filescodebox/core/conf"
+	"github.com/pigeonbox/core/conf"
 )
 
 // allExpireStyles 全部合法的过期样式

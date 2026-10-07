@@ -4,7 +4,7 @@ package share
 
 import (
 	"github.com/cloudwego/hertz/pkg/app/server"
-	share "github.com/filescodebox/core/gen/handler/share"
+	share "github.com/pigeonbox/core/gen/handler/share"
 )
 
 /*

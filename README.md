@@ -1,16 +1,16 @@
 # core · 业务核心库
 
-[![CI](https://github.com/filescodebox/core/actions/workflows/ci.yml/badge.svg)](https://github.com/filescodebox/core/actions/workflows/ci.yml)
-[![Tag](https://img.shields.io/github/v/tag/filescodebox/core)](https://github.com/filescodebox/core/tags)
+[![CI](https://github.com/pigeonbox/core/actions/workflows/ci.yml/badge.svg)](https://github.com/pigeonbox/core/actions/workflows/ci.yml)
+[![Tag](https://img.shields.io/github/v/tag/pigeonbox/core)](https://github.com/pigeonbox/core/tags)
 [![Go](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](https://go.dev)
-[![License](https://img.shields.io/github/license/filescodebox/core)](LICENSE)
+[![License](https://img.shields.io/github/license/pigeonbox/core)](LICENSE)
 
-FilesCodeBox 业务核心库:16 个域服务 + 数据访问 + 存储抽象 + HTTP 装配(bootstrap)。**不含 main、不含静态资源、不含配置文件**——本模块定位是**被复用的库**,消费方:
+PigeonBox 业务核心库:16 个域服务 + 数据访问 + 存储抽象 + HTTP 装配(bootstrap)。**不含 main、不含静态资源、不含配置文件**——本模块定位是**被复用的库**,消费方:
 
-- [`filescodebox/server`](https://github.com/filescodebox/server) —— 标准独立部署(自托管)
-- [`filescodebox/fnos`](https://github.com/filescodebox/fnos) —— 飞牛 fnOS 应用(单容器库式调用)
+- [`pigeonbox/server`](https://github.com/pigeonbox/server) —— 标准独立部署(自托管)
+- [`pigeonbox/fnos`](https://github.com/pigeonbox/fnos) —— 飞牛 fnOS 应用(单容器库式调用)
 
-> 🗂️ [FilesCodeBox 生态](https://github.com/orgs/filescodebox)成员仓 · 总览见 [装配仓 filescodebox](https://github.com/filescodebox/filescodebox) · [架构图集](https://github.com/filescodebox/filescodebox/blob/main/docs/architecture.md)
+> 🗂️ [PigeonBox 生态](https://github.com/orgs/pigeonbox)成员仓 · 总览见 [装配仓 pigeonbox](https://github.com/pigeonbox/pigeonbox) · [架构图集](https://github.com/pigeonbox/pigeonbox/blob/main/docs/architecture.md)
 
 ## 结构
 
@@ -24,7 +24,7 @@ FilesCodeBox 业务核心库:16 个域服务 + 数据访问 + 存储抽象 + HTT
 | `transport/` | 手写 http handler 与中间件(生成代码之外的补充) |
 | `preview/` | 文件预览服务 |
 | `conf/` | 配置结构定义 |
-| `gen/` | thrift 生成的 handler / router(模型类型在 [`filescodebox/contracts`](https://github.com/filescodebox/contracts)) |
+| `gen/` | thrift 生成的 handler / router(模型类型在 [`pigeonbox/contracts`](https://github.com/pigeonbox/contracts)) |
 
 ## 分层职责(继承自原仓库 internal 设计)
 
@@ -36,7 +36,7 @@ FilesCodeBox 业务核心库:16 个域服务 + 数据访问 + 存储抽象 + HTT
 ## 库用法
 
 ```go
-import "github.com/filescodebox/core/bootstrap"
+import "github.com/pigeonbox/core/bootstrap"
 
 h, err := bootstrap.Bootstrap("/path/to/config.yaml")
 if err != nil { log.Fatal(err) }
@@ -56,7 +56,7 @@ core ──► contracts ──► (thrift runtime)
 
 ## 来源
 
-拆分自 [zy84338719/fileCodeBox](https://github.com/zy84338719/FileCodeBox) 的 `backend/api`、`backend/gen/http/{handler,router}`、`backend/cmd/server/bootstrap`,import 路径机械替换,业务逻辑零变更。
+拆分自 [zy84338719/fileCodeBox](https://github.com/zy84338719/PigeonBox) 的 `backend/api`、`backend/gen/http/{handler,router}`、`backend/cmd/server/bootstrap`,import 路径机械替换,业务逻辑零变更。
 
 ## License
 

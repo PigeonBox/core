@@ -8,11 +8,11 @@ import (
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
-	requestApp "github.com/filescodebox/core/app/request"
-	"github.com/filescodebox/core/pkg/gate"
-	"github.com/filescodebox/core/pkg/middleware"
-	"github.com/filescodebox/core/pkg/resp"
-	"github.com/filescodebox/core/pkg/transfer"
+	requestApp "github.com/pigeonbox/core/app/request"
+	"github.com/pigeonbox/core/pkg/gate"
+	"github.com/pigeonbox/core/pkg/middleware"
+	"github.com/pigeonbox/core/pkg/resp"
+	"github.com/pigeonbox/core/pkg/transfer"
 )
 
 var requestSvc *requestApp.Service

@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/filescodebox/core/storage/opendal"
+	"github.com/pigeonbox/core/storage/opendal"
 	"github.com/stretchr/testify/require"
 )
 
@@ -180,7 +180,7 @@ func cFileHeader(req *http.Request) (*multipart.FileHeader, error) {
 func TestRemoteDispatchSaveFile(t *testing.T) {
 	fd := newFakeDriver()
 	s := newRemoteTestService(fd)
-	content := []byte("hello filecodebox s3 dispatch")
+	content := []byte("hello pigeonbox s3 dispatch")
 
 	fh := newTestFileHeader(t, "a.bin", content)
 	res, err := s.SaveFile(context.Background(), fh, "uploads/2026/10/03/a.bin")

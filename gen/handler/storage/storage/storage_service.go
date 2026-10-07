@@ -7,8 +7,8 @@ import (
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
-	storage "github.com/filescodebox/contracts/gen/storage"
-	storagesvc "github.com/filescodebox/core/app/storage"
+	storage "github.com/pigeonbox/contracts/gen/storage"
+	storagesvc "github.com/pigeonbox/core/app/storage"
 )
 
 var storageService *storagesvc.Service

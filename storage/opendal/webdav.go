@@ -25,7 +25,7 @@ type webdavDriver struct {
 //
 //	url      必填；http(s)://host[:port]/base/
 //	username / password  可选（Basic Auth）
-//	root     可选远端子路径（如 "filecodebox"），key 拼接到其后
+//	root     可选远端子路径（如 "pigeonbox"），key 拼接到其后
 func newWebDAVDriver(opts map[string]string) (*webdavDriver, error) {
 	raw := strings.TrimSpace(opts["url"])
 	if raw == "" {

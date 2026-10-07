@@ -16,7 +16,7 @@ import (
 	"time"
 )
 
-// 与 p2p 仓（github.com/filescodebox/p2p）v1 API 的通讯客户端。
+// 与 p2p 仓（github.com/pigeonbox/p2p）v1 API 的通讯客户端。
 //
 // 签名负载契约（逐字节，Ed25519 + base64 std；字段以 "\n" 连接，缺省字段
 // 空串占位——由 TestPayloadContract 锁定，p2p 侧变动必须双侧同步）：

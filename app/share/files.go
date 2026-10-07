@@ -13,9 +13,9 @@ import (
 	"mime/multipart"
 	"time"
 
-	"github.com/filescodebox/core/pkg/utils"
-	"github.com/filescodebox/core/repo/db/model"
-	"github.com/filescodebox/core/storage"
+	"github.com/pigeonbox/core/pkg/utils"
+	"github.com/pigeonbox/core/repo/db/model"
+	"github.com/pigeonbox/core/storage"
 )
 
 // FilePayload 下载取流载荷。LocalAbs 非空表示本地后端，调用方可走绝对路径

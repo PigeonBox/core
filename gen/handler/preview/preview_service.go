@@ -11,10 +11,10 @@ import (
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
-	"github.com/filescodebox/contracts/errcode"
-	previewapp "github.com/filescodebox/core/app/preview"
-	"github.com/filescodebox/core/pkg/middleware"
-	"github.com/filescodebox/core/pkg/resp"
+	"github.com/pigeonbox/contracts/errcode"
+	previewapp "github.com/pigeonbox/core/app/preview"
+	"github.com/pigeonbox/core/pkg/middleware"
+	"github.com/pigeonbox/core/pkg/resp"
 )
 
 var previewSvc *previewapp.Service

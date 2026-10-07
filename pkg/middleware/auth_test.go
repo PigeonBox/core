@@ -11,7 +11,7 @@ import (
 	"github.com/cloudwego/hertz/pkg/app/server"
 	"github.com/cloudwego/hertz/pkg/common/test/assert"
 	"github.com/cloudwego/hertz/pkg/common/ut"
-	"github.com/filescodebox/core/pkg/auth"
+	"github.com/pigeonbox/core/pkg/auth"
 )
 
 // AdminMiddleware 行为回归（2026-10-05 审计 P0）：
