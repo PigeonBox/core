@@ -269,6 +269,7 @@ func Complete(ctx context.Context, c *app.RequestContext) {
 		FileName:    meta.FileName,
 		FileSize:    meta.FileSize,
 		DownloadURL: downloadURL,
+		PickupCode:  strPtr(result.PickupCode),
 	})
 }
 

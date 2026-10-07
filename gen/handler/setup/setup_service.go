@@ -10,6 +10,8 @@ import (
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
 	setupmodel "github.com/pigeonbox/contracts/gen/setup"
+	adminsvc "github.com/pigeonbox/core/app/admin"
+	"github.com/pigeonbox/core/conf"
 	setupservice "github.com/pigeonbox/core/app/setup"
 )
 
@@ -89,12 +91,58 @@ func Initialize(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
+	// 站点预配置（2026-10-07 对标上游首启向导）：可选，失败不回滚管理员创建
+	// （管理员已就绪，预配置可后续在管理台补；提示语带过）。
+	if req.IsSetSiteConfig() {
+		if msg := applySitePreConfig(ctx, &req, req.SiteConfig); msg != "" {
+			c.JSON(consts.StatusOK, &setupmodel.InitializeResp{
+				Message:  "系统初始化成功，但站点预配置未完全生效: " + msg,
+				Username: req.AdminUsername,
+			})
+			return
+		}
+	}
+
 	resp := &setupmodel.InitializeResp{
 		Message:  "系统初始化成功",
 		Username: req.AdminUsername,
 	}
 
 	c.JSON(consts.StatusOK, resp)
+}
+
+// applySitePreConfig 首启向导站点预配置：写入 SystemConfig 对应段并热应用。
+// 段级整体替换语义 → UploadEx 必须以当前全局 conf 为底稿填充，避免清掉其余上传项。
+// 返回非空字符串=部分失败原因（管理员创建不受影响）。
+func applySitePreConfig(ctx context.Context, req *setupmodel.InitializeReq, sc *setupmodel.SitePreConfig) string {
+	g := conf.GetGlobalConfig()
+	if g == nil {
+		return "全局配置未就绪"
+	}
+	if sc.UploadSizeMb <= 0 {
+		return "单文件上限必须大于 0"
+	}
+
+	cfg := &adminsvc.SystemConfig{}
+
+	// UploadEx：以当前 conf.Upload 为底稿，仅覆盖向导收集的两项
+	// （段级整体替换语义，缺底稿会把 open_upload 之外的上传项清成零值）
+	uploadEx := g.Upload
+	uploadEx.OpenUpload = sc.OpenUpload
+	uploadEx.UploadSize = int64(sc.UploadSizeMb) * 1024 * 1024
+	cfg.UploadEx = &uploadEx
+
+	// Base：站点名称/描述（向导基础段可选；携带时以向导值 + 现网端口整段写入）
+	if base := req.GetBaseConfig(); base != nil {
+		cfg.Base.Name = base.Name
+		cfg.Base.Description = base.Description
+		cfg.Base.Port = g.Server.Port
+	}
+
+	if err := adminsvc.Default().UpdateConfig(ctx, cfg); err != nil {
+		return err.Error()
+	}
+	return ""
 }
 
 // validateInitializeRequest 验证初始化请求

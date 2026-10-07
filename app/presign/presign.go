@@ -262,6 +262,7 @@ type CompleteResult struct {
 	ShareURL     string
 	FullShareURL string
 	OwnerIP      string
+	PickupCode   string // 6 位取件码（share 域铸造；永久分享/未注入 minter 为空）
 }
 
 // Complete 完成通知（调 share service 写分享表）
@@ -364,7 +365,7 @@ func (s *Service) Complete(ctx context.Context, uploadID, token, ownerIP string)
 	s.rdb.Set(ctx, fmt.Sprintf(keyUploadMeta, uploadID), updatedJSON, 5*time.Minute)
 
 	// 6. 调 share service 写分享表
-	shareCode, shareURL, fullShareURL, shareErr := s.createShareRecord(ctx, &meta, ownerIP)
+	shareCode, shareURL, fullShareURL, pickupCode, shareErr := s.createShareRecord(ctx, &meta, ownerIP)
 	if shareErr != nil {
 		// 写分享表失败不算 fatal（meta 已标记 complete），返回 shareErr 让调用方决定
 		return &CompleteResult{
@@ -382,15 +383,16 @@ func (s *Service) Complete(ctx context.Context, uploadID, token, ownerIP string)
 		ShareURL:     shareURL,
 		FullShareURL: fullShareURL,
 		OwnerIP:      ownerIP,
+		PickupCode:   pickupCode,
 	}, nil
 }
 
 // createShareRecord 调 share service 写分享记录
 // 返回 (shareCode, shareURL, fullShareURL, error)
-func (s *Service) createShareRecord(ctx context.Context, meta *InitMeta, ownerIP string) (string, string, string, error) {
+func (s *Service) createShareRecord(ctx context.Context, meta *InitMeta, ownerIP string) (code, shareURL, fullURL, pickupCode string, err error) {
 	if s.shareService == nil {
 		// share service 未注入：返回 mock 数据（用于单测 / 未配置场景）
-		return "mock_" + meta.UploadID, "/share/mock", share.ResolveBase(ctx, s.baseURL) + "/share/mock", nil
+		return "mock_" + meta.UploadID, "/share/mock", share.ResolveBase(ctx, s.baseURL) + "/share/mock", "", nil
 	}
 
 	// 计算过期时间（与 share.ShareTextWithAuth 行为一致）
@@ -407,7 +409,7 @@ func (s *Service) createShareRecord(ctx context.Context, meta *InitMeta, ownerIP
 
 	if meta.RequireAuth && meta.PasswordHash == "" {
 		// 防御:历史 init 记录可能无密码哈希,拒绝创建"密码保护形同虚设"的分享
-		return "", "", "", errors.New("该上传未设置访问密码，无法完成分享")
+		return "", "", "", "", errors.New("该上传未设置访问密码，无法完成分享")
 	}
 
 	req := &share.ShareFileReq{
@@ -428,10 +430,10 @@ func (s *Service) createShareRecord(ctx context.Context, meta *InitMeta, ownerIP
 
 	resp, err := s.shareService.CreateShare(ctx, req)
 	if err != nil {
-		return "", "", "", err
+		return "", "", "", "", err
 	}
 
-	return resp.Code, resp.ShareURL, resp.FullShareURL, nil
+	return resp.Code, resp.ShareURL, resp.FullShareURL, resp.PickupCode, nil
 }
 
 // Abort 取消

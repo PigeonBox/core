@@ -79,6 +79,15 @@ type ShareResp struct {
 	Status       string     `json:"status"`         // 管控状态（normal/blocked/pending_review）
 	ShareURL     string     `json:"share_url"`      // 相对分享链接
 	FullShareURL string     `json:"full_share_url"` // 完整分享链接
+	// PickupCode 6 位取件码（2026-10-07 起文件分享铸造；永久分享/未注入 minter 时为空。
+	// KV 映射仅加速解析，8 位分享码永远可用，故铸造失败不影响主流程）
+	PickupCode string `json:"pickup_code,omitempty"`
+}
+
+// PickupCodeMinter 取件码铸造窄接口（app/anonymous.Service 结构性满足）。
+// share 域不 import anonymous 域（域间零耦合），由 bootstrap 注入具体实现。
+type PickupCodeMinter interface {
+	MintForShare(ctx context.Context, shareCode, fileName string, fileSize int64, requireAuth bool, expireAt *time.Time) (string, error)
 }
 
 type Service struct {
@@ -96,6 +105,9 @@ type Service struct {
 	// 存储兜底（storageClient 惰性本地后端，仅未注入时使用；见 files.go）
 	fallbackOnce    sync.Once
 	fallbackStorage storage.StorageInterface
+
+	// pickupMinter 取件码铸造（bootstrap 注入 anonymous service；nil = 不铸造）
+	pickupMinter PickupCodeMinter
 }
 
 // PublicBaseCtxKey hertz ctx 中请求级公开 base 的键。bootstrap 在
@@ -153,6 +165,9 @@ type FederationNotifier interface {
 
 // SetModerator 注入内容审核钩子（bootstrap 调用；nil = 不审核）
 func (s *Service) SetModerator(m moderation.Moderator) { s.moderator = m }
+
+// SetPickupMinter 注入取件码铸造（anonymous 域实现；nil = 文件分享不铸 6 位取件码）
+func (s *Service) SetPickupMinter(m PickupCodeMinter) { s.pickupMinter = m }
 
 // SetFlagEventEmitter 注入 share.flagged webhook 推送（bootstrap 调用）
 func (s *Service) SetFlagEventEmitter(e FlagEventEmitter) { s.flagEmitter = e }
@@ -628,7 +643,17 @@ func (s *Service) CreateShare(ctx context.Context, req *ShareFileReq) (*ShareRes
 	// P2P 联邦公告（未启用为 no-op）
 	s.federationCreated(fileCode.Code, fileCode.ExpiredAt)
 
-	return s.modelToResp(ctx, fileCode), nil
+	resp := s.modelToResp(ctx, fileCode)
+	// 6 位取件码铸造（2026-10-07）：非致命——失败仅少一个快捷码，8 位分享码不受影响
+	if s.pickupMinter != nil {
+		if pickup, err := s.pickupMinter.MintForShare(ctx, fileCode.Code, req.Text, req.Size, req.RequireAuth, req.ExpiredAt); err != nil {
+			logger.Warn("mint pickup code failed (non-fatal)",
+				zap.String("code", fileCode.Code), zap.Error(err))
+		} else {
+			resp.PickupCode = pickup
+		}
+	}
+	return resp, nil
 }
 
 // GetFileByCode 通过代码获取文件

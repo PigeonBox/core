@@ -421,6 +421,28 @@ func (s *Service) CreateAnonymousShare(ctx context.Context, p AnonymousSharePara
 	return pickupCode, nil
 }
 
+// MintForShare 为既有文件分享铸造 6 位取件码（仅写 KV 映射，不动 DB 记录）。
+// 供 app/share 经窄接口在 CreateShare 成功后调用——直传/直传分片/秒传各通道
+// 的文件分享统一获得取件码（对齐上游"文件另有 N 位取件码"语义）。
+//   - expireAt nil（永久分享）→ 返回空串不铸造：映射 TTL 无法对齐永久语义，
+//     永久分享继续用 8 位分享码（lookupShareCode 的 DB 回退路径天然支持）。
+//   - KV 写失败返回错误但调用方应视为非致命（出码主流程不阻断）。
+func (s *Service) MintForShare(ctx context.Context, shareCode, fileName string, fileSize int64, requireAuth bool, expireAt *time.Time) (string, error) {
+	if s.rdb == nil {
+		return "", nil
+	}
+	if expireAt == nil || time.Until(*expireAt) <= 0 {
+		return "", nil
+	}
+	return s.GenerateCode(ctx, CodeMeta{
+		ShareCode:   shareCode,
+		FileName:    fileName,
+		FileSize:    fileSize,
+		ContentType: "application/octet-stream",
+		RequireAuth: requireAuth,
+	}, *expireAt)
+}
+
 // randomShareCode 8 位 file_code（crypto/rand，小写字母+数字）
 func randomShareCode() string {
 	const charset = "abcdefghijklmnopqrstuvwxyz0123456789"

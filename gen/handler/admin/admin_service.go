@@ -12,6 +12,7 @@ import (
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
 	admin "github.com/pigeonbox/contracts/gen/admin"
 	adminsvc "github.com/pigeonbox/core/app/admin"
+	"github.com/pigeonbox/core/repo/db/model"
 	"github.com/pigeonbox/core/pkg/auth"
 	"github.com/pigeonbox/core/pkg/middleware"
 )
@@ -104,11 +105,16 @@ func AdminStats(ctx context.Context, c *app.RequestContext) {
 		resp.Message = err.Error()
 	} else {
 		resp.Data = &admin.AdminStatsData{
-			TotalFiles:     stats.TotalFiles,
-			TotalUsers:     stats.TotalUsers,
-			TotalSize:      stats.TotalSize,
-			TodayUploads:   stats.TodayUploads,
-			TodayDownloads: stats.TodayDownloads,
+			TotalFiles:        stats.TotalFiles,
+			TotalUsers:        stats.TotalUsers,
+			TotalSize:         stats.TotalSize,
+			TodayUploads:      stats.TodayUploads,
+			TodayDownloads:    stats.TodayDownloads,
+			ActiveFiles:       stats.ActiveFiles,
+			ExpiredFiles:      stats.ExpiredFiles,
+			ExpiringSoonFiles: stats.ExpiringSoonFiles,
+			NeverPickedFiles:  stats.NeverPickedFiles,
+			ForeverFiles:      stats.ForeverFiles,
 		}
 	}
 
@@ -138,8 +144,24 @@ func AdminListFiles(ctx context.Context, c *app.RequestContext) {
 	if req.Keyword != nil {
 		search = *req.Keyword
 	}
+	// 健康洞察过滤（2026-10-07）：携带 health 时走组合过滤通道（口径与仪表盘统计一致）
+	health := ""
+	if req.Health != nil {
+		health = *req.Health
+	}
 
-	files, total, err := adminService.GetFiles(ctx, page, pageSize, search)
+	var files []*model.FileCode
+	var total int64
+	if health != "" {
+		files, total, err = adminService.GetFilesFiltered(ctx, model.FileCodeQuery{
+			Keyword:  search,
+			Health:   health,
+			Page:     page,
+			PageSize: pageSize,
+		})
+	} else {
+		files, total, err = adminService.GetFiles(ctx, page, pageSize, search)
+	}
 	resp := &admin.AdminListFilesResp{Code: 200, Message: "success"}
 	if err != nil {
 		resp.Code = 500

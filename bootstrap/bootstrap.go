@@ -1548,6 +1548,10 @@ func initThriftIDLServices(database *gorm.DB) {
 	// 3. anonymous service（需要 Redis）
 	anonHandler.SetService(redis.GetClient())
 
+	// 4.5 取件码铸造接线（2026-10-07）：share 域经窄接口调用 anonymous 域，
+	// 文件分享出码时同步铸 6 位取件码（须共用同一 anon 实例，Redis/内存 KV 才一致）
+	shareSvc.SetPickupMinter(anonHandler.CurrentService())
+
 	// 4. ratelimit service（直接用 default limiter）
 	ratelimitHandler.SetLimiter(middleware.GetDefaultRateLimiter())
 

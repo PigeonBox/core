@@ -490,8 +490,62 @@ func (r *FileCodeRepository) ListWithFilter(ctx context.Context, q model.FileCod
 			query = query.Where("((expired_at IS NULL OR expired_at >= ?) AND expired_count <> 0)", now)
 		}
 	}
+	if q.Health != "" {
+		query = applyHealthFilter(query, q.Health)
+	}
 
 	return paginate[model.FileCode](query.Order("created_at DESC"), page, pageSize)
+}
+
+// applyHealthFilter 文件健康洞察过滤（与 CountByHealth 同一口径，勿单独改动）：
+//   - active        可取件（未过期，含永久）
+//   - expired       已过期（时间或次数耗尽）
+//   - expiring_soon 24h 内即将过期（未过期且 expired_at 落在未来 24h）
+//   - never_picked  创建后从未被取件且未过期
+//   - forever       永久有效（无过期时间且不限次数）
+func applyHealthFilter(query *gorm.DB, health string) *gorm.DB {
+	now := time.Now()
+	switch health {
+	case "active":
+		return query.Where("((expired_at IS NULL OR expired_at >= ?) AND expired_count <> 0)", now)
+	case "expired":
+		return query.Where("((expired_at IS NOT NULL AND expired_at < ?) OR expired_count = 0)", now)
+	case "expiring_soon":
+		return query.Where("expired_at IS NOT NULL AND expired_at >= ? AND expired_at < ? AND expired_count <> 0", now, now.Add(24*time.Hour))
+	case "never_picked":
+		return query.Where("used_count = 0 AND ((expired_at IS NULL OR expired_at >= ?) AND expired_count <> 0)", now)
+	case "forever":
+		return query.Where("expired_at IS NULL AND expired_count < 0")
+	default:
+		return query
+	}
+}
+
+// CountByHealth 按健康维度计数（admin 仪表盘洞察卡；单次扫描全维度，口径见 applyHealthFilter）。
+func (r *FileCodeRepository) CountByHealth(ctx context.Context) (active, expired, expiringSoon, neverPicked, forever int64, err error) {
+	now := time.Now()
+	base := func() *gorm.DB {
+		return r.db().WithContext(ctx).Model(&model.FileCode{}).
+			Where("((expired_at IS NULL OR expired_at >= ?) AND expired_count <> 0)", now)
+	}
+	if err = base().Count(&active).Error; err != nil {
+		return
+	}
+	expiredQ := r.db().WithContext(ctx).Model(&model.FileCode{}).
+		Where("((expired_at IS NOT NULL AND expired_at < ?) OR expired_count = 0)", now)
+	if err = expiredQ.Count(&expired).Error; err != nil {
+		return
+	}
+	if err = base().Where("expired_at IS NOT NULL AND expired_at < ?", now.Add(24*time.Hour)).
+		Count(&expiringSoon).Error; err != nil {
+		return
+	}
+	if err = base().Where("used_count = 0").Count(&neverPicked).Error; err != nil {
+		return
+	}
+	err = r.db().WithContext(ctx).Model(&model.FileCode{}).
+		Where("expired_at IS NULL AND expired_count < 0").Count(&forever).Error
+	return
 }
 
 // UpdateStatusByIDs 批量更新管控状态（单个/批量禁用、恢复共用）。

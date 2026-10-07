@@ -56,6 +56,11 @@ func getService() *anonapp.Service {
 	return anonSvc
 }
 
+// CurrentService 暴露已注入（或惰性构建）的匿名 service 实例。
+// 供 bootstrap 转交给 share 域做取件码铸造——必须共用同一实例，
+// 否则 Redis/内存 KV 两套映射会导致跨实例取件解析失败。
+func CurrentService() *anonapp.Service { return getService() }
+
 // GenerateCode 上传文件时生成 6 位取件码（端到端：建 file_codes + 取件码映射）。
 // @router /anonymous/generate [POST]
 func GenerateCode(ctx context.Context, c *app.RequestContext) {

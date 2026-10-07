@@ -29,6 +29,15 @@ import (
 
 var shareSvc *shareService.Service
 
+
+// strPtrIfNotEmpty 空串转 nil（契约 optional 字段不外发空串）
+func strPtrIfNotEmpty(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
 // SetShareService 注入共享的 share service 实例（bootstrap 调用）。
 // 回归（治理 2026-10-03）：此前未注入，/share/text|file|select|download 走
 // getShareService() 懒加载裸实例，quotaChecker/notify/userService/moderator
@@ -401,8 +410,9 @@ func ShareFile(ctx context.Context, c *app.RequestContext) {
 		Code:    200,
 		Message: "文件上传成功",
 		Data: &sharemodel.ShareData{
-			Code: shareResult.Code,
-			URL:  fullShareURL,
+			Code:       shareResult.Code,
+			URL:        fullShareURL,
+			PickupCode: strPtrIfNotEmpty(shareResult.PickupCode),
 		},
 	}
 

@@ -32,6 +32,11 @@ type AdminStats struct {
 	ExpiredFiles   int64 `json:"expired_files"`
 	AnonymousFiles int64 `json:"anonymous_files"`
 	UserFiles      int64 `json:"user_files"`
+	// 文件健康洞察维度（2026-10-07；IDL AdminStatsData 同步暴露）
+	ActiveFiles       int64 `json:"active_files"`
+	ExpiringSoonFiles int64 `json:"expiring_soon_files"`
+	NeverPickedFiles  int64 `json:"never_picked_files"`
+	ForeverFiles      int64 `json:"forever_files"`
 }
 
 type SystemConfig struct {
@@ -226,6 +231,15 @@ func (s *Service) GetStats(ctx context.Context) (*AdminStats, error) {
 	// userFiles, _ := s.fileCodeRepo.CountByUploadType(ctx, "authenticated")
 	// stats.AnonymousFiles = anonymousFiles
 	// stats.UserFiles = userFiles
+
+	// 文件健康洞察（2026-10-07 对标上游 dashboard 洞察卡；失败降级为 0，不阻塞统计）
+	if active, expired, expiringSoon, neverPicked, forever, err := s.fileCodeRepo.CountByHealth(ctx); err == nil {
+		stats.ActiveFiles = active
+		stats.ExpiredFiles = expired
+		stats.ExpiringSoonFiles = expiringSoon
+		stats.NeverPickedFiles = neverPicked
+		stats.ForeverFiles = forever
+	}
 
 	return stats, nil
 }

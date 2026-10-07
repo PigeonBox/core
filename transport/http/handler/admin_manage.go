@@ -513,6 +513,8 @@ func AdminListFilesFiltered(ctx context.Context, c *app.RequestContext) {
 	}
 	// 回收站筛选（回收站=仅已删 / all=含已删；缺省仅存活）
 	q.Deleted = c.Query("deleted")
+	// 健康洞察过滤（2026-10-07；口径见 dao.applyHealthFilter，空=不过滤）
+	q.Health = c.Query("health")
 	q.Page, _ = strconv.Atoi(c.Query("page"))
 	q.PageSize, _ = strconv.Atoi(c.Query("page_size"))
 
