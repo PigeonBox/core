@@ -210,7 +210,7 @@ func isShareCodeShape(code string) bool {
 // enrichMetaFromDB 分享码直查路径没有 Redis 展示信息，用 DB 记录补齐
 func enrichMetaFromDB(meta *CodeMeta, fc *model.FileCode) {
 	if meta.FileName == "" {
-		meta.FileName = fc.UUIDFileName
+		meta.FileName = fc.DisplayName()
 	}
 	if meta.FileSize == 0 {
 		meta.FileSize = fc.Size

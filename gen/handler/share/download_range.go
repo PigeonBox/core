@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -87,7 +88,13 @@ func parseByteRange(header string, size int64) (start, length int64, result rang
 // filePath 为存储相对路径；fileName 为下载呈现名；logTransfer 在确认开始
 // 传输内容时调用一次（200/206 记一次下载；416 不计）。
 func streamFileDownload(ctx context.Context, c *app.RequestContext, filePath, fileName string, logTransfer func()) {
-	disposition := fmt.Sprintf(`attachment; filename="%s"`, fileName)
+	// 引号消毒防头断义;非 ASCII 文件名(中文)补 RFC 5987 filename*,否则
+	// 部分客户端乱码/丢弃名称（2026-10-07 上传下载回归修复）
+	safeName := strings.ReplaceAll(fileName, `"`, "_")
+	disposition := fmt.Sprintf(`attachment; filename="%s"`, safeName)
+	if encoded := url.PathEscape(safeName); encoded != safeName {
+		disposition += fmt.Sprintf(`; filename*=UTF-8''%s`, encoded)
+	}
 
 	// 远端后端：Range 分支先行（避免为 Range 请求多开一次全量读器）
 	if rh := string(c.GetHeader("Range")); rh != "" {

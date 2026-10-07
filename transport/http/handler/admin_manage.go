@@ -234,7 +234,7 @@ func AdminFileDetail(ctx context.Context, c *app.RequestContext) {
 	}
 	if len(files) == 0 && fc.GetFilePath() != "" {
 		files = append(files, map[string]interface{}{
-			"id": 0, "name": fc.UUIDFileName, "size": fc.Size, "hash": fc.FileHash,
+			"id": 0, "name": fc.DisplayName(), "size": fc.Size, "hash": fc.FileHash,
 		})
 	}
 	resp.Success(c, map[string]interface{}{
@@ -544,10 +544,7 @@ func AdminListFilesFiltered(ctx context.Context, c *app.RequestContext) {
 
 // fileGovernanceItem 管理端文件治理视图（含管控字段；owner_ip 仅管理端可见）
 func fileGovernanceItem(f *model.FileCode) map[string]interface{} {
-	fileName := f.UUIDFileName
-	if fileName == "" {
-		fileName = f.Prefix + f.Suffix
-	}
+	fileName := f.DisplayName()
 	isText := f.Text != "" && f.FilePath == ""
 	item := map[string]interface{}{
 		"id":            f.ID,

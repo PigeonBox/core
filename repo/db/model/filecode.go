@@ -117,6 +117,30 @@ func (f *FileCode) IsTextShare() bool {
 	return f != nil && f.Text != "" && f.FilePath == ""
 }
 
+// DisplayName 返回分享条目的展示文件名（下载 Content-Disposition、管理/用户
+// 列表、取件元信息等所有呈现位统一从本方法取名）。
+//
+// 解析顺序：UUIDFileName(chunk 等通道落库名) → Prefix+Suffix(旧直传布局的原始
+// 名拆分) → Text(直传/E2E 通道契约:原始文件名存 Text)。2026-10-07 修复:直传
+// 分享三处名字段全空,DownloadFile 曾给出 Content-Disposition filename=""
+// (浏览器无法命名下载文件),管理端文件名回退显示成分享码。
+// 纯文本分享(Text=正文且无文件路径)返回空串——文本没有文件名语义,兜底由调用方定。
+func (f *FileCode) DisplayName() string {
+	if f == nil {
+		return ""
+	}
+	if f.UUIDFileName != "" {
+		return f.UUIDFileName
+	}
+	if name := f.Prefix + f.Suffix; name != "" {
+		return name
+	}
+	if !f.IsTextShare() && f.Text != "" {
+		return f.Text
+	}
+	return ""
+}
+
 // FileCodeQuery 管理端文件列表过滤条件（DAO ListWithFilter 消费）。
 // 全字段可选，零值 = 不过滤。
 type FileCodeQuery struct {

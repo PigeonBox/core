@@ -466,7 +466,7 @@ func GetUserShares(ctx context.Context, c *app.RequestContext) {
 	for i, f := range files {
 		items[i] = map[string]interface{}{
 			"code":           f.Code,
-			"filename":       f.UUIDFileName,
+			"filename":       f.DisplayName(),
 			"file_size":      f.Size,
 			"content_type":   f.UploadType,
 			"download_count": f.UsedCount,
@@ -901,12 +901,9 @@ func DownloadFile(ctx context.Context, c *app.RequestContext) {
 		}
 	}
 
-	// 获取文件读取器
-	fileName := fileCode.UUIDFileName
-	if fileName == "" {
-		// 向后兼容：如果UUIDFileName为空，则使用Prefix + Suffix
-		fileName = fileCode.Prefix + fileCode.Suffix
-	}
+	// 获取文件读取器（呈现名统一走 DisplayName:直传通道原始文件名存 Text,
+	// 此前仅回退 UUIDFileName/Prefix+Suffix,直传分享下载 filename="" ）
+	fileName := fileCode.DisplayName()
 
 	// 统一下传送流：本地后端 c.File 原生 Range/断点续传；远端后端服务端
 	// 区间流（206，驱动支持时），不支持区间读的驱动回退全量 200。
