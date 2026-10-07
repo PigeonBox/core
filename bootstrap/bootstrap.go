@@ -956,6 +956,10 @@ func customizedRegister(r *server.Hertz) {
 		})
 	}
 
+	// ===== 站级公告（匿名公开端点；对标上游首页通知条）=====
+	// notify.Active 已过滤 target_user_id（仅全站公告）；前端 SiteNotice 组件消费
+	r.GET("/api/v1/notifies/public", customHandler.ListPublicNotifies)
+
 	// ===== MCP server（Model Context Protocol；AI 客户端集成，上游没有的差异化能力）=====
 	// Streamable HTTP 传输：POST /api/v1/mcp（JSON-RPC 2.0），管理员 JWT 认证。
 	// Claude Desktop 等标准客户端以 Authorization: Bearer <admin token> 接入。（管理面）
@@ -1311,8 +1315,12 @@ func publicConfigHandler(ctx context.Context, c *app.RequestContext) {
 		// 注册开关走生效值：管理后台"用户配置"持久化段优先，
 		// 无记录回退 yaml（与 /user/register 判定同源）
 		"registerEnabled": adminApp.EffectiveUserSettings(ctx).AllowUserRegistration,
-		// 前端 expireStyle 下拉选项（与 utils.CalculateExpireTime 支持的风格对齐）
-		"expireStyle": []string{"minute", "hour", "day", "week", "month", "year", "forever"},
+		// 前端 expireStyle 下拉选项：管理台"允许的过期样式"裁剪优先（对标上游
+		// expire_style 白名单驱动前端可选集），未配置=全量
+		"expireStyle": effectiveExpireStyles(),
+		// 文本分享大小上限（字节；前端预检+超限引导"改用文件分享"）。
+		// 与 utils.GetTextShareMaxBytes 同语义：未配置(<=0)用默认 222KB
+		"textMaxBytes": textShareMaxBytesOrDefault(),
 		"initialized": initialized,
 		// OIDC 登录按钮开关（P2 SSO；security.oidc.enabled）
 		"oidcEnabled": conf.GetGlobalConfig().Security.OIDC.Enabled,
@@ -1339,6 +1347,34 @@ func safeImageURL(raw string) string {
 		return u
 	}
 	return ""
+}
+
+// textShareMaxBytesOrDefault 文本分享上限（字节），<=0 回退 222KB（对齐上游默认）
+func textShareMaxBytesOrDefault() int64 {
+	if v := config.Upload.TextMaxBytes; v > 0 {
+		return v
+	}
+	return 222 * 1024
+}
+
+// effectiveExpireStyles 前端可选过期样式：管理台 AllowedExpireStyles 裁剪优先，
+// 空（未配置）回退全量——与 utils.CheckExpireStyleAllowed 的校验口径同源。
+func effectiveExpireStyles() []string {
+	all := []string{"minute", "hour", "day", "week", "month", "year", "forever"}
+	allowed := config.Upload.AllowedExpireStyles
+	if len(allowed) == 0 {
+		return all
+	}
+	out := make([]string, 0, len(allowed))
+	for _, a := range allowed {
+		for _, style := range all {
+			if a == style {
+				out = append(out, style)
+				break
+			}
+		}
+	}
+	return out
 }
 
 // safeHexColor 主题色白名单校验：#RGB/#RRGGBB/#RRGGBBAA
