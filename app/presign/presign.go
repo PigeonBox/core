@@ -105,7 +105,6 @@ type ObjectStore interface {
 	HeadObject(ctx context.Context, objectKey string) (size int64, etag string, err error)
 }
 
-// ShareServiceInterface share service 接口（避免循环依赖）
 // PickupBinder 匿名取件码占位绑定窄接口（app/anonymous.Service 结构性满足；
 // presign 域不 import anonymous 域，由 bootstrap 注入）。
 type PickupBinder interface {
@@ -115,7 +114,8 @@ type PickupBinder interface {
 	BindFilePath(ctx context.Context, shareCode, filePath string, size int64) error
 }
 
-// 与 share.Service.ShareFile / CreateShare 签名保持一致
+// ShareServiceInterface share service 接口（避免循环依赖）。
+// 与 share.Service.ShareFile / CreateShare 签名保持一致。
 type ShareServiceInterface interface {
 	ShareFile(ctx context.Context, req *share.ShareFileReq) (*share.ShareResp, error)
 	CreateShare(ctx context.Context, req *share.ShareFileReq) (*share.ShareResp, error)

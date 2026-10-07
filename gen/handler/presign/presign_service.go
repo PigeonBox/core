@@ -34,7 +34,6 @@ func SetService(rdb *redis.Client, baseURL, signingKey string) {
 	presignSvc = presignapp.NewService(rdb, baseURL, signingKey)
 }
 
-// SetShareService 注入 share service（用于 Complete 时写分享表）
 // SetPickupBinder 注入匿名取件码占位绑定（bootstrap 接线 anonymous 域实现）
 func SetPickupBinder(b presignapp.PickupBinder) {
 	if presignSvc != nil {
@@ -42,6 +41,7 @@ func SetPickupBinder(b presignapp.PickupBinder) {
 	}
 }
 
+// SetShareService 注入 share service（用于 Complete 时写分享表）
 func SetShareService(svc presignapp.ShareServiceInterface) {
 	if presignSvc == nil {
 		// 容错：允许先注入 share，再调 SetService
