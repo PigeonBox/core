@@ -225,7 +225,9 @@ func (d *s3Driver) Rename(ctx context.Context, src, dst string) error {
 }
 
 // Presign 离线签名生成真实 S3 预签名 URL（无需网络），客户端可直传/直下。
-func (d *s3Driver) Presign(ctx context.Context, method, key string, expire time.Duration) (*PresignedResult, error) {
+// opts 透传为签名 query 参数（GET 常用 response-content-disposition 指定
+// 下载呈现名——直下 302 的最终响应头由对象存储回给客户端）。
+func (d *s3Driver) Presign(ctx context.Context, method, key string, expire time.Duration, opts map[string]string) (*PresignedResult, error) {
 	switch strings.ToUpper(method) {
 	case http.MethodPut:
 		u, err := d.client.PresignedPutObject(ctx, d.bucket, key, expire)
@@ -234,7 +236,11 @@ func (d *s3Driver) Presign(ctx context.Context, method, key string, expire time.
 		}
 		return &PresignedResult{URL: u.String(), Method: http.MethodPut}, nil
 	case http.MethodGet:
-		u, err := d.client.PresignedGetObject(ctx, d.bucket, key, expire, url.Values{})
+		params := url.Values{}
+		for k, v := range opts {
+			params.Set(k, v)
+		}
+		u, err := d.client.PresignedGetObject(ctx, d.bucket, key, expire, params)
 		if err != nil {
 			return nil, err
 		}

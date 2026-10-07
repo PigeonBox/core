@@ -967,16 +967,27 @@ func (s *StorageService) PresignPutURL(ctx context.Context, objectKey string, ex
 }
 
 // PresignGetURL 生成真预签名直下 GET URL（短时效，下载 302 用）。
-func (s *StorageService) PresignGetURL(ctx context.Context, objectKey string, expire time.Duration) (string, error) {
-	return s.presignURL(ctx, objectKey, "GET", expire)
+// disposition 可选（首项生效）：非空时作为 response-content-disposition 签入
+// URL——对象存储按此回 Content-Disposition，直下 302 客户端才能拿到文件名
+// （2026-10-07 修复：直下 302 曾无文件名，浏览器按对象 UUID key 命名）。
+func (s *StorageService) PresignGetURL(ctx context.Context, objectKey string, expire time.Duration, disposition ...string) (string, error) {
+	opts := map[string]string{}
+	if len(disposition) > 0 && disposition[0] != "" {
+		opts["response-content-disposition"] = disposition[0]
+	}
+	return s.presignURL(ctx, objectKey, "GET", expire, opts)
 }
 
-func (s *StorageService) presignURL(ctx context.Context, objectKey, method string, expire time.Duration) (string, error) {
+func (s *StorageService) presignURL(ctx context.Context, objectKey, method string, expire time.Duration, opts ...map[string]string) (string, error) {
 	_, op := s.current()
 	if op == nil || op.Scheme() != opendal.SchemeS3 {
 		return "", ErrPresignUnsupported
 	}
-	res, err := op.Presign(ctx, opendal.PresignedRequest{Path: objectKey, Method: method, Expire: expire})
+	var o map[string]string
+	if len(opts) > 0 {
+		o = opts[0]
+	}
+	res, err := op.Presign(ctx, opendal.PresignedRequest{Path: objectKey, Method: method, Expire: expire, Opts: o})
 	if err != nil {
 		return "", err
 	}

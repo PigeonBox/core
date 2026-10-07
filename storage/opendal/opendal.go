@@ -106,7 +106,7 @@ type (
 		Rename(ctx context.Context, src, dst string) error
 	}
 	presigner interface {
-		Presign(ctx context.Context, method, key string, expire time.Duration) (*PresignedResult, error)
+		Presign(ctx context.Context, method, key string, expire time.Duration, opts map[string]string) (*PresignedResult, error)
 	}
 	rangeReader interface {
 		// ReadRange 读取 [start, start+length) 字节区间；length<=0 表示读到末尾。
@@ -474,7 +474,7 @@ func (op *Operator) Presign(ctx context.Context, req PresignedRequest) (*Presign
 	expireAt := time.Now().Add(req.Expire)
 
 	if p, ok := op.driver.(presigner); ok {
-		res, err := p.Presign(ctx, req.Method, op.key(req.Path), req.Expire)
+		res, err := p.Presign(ctx, req.Method, op.key(req.Path), req.Expire, req.Opts)
 		if err != nil {
 			return nil, err
 		}

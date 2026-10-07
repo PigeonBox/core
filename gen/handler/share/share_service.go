@@ -889,21 +889,20 @@ func DownloadFile(ctx context.Context, c *app.RequestContext) {
 		})
 	}
 
+	// 呈现文件名（s3 直下 302 的 response-content-disposition 与下方中转流共用）
+	fileName := fileCode.DisplayName()
+
 	// s3 直下（可选开关 download.s3_direct_download，默认关）：当前后端支持
 	// 真预签名时 302 到短时效预签名 GET，下载流量不经过服务器。
 	// 访问校验/密码/次数扣减均已在上方完成；不支持或签发失败则回退服务端中转。
 	if s3DirectDownloadEnabled() {
-		if u, perr := getShareService().PresignDownloadURL(ctx, filePath, 10*time.Minute); perr == nil {
+		if u, perr := getShareService().PresignDownloadURL(ctx, filePath, 10*time.Minute, fileName); perr == nil {
 			logTransfer()
 			c.Header("Cache-Control", "no-store")
 			c.Redirect(consts.StatusFound, []byte(u))
 			return
 		}
 	}
-
-	// 获取文件读取器（呈现名统一走 DisplayName:直传通道原始文件名存 Text,
-	// 此前仅回退 UUIDFileName/Prefix+Suffix,直传分享下载 filename="" ）
-	fileName := fileCode.DisplayName()
 
 	// 统一下传送流：本地后端 c.File 原生 Range/断点续传；远端后端服务端
 	// 区间流（206，驱动支持时），不支持区间读的驱动回退全量 200。

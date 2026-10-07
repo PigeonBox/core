@@ -119,17 +119,17 @@ func TestS3PresignOffline(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	res, err := d.Presign(context.Background(), "PUT", "uploads/a.bin", 30*time.Minute)
+	res, err := d.Presign(context.Background(), "PUT", "uploads/a.bin", 30*time.Minute, nil)
 	require.NoError(t, err)
 	require.Equal(t, "PUT", res.Method)
 	require.Contains(t, res.URL, "localhost:9000/box/uploads/a.bin")
 	require.Contains(t, res.URL, "X-Amz-Signature")
 
-	resGet, err := d.Presign(context.Background(), "GET", "uploads/a.bin", time.Minute)
+	resGet, err := d.Presign(context.Background(), "GET", "uploads/a.bin", time.Minute, map[string]string{"response-content-disposition": `attachment; filename="a.bin"`})
 	require.NoError(t, err)
 	require.Equal(t, "GET", resGet.Method)
 
-	_, err = d.Presign(context.Background(), "POST", "uploads/a.bin", time.Minute)
+	_, err = d.Presign(context.Background(), "POST", "uploads/a.bin", time.Minute, nil)
 	require.Error(t, err)
 
 	// Operator 层：s3 scheme 走驱动预签名

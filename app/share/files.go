@@ -9,6 +9,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
+	"strings"
 	"io"
 	"mime/multipart"
 	"time"
@@ -115,7 +117,8 @@ func (s *Service) OpenChildDownload(ctx context.Context, code string, fileID uin
 
 // PresignDownloadURL s3 直下预签名 GET（download.s3_direct_download 开关的
 // 执行段）。后端不支持预签名或签发失败返回 error，调用方回退服务端中转。
-func (s *Service) PresignDownloadURL(ctx context.Context, filePath string, ttl time.Duration) (string, error) {
+// fileName 非空时签入 response-content-disposition，直下 302 客户端据此命名。
+func (s *Service) PresignDownloadURL(ctx context.Context, filePath string, ttl time.Duration, fileName ...string) (string, error) {
 	st, err := s.storageClient()
 	if err != nil {
 		return "", err
@@ -124,7 +127,15 @@ func (s *Service) PresignDownloadURL(ctx context.Context, filePath string, ttl t
 	if !ok {
 		return "", errors.New("presign not supported by current backend")
 	}
-	return concrete.PresignGetURL(ctx, filePath, ttl)
+	disposition := ""
+	if len(fileName) > 0 && fileName[0] != "" {
+		safe := strings.ReplaceAll(fileName[0], `"`, "_")
+		disposition = fmt.Sprintf(`attachment; filename="%s"`, safe)
+		if encoded := url.PathEscape(safe); encoded != safe {
+			disposition += fmt.Sprintf(`; filename*=UTF-8''%s`, encoded)
+		}
+	}
+	return concrete.PresignGetURL(ctx, filePath, ttl, disposition)
 }
 
 // storageClient 取统一存储实例。未注入（测试/降级路径）时懒加载本地后端兜底，
