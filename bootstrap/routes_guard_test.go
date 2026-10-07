@@ -60,6 +60,8 @@ func TestRegisteredRoutesMatchContract(t *testing.T) {
 		"POST /admin/files/batch-delete", "POST /admin/files/batch-extend",
 		// 回收站（2026-10-06）：软删恢复 / 彻底删除（DB 硬删+存储对象删除）
 		"POST /admin/files/restore", "POST /admin/files/purge",
+		// 站级公告公开端点（2026-10-07 对标上游站内通知条；匿名可访问）
+		"GET /api/v1/notifies/public",
 		// 分享治理（组合过滤 + 状态机）
 		"GET /admin/files/filter",
 		"PUT /admin/files/:id/status", "POST /admin/files/batch-status",
