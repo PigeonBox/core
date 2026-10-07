@@ -6,10 +6,10 @@ require (
 	github.com/alicebob/miniredis/v2 v2.38.0
 	github.com/cloudwego/hertz v0.9.6
 	github.com/disintegration/imaging v1.6.2
-	github.com/pigeonbox/contracts v0.7.0
 	github.com/glebarez/sqlite v1.11.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0
+	github.com/pigeonbox/contracts v0.7.0
 	github.com/prometheus/client_golang v1.24.1
 	github.com/prometheus/common v0.70.1
 	github.com/redis/go-redis/v9 v9.18.0
@@ -25,9 +25,9 @@ require (
 )
 
 require (
-	github.com/pigeonbox/kit v0.3.1
 	github.com/jlaffaye/ftp v0.2.4
 	github.com/minio/minio-go/v7 v7.3.0
+	github.com/pigeonbox/kit v0.3.1
 	github.com/pkg/sftp v1.13.11
 	github.com/studio-b12/gowebdav v0.13.0
 	golang.org/x/net v0.59.0
