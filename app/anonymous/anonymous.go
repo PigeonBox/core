@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/pigeonbox/contracts/errcode"
+	"github.com/pigeonbox/core/conf"
 	"github.com/pigeonbox/core/pkg/logger"
 	"github.com/pigeonbox/core/pkg/utils"
 	"github.com/pigeonbox/core/repo/db/dao"
@@ -178,6 +179,10 @@ func (s *Service) lookupShareCode(ctx context.Context, code string) (string, err
 	}
 	if isShareCodeShape(trimmed) {
 		fc, dbErr := s.fileCodeRepo.GetByCode(ctx, trimmed)
+		if (dbErr != nil || fc == nil) && conf.CodeFoldEnabledOrDefault() {
+			// 精确未命中且查询折叠开启：UPPER 兜底（分享码/自定义口令大小写不敏感）
+			fc, dbErr = s.fileCodeRepo.GetByCodeFolded(ctx, trimmed)
+		}
 		if dbErr != nil || fc == nil {
 			// 回源 DB 也没有：放负缓存标记
 			s.rdb.Set(ctx, fmt.Sprintf(keyPickupCodeNeg, trimmed), "1", negCacheTTL)

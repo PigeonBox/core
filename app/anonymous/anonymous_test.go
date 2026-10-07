@@ -239,14 +239,27 @@ func TestRetrieve_ShareCodeFallback(t *testing.T) {
 	assert.Equal(t, 2, fc.ExpiredCount)
 }
 
-// TestRetrieve_ShareCodeFallback_CaseSensitive 分享码区分大小写
-func TestRetrieve_ShareCodeFallback_CaseSensitive(t *testing.T) {
+// TestRetrieve_ShareCodeFallback_CaseFold 分享码查询大小写折叠（2026-10-08 起
+// 默认开，download.code_case_insensitive 可关）：开启时大小写变体命中；
+// 关闭后恢复精确匹配——2026-10-03 的区分大小写语义由该开关承载。
+// 两态各用一条码：miss 会写负缓存标记（2min TTL），同码重查会被缓存挡住。
+func TestRetrieve_ShareCodeFallback_CaseFold(t *testing.T) {
 	svc, _, _ := newTestService(t)
 	ctx := context.Background()
 	require.NoError(t, svc.fileCodeRepo.Create(ctx, &model.FileCode{Code: "Piqck7ZN", FilePath: "uploads/x/a", ExpiredCount: -1}))
+	require.NoError(t, svc.fileCodeRepo.Create(ctx, &model.FileCode{Code: "Tzqx8WLp", FilePath: "uploads/x/b", ExpiredCount: -1}))
 
-	_, err := svc.Retrieve(ctx, "PIQCK7ZN", "")
-	assert.ErrorIs(t, err, ErrCodeNotFound)
+	t.Run("折叠关：大小写必须精确", func(t *testing.T) {
+		setCodeFold(t, false)
+		_, err := svc.Retrieve(ctx, "PIQCK7ZN", "")
+		assert.ErrorIs(t, err, ErrCodeNotFound)
+	})
+	t.Run("折叠开（默认）：变体命中", func(t *testing.T) {
+		setCodeFold(t, true)
+		meta, err := svc.Retrieve(ctx, "TZQX8WLP", "")
+		require.NoError(t, err)
+		assert.Equal(t, "Tzqx8WLp", meta.ShareCode)
+	})
 }
 
 // TestRetrieve_ShareCodeFallback_RespectsPassword 兜底路径同样校验密码

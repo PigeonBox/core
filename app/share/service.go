@@ -298,6 +298,12 @@ func (s *Service) createWithCode(ctx context.Context, customCode string, build f
 	if exists, err := s.fileCodeRepo.CheckCodeExists(ctx, customCode, 0); err == nil && exists {
 		return nil, errors.New("自定义取件码已被占用，请换一个")
 	}
+	// 查询折叠开启时按折叠再查一遍：防 ABC/abc 两条并存后在折叠查询下互撞
+	if conf.CodeFoldEnabledOrDefault() {
+		if exists, err := s.fileCodeRepo.CheckCodeExistsFolded(ctx, customCode, 0); err == nil && exists {
+			return nil, errors.New("自定义取件码已被占用（仅大小写不同），请换一个")
+		}
+	}
 	fc := build(customCode)
 	if err := s.fileCodeRepo.Create(ctx, fc); err != nil {
 		if errors.Is(err, gorm.ErrDuplicatedKey) ||
@@ -661,6 +667,10 @@ func (s *Service) GetFileByCode(ctx context.Context, code string) (*model.FileCo
 	s.ensureRepository()
 
 	fileCode, err := s.fileCodeRepo.GetByCode(ctx, code)
+	if err != nil && conf.CodeFoldEnabledOrDefault() {
+		// 精确未命中且查询折叠开启：UPPER 兜底（分享码/自定义口令大小写不敏感）
+		fileCode, err = s.fileCodeRepo.GetByCodeFolded(ctx, code)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -986,11 +996,17 @@ func (s *Service) BatchExtendUserShares(ctx context.Context, userID uint, codes 
 	return n, err
 }
 
-// RestoreUserShare 恢复软删除的分享
+// RestoreUserShare 恢复软删除的分享。0 行恢复（硬删/不存在/本就活跃）
+// 显式报错——此前 0 行也返回 nil，硬删后 restore 表现为 200 静默 no-op
+// （2026-10-08 修复；与 v0.11.1 hard-delete 同款收口）。
 func (s *Service) RestoreUserShare(ctx context.Context, userID uint, code string) error {
 	s.ensureRepository()
-	if err := s.fileCodeRepo.RestoreByCode(ctx, userID, code); err != nil {
+	n, err := s.fileCodeRepo.RestoreByCode(ctx, userID, code)
+	if err != nil {
 		return err
+	}
+	if n == 0 {
+		return ErrNotInRecycleBin
 	}
 	// 联邦重新公告(恢复=此前撤销的口令路由重新上线;查不到记录则跳过)
 	if s.federation != nil {
@@ -1001,10 +1017,10 @@ func (s *Service) RestoreUserShare(ctx context.Context, userID uint, code string
 	return nil
 }
 
-// ErrNotInRecycleBin 分享不在回收站（未软删或不存在），无法永久删除。
-// 直接 hard 活跃分享此前为 200 静默 no-op（0 行删除也返回成功），
-// 运维/集成误判已清理（v0.11.1 修复：改为显式 400）。
-var ErrNotInRecycleBin = errors.New("分享不在回收站中，请先删除（软删除）后再永久删除")
+// ErrNotInRecycleBin 分享不在回收站（未软删/已硬删/不存在），restore 与
+// hard-delete 共用。0 行变更曾双双表现为 200 静默 no-op——hard 侧 v0.11.1
+// 修复、restore 侧 2026-10-08 修复：均改为调用方显式 400。
+var ErrNotInRecycleBin = errors.New("分享不在回收站中（不存在或未处于软删除状态）")
 
 // HardDeleteUserShare 永久删除软删除的分享
 func (s *Service) HardDeleteUserShare(ctx context.Context, userID uint, code string) error {

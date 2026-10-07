@@ -315,6 +315,24 @@ type DownloadConfig struct {
 	PresignExpireSeconds int `mapstructure:"presign_expire_seconds" json:"presign_expire_seconds"`
 	// PresignThresholdMB 前端直传阈值（MB）。0=默认 100；经 /api/config 下发。
 	PresignThresholdMB int `mapstructure:"presign_threshold_mb" json:"presign_threshold_mb"`
+	// CodeCaseInsensitive 分享码/自定义口令查询是否不区分大小写（6 位取件码字符表
+	// 全大写、天然不敏感，不受此开关影响）。指针三态：nil=未设置（默认不区分，
+	// 口播/手抄场景更友好）。开启时自定义口令创建同步按折叠查重，失败锁定键同步
+	// 归一。经 /api/config 以下发 codeCaseInsensitive 供前端提示联动。
+	CodeCaseInsensitive *bool `mapstructure:"code_case_insensitive" json:"code_case_insensitive"`
+}
+
+// CodeFoldEnabled 分享码查询是否折叠大小写（nil 视为开启，兼容存量配置）。
+func (c DownloadConfig) CodeFoldEnabled() bool {
+	return c.CodeCaseInsensitive == nil || *c.CodeCaseInsensitive
+}
+
+// CodeFoldEnabledOrDefault 全局配置未初始化（单测/极早期启动）时按默认开。
+func CodeFoldEnabledOrDefault() bool {
+	if globalConfig == nil {
+		return true
+	}
+	return globalConfig.Download.CodeFoldEnabled()
 }
 
 // 直传策略取值（download.presign_policy）

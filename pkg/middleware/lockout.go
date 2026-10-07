@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -239,6 +240,16 @@ func (e *LockedError) Error() string {
 
 // ErrCode 转换为统一错误码
 func (e *LockedError) ErrCode() int { return errcode.CodeTooManyAttempts }
+
+// LookupLockKey 取件/分享码查询的失败锁定键：查询折叠开启（download.
+// code_case_insensitive，默认开）时把 code 归一为大写，使 abc/ABC 等大小写
+// 变体共享同一失败计数，防变体绕过 IP+code 维度爆破锁定。
+func LookupLockKey(scope, ip, code string) string {
+	if conf.CodeFoldEnabledOrDefault() {
+		code = strings.ToUpper(code)
+	}
+	return FormatLockKey(scope, ip, code)
+}
 
 // FormatLockKey 组合锁定维度键（值做转义避免键冲突）
 func FormatLockKey(parts ...string) string {

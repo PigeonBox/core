@@ -43,6 +43,20 @@ func (r *FileCodeRepository) GetByCode(ctx context.Context, code string) (*model
 	return &fileCode, nil
 }
 
+// GetByCodeFolded 大小写折叠检索（UPPER 归一；码表全 ASCII，sqlite/mysql/pg 通吃）。
+// 调用方必须先精确 GetByCode 未命中再兜底本方法，热路径不恒走函数查询；
+// 多行同码不同大小写时按 id 升序取最早一条，保证结果确定性。
+func (r *FileCodeRepository) GetByCodeFolded(ctx context.Context, code string) (*model.FileCode, error) {
+	var fileCode model.FileCode
+	err := r.db().WithContext(ctx).
+		Where("UPPER(code) = UPPER(?)", code).
+		Order("id ASC").First(&fileCode).Error
+	if err != nil {
+		return nil, err
+	}
+	return &fileCode, nil
+}
+
 // GetByHashAndSize 秒传检索：仅命中"正常态 + 无密码"的分享。
 // 回归（2026-10-03）：不过滤 status 会把 blocked/待审分享当秒传源（存在性
 // oracle + 假成功 UX）；不过滤 require_auth 会让持同哈希文件者借令牌穿透
@@ -137,6 +151,22 @@ func (r *FileCodeRepository) DeleteExpiredFiles(ctx context.Context, expiredFile
 func (r *FileCodeRepository) CheckCodeExists(ctx context.Context, code string, excludeID uint) (bool, error) {
 	var existingFile model.FileCode
 	err := r.db().WithContext(ctx).Where("code = ? AND id != ?", code, excludeID).First(&existingFile).Error
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+// CheckCodeExistsFolded 大小写折叠占用检查：查询折叠开启时自定义口令创建
+// 用它兜底查重，防 ABC/abc 两条并存后在折叠查询下互撞。
+func (r *FileCodeRepository) CheckCodeExistsFolded(ctx context.Context, code string, excludeID uint) (bool, error) {
+	var existingFile model.FileCode
+	err := r.db().WithContext(ctx).
+		Where("UPPER(code) = UPPER(?) AND id != ?", code, excludeID).
+		First(&existingFile).Error
 	if err != nil {
 		if err == gorm.ErrRecordNotFound {
 			return false, nil
@@ -282,11 +312,39 @@ func (r *FileCodeRepository) BatchExtendByCodes(ctx context.Context, userID uint
 	return int(res.RowsAffected), nil
 }
 
-// RestoreByCode 恢复软删除的分享（仅 owner）
-func (r *FileCodeRepository) RestoreByCode(ctx context.Context, userID uint, code string) error {
-	return r.db().WithContext(ctx).Unscoped().Model(&model.FileCode{}).
+// RestoreByCode 恢复软删除的分享（仅 owner）。返回实际恢复行数：
+// 0 = 该分享不在回收站（未软删或不存在）。调用方必须对 0 显式报错——
+// 此前 0 行恢复也返回 nil，硬删后 restore 表现为 200 静默 no-op，
+// 集成误判已恢复（2026-10-08 修复；与 v0.11.1 hard-delete 同款收口）。
+func (r *FileCodeRepository) RestoreByCode(ctx context.Context, userID uint, code string) (int64, error) {
+	res := r.db().WithContext(ctx).Unscoped().Model(&model.FileCode{}).
 		Where("user_id = ? AND code = ? AND deleted_at IS NOT NULL", userID, code).
-		Update("deleted_at", nil).Error
+		Update("deleted_at", nil)
+	if res.Error != nil {
+		return 0, res.Error
+	}
+	return res.RowsAffected, nil
+}
+
+// InsightStats 存储洞察聚合（/admin/storage/insights 用）：
+// total/totalSize = 未 purge 全量行（软删对象在 purge 前仍占存储），
+// alive = 存活分享数，softDeleted = 回收站行数。
+func (r *FileCodeRepository) InsightStats(ctx context.Context) (total, totalSize, alive, softDeleted int64, err error) {
+	var a struct {
+		Cnt  int64
+		Size int64
+	}
+	if err = r.db().WithContext(ctx).Model(&model.FileCode{}).
+		Select("COUNT(*) AS cnt, COALESCE(SUM(size),0) AS size").Scan(&a).Error; err != nil {
+		return
+	}
+	if err = r.db().WithContext(ctx).Model(&model.FileCode{}).
+		Where("deleted_at IS NULL").Count(&alive).Error; err != nil {
+		return
+	}
+	err = r.db().WithContext(ctx).Model(&model.FileCode{}).
+		Where("deleted_at IS NOT NULL").Count(&softDeleted).Error
+	return a.Cnt, a.Size, alive, softDeleted, err
 }
 
 // HardDeleteByCode 永久删除（仅 owner，已软删除的）。返回实际删除行数：

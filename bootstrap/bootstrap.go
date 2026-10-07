@@ -1331,6 +1331,9 @@ func publicConfigHandler(ctx context.Context, c *app.RequestContext) {
 		"presignPolicy":      effectiveDownload.PresignPolicyOrDefault(),
 		"presignEnabled":     effectiveDownload.PresignPolicyOrDefault() != conf.PresignPolicyDisabled,
 		"presignThresholdMb": effectiveDownload.PresignThresholdMBOrDefault(),
+		// 分享码/口令查询大小写折叠（download.code_case_insensitive，缺省=开）：
+		// 前端首页提示联动（"大小写不限"/"区分大小写"）
+		"codeCaseInsensitive": effectiveDownload.CodeFoldEnabled(),
 		// API 文档开关（ui.expose_openapi）：false 时后端 /openapi.json 404，
 		// 前端据此隐藏 API 文档入口并将 /api-docs 页降级为未开启提示
 		"apiDocsEnabled": config.UI.ExposeOpenAPI,
@@ -1723,8 +1726,11 @@ func startMaintenanceJanitor() {
 	if config != nil {
 		retention = config.Admin.LogRetentionDays
 	}
-	time.Sleep(10 * time.Minute)
 	j := adminApp.NewJanitor(getBootstrapStorageService(), retention)
+	// 管理端孤儿端点（POST /admin/storage/clean-presign-orphans 与
+	// GET /admin/storage/insights 的孤儿计数）复用同一 janitor 实例
+	storageHandler.SetJanitor(j)
+	time.Sleep(10 * time.Minute)
 	ctx := context.Background()
 	run := func() {
 		if _, removed, err := j.ReconcileOrphans(ctx); err != nil {

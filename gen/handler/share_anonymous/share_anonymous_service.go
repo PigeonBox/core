@@ -164,7 +164,7 @@ func Retrieve(ctx context.Context, c *app.RequestContext) {
 
 	// 失败锁定检查（防取件码枚举/密码爆破；维度 = IP + 取件码）
 	lock := middleware.GetDefaultLockout()
-	lockKey := middleware.FormatLockKey("anon", middleware.ClientIP(c), req.Code)
+	lockKey := middleware.LookupLockKey("anon", middleware.ClientIP(c), req.Code)
 	if remain, locked := lock.CheckLocked(ctx, lockKey); locked {
 		c.JSON(consts.StatusTooManyRequests, map[string]interface{}{
 			"code":    errcode.CodeTooManyAttempts,

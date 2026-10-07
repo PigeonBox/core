@@ -579,7 +579,7 @@ func GetShare(ctx context.Context, c *app.RequestContext) {
 
 	// 失败锁定检查（防取件码/密码爆破）
 	lock := middleware.GetDefaultLockout()
-	lockKey := middleware.FormatLockKey("pickup", middleware.ClientIP(c), code)
+	lockKey := middleware.LookupLockKey("pickup", middleware.ClientIP(c), code)
 	if remain, locked := lock.CheckLocked(ctx, lockKey); locked {
 		c.JSON(consts.StatusTooManyRequests, map[string]interface{}{
 			"code":    errcode.CodeTooManyAttempts,
@@ -712,7 +712,7 @@ func authorizeAndCharge(ctx context.Context, c *app.RequestContext, code, passwo
 
 	// 失败锁定检查（防密码爆破）
 	lock := middleware.GetDefaultLockout()
-	lockKey := middleware.FormatLockKey("download", middleware.ClientIP(c), code)
+	lockKey := middleware.LookupLockKey("download", middleware.ClientIP(c), code)
 	if remain, locked := lock.CheckLocked(ctx, lockKey); locked {
 		c.JSON(consts.StatusTooManyRequests, map[string]interface{}{
 			"code":    errcode.CodeTooManyAttempts,
