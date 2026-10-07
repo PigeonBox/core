@@ -56,6 +56,14 @@ func getShareService() *shareService.Service {
 	return shareSvc
 }
 
+// RecordPickupViewer 记录取件人并触发到件通知（供匿名 6 位取件码通道复用）。
+// 此前只有 /share/select 链路记 viewer，取件码取件对取件历史/到件通知失明
+// （2026-10-08 用户报告取件历史空态矛盾时顺带定位）。失败静默：取件主流程
+// 不因记录失败受阻。
+func RecordPickupViewer(ctx context.Context, code, viewerIP string) {
+	_ = getShareService().RecordViewerAndNotify(ctx, code, viewerIP, "")
+}
+
 // publicShareURL 公开分享链接：显式 base_url > 请求来源动态推断（bootstrap
 // 中间件注入 ctx）> 相对路径。禁止 PublicBaseURL 的 server.host:port 兜底
 // ——监听地址(0.0.0.0)对外不可达（2026-10-07 fnOS 真机事故）。

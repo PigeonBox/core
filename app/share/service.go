@@ -936,7 +936,7 @@ func deletedAtToPtr(d gorm.DeletedAt) *time.Time {
 }
 
 // ListUserShares 获取用户的分享列表（带筛选）。
-// status 取值：all/active/expired/text/file/deleted；search 模糊匹配 code/文件名。
+// status 取值：all/active/expired/text/file/deleted/viewed；search 模糊匹配 code/文件名。
 // 筛选条件收散参由本域转换，transport 无需感知 dao.UserShareFilter。
 func (s *Service) ListUserShares(ctx context.Context, userID uint, status, search string, page, pageSize int) ([]*UserShareListItem, int64, error) {
 	s.ensureRepository()

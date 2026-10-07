@@ -3,6 +3,7 @@ package dao
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/pigeonbox/core/repo/db/model"
 	"github.com/stretchr/testify/assert"
@@ -58,4 +59,50 @@ func TestGetUserSharesWithFilterTypeClassification(t *testing.T) {
 		require.Len(t, items, 1)
 		assert.Equal(t, "FILE0001", items[0].Code)
 	})
+}
+
+// 守卫测试：status=viewed（取件历史页数据源）只含被取件过的分享。
+// 此前前端拉 all 全量再客户端过滤 viewer_at，分页 total 是全量分享数，
+// 出现「表格空态却显示共 N 条」（2026-10-08 用户报告）；后端补 viewed
+// 过滤后 total 与列表同源。
+func TestGetUserSharesWithFilterViewed(t *testing.T) {
+	newGovernanceTestDB(t)
+	repo := NewFileCodeRepository()
+	ctx := context.Background()
+
+	viewedAt := time.Now()
+	picked := &model.FileCode{
+		Code:        "PICKED01",
+		Text:        "被取件过的文本分享",
+		UserID:      uintPtr(1),
+		ViewerIP:    "10.0.0.9",
+		ViewerAt:    &viewedAt,
+		ViewerCount: 1,
+	}
+	unpicked := &model.FileCode{
+		Code:   "FRESH001",
+		Text:   "从未被取件的文本分享",
+		UserID: uintPtr(1),
+	}
+	other := &model.FileCode{
+		Code:     "OTHERV01",
+		Text:     "别人分享的被取件文本",
+		UserID:   uintPtr(2),
+		ViewerIP: "10.0.0.9",
+		ViewerAt: &viewedAt,
+	}
+	require.NoError(t, repo.Create(ctx, picked))
+	require.NoError(t, repo.Create(ctx, unpicked))
+	require.NoError(t, repo.Create(ctx, other))
+
+	items, total, err := repo.GetUserSharesWithFilter(ctx, 1, UserShareFilter{Status: "viewed", Page: 1, PageSize: 20})
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), total, "viewed 只计本用户被取件过的分享")
+	require.Len(t, items, 1)
+	assert.Equal(t, "PICKED01", items[0].Code)
+
+	allItems, allTotal, err := repo.GetUserSharesWithFilter(ctx, 1, UserShareFilter{Status: "all", Page: 1, PageSize: 20})
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), allTotal)
+	assert.Len(t, allItems, 2)
 }

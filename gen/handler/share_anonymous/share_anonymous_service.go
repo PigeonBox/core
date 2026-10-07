@@ -18,6 +18,7 @@ import (
 	"github.com/pigeonbox/contracts/errcode"
 	anonmodel "github.com/pigeonbox/contracts/gen/share_anonymous"
 	anonapp "github.com/pigeonbox/core/app/anonymous"
+	sharehandler "github.com/pigeonbox/core/gen/handler/share"
 	"github.com/pigeonbox/core/pkg/gate"
 	"github.com/pigeonbox/core/pkg/logger"
 	"github.com/pigeonbox/core/pkg/middleware"
@@ -199,6 +200,10 @@ func Retrieve(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 	lock.Reset(ctx, lockKey)
+
+	// 取件成功：记录取件人 + 到件通知（与 /share/select 链路对齐）。此前 6 位
+	// 取件码通道不记 viewer，取件历史页与到件通知对主取件通道失明。
+	sharehandler.RecordPickupViewer(ctx, meta.ShareCode, middleware.ClientIP(c))
 
 	// 下载链接附时间窗令牌（security.download_token.enabled 时 /share/download 必需）
 	downloadURL := "/share/download?code=" + meta.ShareCode

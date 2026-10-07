@@ -230,7 +230,7 @@ func (r *FileCodeRepository) CountTodayUploads(ctx context.Context) (int64, erro
 
 // UserShareFilter 用户分享列表筛选条件
 type UserShareFilter struct {
-	Status   string // all / active / expired / text / file / deleted
+	Status   string // all / active / expired / text / file / deleted / viewed
 	Search   string // 模糊搜索 code / 文件名
 	Page     int
 	PageSize int
@@ -242,6 +242,8 @@ type UserShareFilter struct {
 //   - "text": 文本分享（无文件路径且 Text 非空；文件分享的 Text 存原始文件名，不能只看 Text）
 //   - "file": 文件分享（file_path 非空）
 //   - "deleted": 软删除的（deleted_at != null）
+//   - "viewed": 至少被取件过一次（viewer_at 非空；取件历史页用，total 必须与
+//     列表同源——前端曾拉全量再客户端过滤，空表却显示全量分页总数）
 //   - "all" / "": 不过滤状态
 func (r *FileCodeRepository) GetUserSharesWithFilter(ctx context.Context, userID uint, filter UserShareFilter) ([]*model.FileCode, int64, error) {
 	page, pageSize := clampPage(filter.Page, filter.PageSize, 100)
@@ -261,6 +263,9 @@ func (r *FileCodeRepository) GetUserSharesWithFilter(ctx context.Context, userID
 		q = q.Where("(file_path IS NULL OR file_path = '') AND text IS NOT NULL AND text != ''")
 	case "file":
 		q = q.Where("file_path IS NOT NULL AND file_path != ''")
+	case "viewed":
+		// 取件历史：至少被取件过一次
+		q = q.Where("viewer_at IS NOT NULL")
 	}
 
 	if filter.Search != "" {
