@@ -15,8 +15,10 @@ func TestResolveBase(t *testing.T) {
 	// 显式配置最优先
 	assert.Equal(t, "https://s.example.com", ResolveBase(context.Background(), "https://s.example.com"))
 
-	// base_url 未配置时取请求来源(bootstrap 中间件写入 ctx)
-	ctx := context.WithValue(context.Background(), PublicBaseCtxKey, "http://10.10.30.250:12345")
+	// base_url 未配置时取请求来源(bootstrap 中间件写入 ctx)。
+	// 键必须是内置 string:hertz RequestContext.Value 只解析 string 键
+	// (c.Set 存 map[string]any),自定义 key 类型会查不到。
+	ctx := context.WithValue(context.Background(), PublicBaseCtxKey, "http://10.10.30.250:12345") //nolint:staticcheck // SA1029:hertz ctx 键约束见上
 	assert.Equal(t, "http://10.10.30.250:12345", ResolveBase(ctx, ""))
 
 	// 双缺省退空串(FullShareURL 退化为相对路径,前端可由 origin 补全)
@@ -29,7 +31,9 @@ func TestModelToResp_FullShareURL(t *testing.T) {
 	s := &Service{baseURL: ""}
 	fc := &model.FileCode{Code: "VMnyAcrG"}
 
-	ctx := context.WithValue(context.Background(), PublicBaseCtxKey, "http://10.10.30.250:12345")
+	// 键必须是内置 string:hertz RequestContext.Value 只解析 string 键
+	// (c.Set 存 map[string]any),自定义 key 类型会查不到。
+	ctx := context.WithValue(context.Background(), PublicBaseCtxKey, "http://10.10.30.250:12345") //nolint:staticcheck // SA1029:hertz ctx 键约束,同上
 	resp := s.modelToResp(ctx, fc)
 	assert.Equal(t, "http://10.10.30.250:12345/share/VMnyAcrG", resp.FullShareURL)
 
