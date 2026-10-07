@@ -705,8 +705,12 @@ func BootstrapWithOptions(configPath string, opts ...Option) (*server.Hertz, err
 	securityPkg.SetDownloadTokenSecret(dlSecret)
 
 	// 4. 创建默认管理员（public 副本不执行：管理员初始化归 admin/standalone）
+	// FCB_DISABLE_DEFAULT_ADMIN=true 时跳过——首启向导（/setup）模式：由访问者
+	// 在浏览器完成管理员创建与站点预配置，自建默认口令与向导互斥（2026-10-07）。
 	if config.ServesAdminPlane() {
-		if err := CreateDefaultAdmin(database); err != nil {
+		if os.Getenv("FCB_DISABLE_DEFAULT_ADMIN") == "true" {
+			logger.Info("default admin creation disabled (FCB_DISABLE_DEFAULT_ADMIN=true); use /setup wizard")
+		} else if err := CreateDefaultAdmin(database); err != nil {
 			logger.Error("Failed to create default admin", zap.Error(err))
 		}
 	}
@@ -1551,6 +1555,9 @@ func initThriftIDLServices(database *gorm.DB) {
 	// 4.5 取件码铸造接线（2026-10-07）：share 域经窄接口调用 anonymous 域，
 	// 文件分享出码时同步铸 6 位取件码（须共用同一 anon 实例，Redis/内存 KV 才一致）
 	shareSvc.SetPickupMinter(anonHandler.CurrentService())
+	// 4.6 匿名取件码直传绑定（2026-10-07）：presign Complete 回填 /anonymous/generate
+	// 的占位记录（同样必须共用同一 anon 实例）
+	presignHandler.SetPickupBinder(anonHandler.CurrentService())
 
 	// 4. ratelimit service（直接用 default limiter）
 	ratelimitHandler.SetLimiter(middleware.GetDefaultRateLimiter())

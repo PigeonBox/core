@@ -35,6 +35,13 @@ func SetService(rdb *redis.Client, baseURL, signingKey string) {
 }
 
 // SetShareService 注入 share service（用于 Complete 时写分享表）
+// SetPickupBinder 注入匿名取件码占位绑定（bootstrap 接线 anonymous 域实现）
+func SetPickupBinder(b presignapp.PickupBinder) {
+	if presignSvc != nil {
+		presignSvc.SetPickupBinder(b)
+	}
+}
+
 func SetShareService(svc presignapp.ShareServiceInterface) {
 	if presignSvc == nil {
 		// 容错：允许先注入 share，再调 SetService
@@ -208,6 +215,9 @@ func Init(ctx context.Context, c *app.RequestContext) {
 		ExpireStyle:  strDeref(req.ExpireStyle),
 		RequireAuth:  boolDeref(req.RequireAuth),
 		PasswordHash: passwordHash,
+		// 匿名取件码直传绑定（2026-10-07）：合法性与占位校验在 Complete 前由
+		// pickupBinder.ResolvePlaceholder 把关；此处仅消毒规整
+		PickupCode: strings.ToUpper(strings.TrimSpace(strDeref(req.PickupCode))),
 	}
 	result, err := getService().Init(ctx, meta)
 	if err != nil {

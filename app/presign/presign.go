@@ -61,6 +61,8 @@ type Service struct {
 	baseURL       string
 	// shareService 注入的 share service（Complete 时调用写分享表）
 	shareService ShareServiceInterface
+	// pickupBinder 匿名取件码占位绑定（bootstrap 注入 anonymous service；nil = 绑定通道不可用）
+	pickupBinder PickupBinder
 	// storage 注入的存储服务（直传按当前激活后端落盘；nil 时保留本地盘直写）
 	storage StorageWriter
 	// objects 真预签名直传能力（s3 后端可用；nil 或不支持时回退自家中转）
@@ -104,6 +106,15 @@ type ObjectStore interface {
 }
 
 // ShareServiceInterface share service 接口（避免循环依赖）
+// PickupBinder 匿名取件码占位绑定窄接口（app/anonymous.Service 结构性满足；
+// presign 域不 import anonymous 域，由 bootstrap 注入）。
+type PickupBinder interface {
+	// ResolvePlaceholder 校验取件码是待回填占位分享，返回其 8 位分享码
+	ResolvePlaceholder(ctx context.Context, pickupCode string) (string, error)
+	// BindFilePath 把直传对象回填到占位分享（file_path+size）
+	BindFilePath(ctx context.Context, shareCode, filePath string, size int64) error
+}
+
 // 与 share.Service.ShareFile / CreateShare 签名保持一致
 type ShareServiceInterface interface {
 	ShareFile(ctx context.Context, req *share.ShareFileReq) (*share.ShareResp, error)
@@ -133,6 +144,9 @@ func NewService(rdb *redis.Client, baseURL string, signingKey string) *Service {
 func (s *Service) SetShareService(svc ShareServiceInterface) {
 	s.shareService = svc
 }
+
+// SetPickupBinder 注入匿名取件码占位绑定（anonymous 域实现；nil = 绑定通道不可用）
+func (s *Service) SetPickupBinder(b PickupBinder) { s.pickupBinder = b }
 
 // SetStorage 注入存储服务（直传按当前激活后端落盘，含路径防御）
 func (s *Service) SetStorage(st StorageWriter) {
@@ -164,6 +178,10 @@ type InitMeta struct {
 	// SessionTTL 直传会话/签名时效（handler 按管理配置下发；0=服务端默认 1h）
 	SessionTTL time.Duration `json:"-"`
 	FileHash   string        `json:"file_hash,omitempty"`
+	// PickupCode 匿名取件码直传绑定（2026-10-07）：非空时 Complete 不新建分享，
+	// 而是把对象回填到该占位记录（/anonymous/generate 创建）。有效期/密码以
+	// 占位记录为准——本 meta 的 expire/auth 字段在绑定路径被忽略。
+	PickupCode string `json:"pickup_code,omitempty"`
 }
 
 // InitResult init 返回
@@ -390,6 +408,21 @@ func (s *Service) Complete(ctx context.Context, uploadID, token, ownerIP string)
 // createShareRecord 调 share service 写分享记录
 // 返回 (shareCode, shareURL, fullShareURL, error)
 func (s *Service) createShareRecord(ctx context.Context, meta *InitMeta, ownerIP string) (code, shareURL, fullURL, pickupCode string, err error) {
+	// 匿名取件码绑定路径（2026-10-07）：对象回填到 /anonymous/generate 的占位记录，
+	// 不新建分享；有效期/密码以占位记录为准（meta 的 expire/auth 在此被忽略）。
+	if meta.PickupCode != "" {
+		if s.pickupBinder == nil {
+			return "", "", "", "", errors.New("取件码绑定通道未启用")
+		}
+		shareCode, err := s.pickupBinder.ResolvePlaceholder(ctx, meta.PickupCode)
+		if err != nil {
+			return "", "", "", "", fmt.Errorf("取件码绑定失败: %w", err)
+		}
+		if err := s.pickupBinder.BindFilePath(ctx, shareCode, meta.ObjectKey, meta.FileSize); err != nil {
+			return "", "", "", "", fmt.Errorf("占位分享回填失败: %w", err)
+		}
+		return shareCode, "/share/select/?code=" + meta.PickupCode, "", meta.PickupCode, nil
+	}
 	if s.shareService == nil {
 		// share service 未注入：返回 mock 数据（用于单测 / 未配置场景）
 		return "mock_" + meta.UploadID, "/share/mock", share.ResolveBase(ctx, s.baseURL) + "/share/mock", "", nil

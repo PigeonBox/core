@@ -238,10 +238,11 @@ func MultiShareDirect(ctx context.Context, c *app.RequestContext) {
 		"code":    200,
 		"message": "文件上传成功",
 		"data": map[string]interface{}{
-			"code":       shareResult.Code,
-			"url":        shareResult.FullShareURL,
-			"share_url":  fmt.Sprintf("/share/%s", shareResult.Code),
-			"file_count": len(stored),
+			"code":        shareResult.Code,
+			"url":         shareResult.FullShareURL,
+			"share_url":   fmt.Sprintf("/share/%s", shareResult.Code),
+			"file_count":  len(stored),
+			"pickup_code": shareResult.PickupCode,
 		},
 	})
 }
@@ -419,10 +420,11 @@ func MultiShareBind(ctx context.Context, c *app.RequestContext) {
 		"code":    200,
 		"message": "分享创建成功",
 		"data": map[string]interface{}{
-			"code":       shareResult.Code,
-			"url":        shareResult.FullShareURL,
-			"share_url":  fmt.Sprintf("/share/%s", shareResult.Code),
-			"file_count": len(bound),
+			"code":        shareResult.Code,
+			"url":         shareResult.FullShareURL,
+			"share_url":   fmt.Sprintf("/share/%s", shareResult.Code),
+			"file_count":  len(bound),
+			"pickup_code": shareResult.PickupCode,
 		},
 	})
 }

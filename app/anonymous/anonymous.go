@@ -443,6 +443,47 @@ func (s *Service) MintForShare(ctx context.Context, shareCode, fileName string, 
 	}, *expireAt)
 }
 
+// ResolvePlaceholder 校验取件码对应一个"待回填"的占位分享（/anonymous/generate
+// 创建、FilePath 为空），返回其 8 位分享码。供 presign 直传绑定通道在 Init 时
+// 预检、Complete 时定位回填目标。
+// 非占位（已完成上传）/不存在/已过期 → 显式错误，防把对象绑到任意分享上。
+func (s *Service) ResolvePlaceholder(ctx context.Context, pickupCode string) (string, error) {
+	if s.rdb == nil {
+		return "", errors.New("redis 未配置，匿名取件功能不可用")
+	}
+	shareCode, err := s.lookupShareCode(ctx, pickupCode)
+	if err != nil {
+		return "", ErrCodeNotFound
+	}
+	fc, err := s.fileCodeRepo.GetByCode(ctx, shareCode)
+	if err != nil || fc == nil {
+		return "", ErrCodeNotFound
+	}
+	if fc.IsTextShare() || fc.GetFilePath() != "" {
+		return "", errors.New("该取件码已完成上传，不能重复绑定")
+	}
+	if fc.IsExpired() {
+		return "", ErrCodeExpired
+	}
+	return shareCode, nil
+}
+
+// BindFilePath 把直传完成的对象回填到占位分享（匿名取件码直传通道的最后一公里）。
+// 以实际落盘对象为准更新 file_path 与 size；完成标记由调用方（presign Complete）保证。
+// 占位记录自带 UUIDFileName（generate 的展示名），不清掉会被 GetFilePath()
+// 拼成 objectKey/文件名 的双重路径——直传对象 key 本身就是完整相对路径。
+func (s *Service) BindFilePath(ctx context.Context, shareCode, filePath string, size int64) error {
+	fc, err := s.fileCodeRepo.GetByCode(ctx, shareCode)
+	if err != nil || fc == nil {
+		return ErrCodeNotFound
+	}
+	return s.fileCodeRepo.UpdateColumns(ctx, fc.ID, map[string]interface{}{
+		"file_path":      filePath,
+		"uuid_file_name": "",
+		"size":           size,
+	})
+}
+
 // randomShareCode 8 位 file_code（crypto/rand，小写字母+数字）
 func randomShareCode() string {
 	const charset = "abcdefghijklmnopqrstuvwxyz0123456789"

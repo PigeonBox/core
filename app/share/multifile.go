@@ -168,7 +168,21 @@ func (s *Service) CreateMultiFileShare(ctx context.Context, req *MultiShareReq) 
 	// P2P 联邦公告（未启用为 no-op）
 	s.federationCreated(fileCode.Code, fileCode.ExpiredAt)
 
-	return s.modelToResp(ctx, fileCode), nil
+	resp := s.modelToResp(ctx, fileCode)
+	// 6 位取件码铸造（2026-10-07，与 CreateShare 同策略：非致命）
+	if s.pickupMinter != nil {
+		displayName := fmt.Sprintf("%d files", len(req.Entries))
+		if len(req.Entries) == 1 {
+			displayName = req.Entries[0].FileName
+		}
+		if pickup, err := s.pickupMinter.MintForShare(ctx, fileCode.Code, displayName, totalSize, req.RequireAuth, req.ExpiredAt); err != nil {
+			logger.Warn("mint pickup code failed (non-fatal, multi)",
+				zap.String("code", fileCode.Code), zap.Error(err))
+		} else {
+			resp.PickupCode = pickup
+		}
+	}
+	return resp, nil
 }
 
 // ListShareFiles 取分享的文件列表（取件端展示/下载入口）。
