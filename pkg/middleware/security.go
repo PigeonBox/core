@@ -22,8 +22,8 @@ import (
 //
 // 可通过 SetSecurityHeadersConfig 调整。
 type SecurityHeadersConfig struct {
-	// EnableHSTS 是否启用 Strict-Transport-Security（仅 HTTPS 部署时启用，
-	// 否则可能把用户锁在无法访问的 https 状态）。
+	// EnableHSTS 是否下发 Strict-Transport-Security。三态语义在 conf 层裁决
+	// （未配置=生产默认开/开发关），此处只接收最终布尔结果。
 	EnableHSTS bool
 }
 
@@ -51,8 +51,9 @@ func SecurityHeaders() app.HandlerFunc {
 		c.Header("X-XSS-Protection", "1; mode=block")
 		c.Header("Referrer-Policy", "strict-origin-when-cross-origin")
 		if securityHeadersConfig.EnableHSTS {
-			// max-age=31536000（1年），含子域名，预加载
-			c.Header("Strict-Transport-Security", "max-age=31536000; includeSubDomains; preload")
+			// max-age=31536000（1年）。不带 includeSubDomains/preload：产品部署在
+			// 任意主机名下，自动覆盖子域会误伤同站点的兄弟子域服务（2026-10-08 加固）
+			c.Header("Strict-Transport-Security", "max-age=31536000")
 		}
 		c.Next(ctx)
 	}

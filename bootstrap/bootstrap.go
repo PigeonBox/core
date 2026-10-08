@@ -115,6 +115,22 @@ func rateLimitBucket(path string) string {
 	return ""
 }
 
+// rateLimitGlobalExempt 未归桶路径的全局限流豁免清单（纯函数，守卫测试覆盖）。
+//
+// 只豁免两类：① 健康探针（k8s/LB 节点 IP 高频调用，误封禁会让整个部署假死）；
+// ② 哈希命名的静态构建产物与 favicon/robots（无业务逻辑，成本极低）。
+// 其余未归桶路径一律走全局默认桶（rate_limit.global_qps，默认 100 QPS/IP）。
+func rateLimitGlobalExempt(path string) bool {
+	switch {
+	case path == "/ping", path == "/health", path == "/live", path == "/ready",
+		path == "/readyz", path == "/api/v1/ping",
+		path == "/favicon.ico", path == "/robots.txt",
+		strings.HasPrefix(path, "/assets/"):
+		return true
+	}
+	return false
+}
+
 // CORS 跨域中间件（配置化）。
 //
 // 安全策略：
@@ -753,11 +769,18 @@ func BootstrapWithOptions(configPath string, opts ...Option) (*server.Hertz, err
 			zap.String("path", config.Observability.Metrics.Path))
 	}
 
-	// 安全：配置安全响应头（HSTS 仅在显式启用时开启，避免非 HTTPS 部署锁死）
+	// 安全：配置安全响应头。HSTS 三态（2026-10-08 加固）：未配置时生产模式默认
+	// 开启、开发默认关——浏览器忽略 HTTP 响应上的 STS 头，纯 HTTP 的 LAN 部署
+	// 零影响；自签证书等特殊拓扑显式 enable_hsts=false（或 env FCB_ENABLE_HSTS）
+	// 即可关闭，恒以显式配置为准。
+	hstsEnabled := config.IsProduction()
+	if v := config.Security.CORS.EnableHSTS; v != nil {
+		hstsEnabled = *v
+	}
 	middleware.SetSecurityHeadersConfig(middleware.SecurityHeadersConfig{
-		EnableHSTS: config.Security.CORS.EnableHSTS,
+		EnableHSTS: hstsEnabled,
 	})
-	if config.Security.CORS.EnableHSTS {
+	if hstsEnabled {
 		logger.Info("HSTS enabled (ensure HTTPS deployment)")
 	}
 
@@ -810,7 +833,8 @@ func BootstrapWithOptions(configPath string, opts ...Option) (*server.Hertz, err
 	// 匿名上传日配额计数器复用同一 Redis（无 Redis 退化进程内计数）
 	gate.SetQuotaRedis(redis.GetClient())
 	h.Use(func(ctx context.Context, c *app.RequestContext) {
-		switch rateLimitBucket(string(c.Request.URI().Path())) {
+		path := string(c.Request.URI().Path())
+		switch rateLimitBucket(path) {
 		case "login":
 			rl.LoginMiddleware()(ctx, c)
 		case "upload":
@@ -818,7 +842,15 @@ func BootstrapWithOptions(configPath string, opts ...Option) (*server.Hertz, err
 		case "download":
 			rl.DownloadMiddleware()(ctx, c)
 		default:
-			c.Next(ctx)
+			// 未归桶路径全局默认桶兜底（2026-10-08 攻击面加固：此前
+			// GlobalMiddleware 从未接线，/api/config、/api/v1/notifies/public、
+			// /api/v1/user/refresh 等公开端点零限流可被无成本轰炸）。
+			// 探针/静态资源豁免（rateLimitGlobalExempt）。
+			if rateLimitGlobalExempt(path) {
+				c.Next(ctx)
+				return
+			}
+			rl.GlobalMiddleware()(ctx, c)
 		}
 	})
 

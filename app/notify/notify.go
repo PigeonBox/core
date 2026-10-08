@@ -443,6 +443,27 @@ type webhookPayload struct {
 	Timestamp  int64  `json:"timestamp"`
 }
 
+// sendWebhook 统一推送出口：发送前对目标 URL 复跑 SSRF 校验（2026-10-08 加固）。
+// 此前只有保存期校验（env/file 注入的 FCB_WEBHOOK_URL 完全绕过）与 302 逐跳
+// 校验——首发请求本身从未被校验，DNS 重绑定/换配置窗口内可打私网。
+func (s *Service) sendWebhook(ctx context.Context, event string, body []byte) error {
+	if s.webhookURL == "" {
+		return nil
+	}
+	if err := security.ValidateEndpointURL(s.webhookURL); err != nil {
+		return fmt.Errorf("webhook 目标被拒绝: %w", err)
+	}
+	return httpjson.DoJSON(ctx, webhookHTTPClient, httpjson.Request{
+		Method: http.MethodPost,
+		URL:    s.webhookURL,
+		Body:   body,
+		Header: func(h http.Header) {
+			h.Set("Content-Type", "application/json")
+			h.Set("X-FCB-Event", event)
+		},
+	}, nil)
+}
+
 // EmitShareFlagged 分享命中审核钩子事件（share.flagged）——结构化 webhook 推送，
 // 供外挂自动处置（如拉取后调管理端禁用接口）。异步推送，失败静默记日志。
 func (s *Service) EmitShareFlagged(code, reason, ownerIP string) {
@@ -461,18 +482,8 @@ func (s *Service) EmitShareFlagged(code, reason, ownerIP string) {
 	if err != nil {
 		return
 	}
-	event := "share.flagged"
 	async.GoSafe(func() {
-		err := httpjson.DoJSON(context.Background(), webhookHTTPClient, httpjson.Request{
-			Method: http.MethodPost,
-			URL:    s.webhookURL,
-			Body:   body,
-			Header: func(h http.Header) {
-				h.Set("Content-Type", "application/json")
-				h.Set("X-FCB-Event", event)
-			},
-		}, nil)
-		if err != nil {
+		if err := s.sendWebhook(context.Background(), "share.flagged", body); err != nil {
 			logger.Warn("webhook push failed", zap.String("url", s.webhookURL), zap.Error(err))
 		}
 	})
@@ -497,16 +508,7 @@ func (s *Service) dispatchWebhook(ctx context.Context, userID uint, title, conte
 		return
 	}
 	async.GoSafe(func() {
-		err := httpjson.DoJSON(ctx, webhookHTTPClient, httpjson.Request{
-			Method: http.MethodPost,
-			URL:    s.webhookURL,
-			Body:   body,
-			Header: func(h http.Header) {
-				h.Set("Content-Type", "application/json")
-				h.Set("X-FCB-Event", "notify.created")
-			},
-		}, nil)
-		if err != nil {
+		if err := s.sendWebhook(ctx, "notify.created", body); err != nil {
 			logger.Warn("webhook push failed", zap.String("url", s.webhookURL), zap.Error(err))
 		}
 	})

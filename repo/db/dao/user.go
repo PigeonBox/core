@@ -81,8 +81,8 @@ func (r *UserRepository) ListFiltered(ctx context.Context, f UserFilter) ([]*mod
 	page, pageSize := clampPage(f.Page, f.PageSize, MaxPageSize)
 	q := r.db().WithContext(ctx).Model(&model.User{})
 	if f.Keyword != "" {
-		like := "%" + f.Keyword + "%"
-		q = q.Where("username LIKE ? OR email LIKE ? OR nickname LIKE ?", like, like, like)
+		like, esc := LikeContains(f.Keyword)
+		q = q.Where("username LIKE ? OR email LIKE ? OR nickname LIKE ? "+esc, like, like, like)
 	}
 	if f.Status != "" {
 		q = q.Where("status = ?", f.Status)

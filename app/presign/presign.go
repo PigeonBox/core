@@ -525,6 +525,13 @@ func (s *Service) UploadDirect(ctx context.Context, uploadID, token string, body
 	if !hmac.Equal([]byte(expected), []byte(token)) {
 		return ErrTokenInvalid
 	}
+	// 3.5 已完成会话拒绝重放覆盖（2026-10-08 攻击面加固 P0）：Complete 之后
+	// meta 仍存活 5 分钟、令牌在 ExpireAt 前始终有效，持旧令牌重放 PUT 可静默
+	// 替换已发布分享背后的对象——分享码不变、内容掉包。与 Complete 的
+	// ErrAlreadyComplete 同语义（handler 映射 409）。
+	if meta.Complete {
+		return ErrAlreadyComplete
+	}
 	if meta.FileSize <= 0 {
 		return fmt.Errorf("文件大小必须大于0")
 	}

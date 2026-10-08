@@ -129,6 +129,15 @@ func ChunkUploadInit(ctx context.Context, c *app.RequestContext) {
 		})
 		return
 	}
+	// 分片计划自洽校验（2026-10-08 加固）：TotalChunks 客户端可控且此前无上限，
+	// 虚高总数可刷 DB 行/逐片存储写，不足总数制造 Complete 永不满足的僵尸会话
+	if err := chunkService.ValidateChunkPlan(req.FileSize, int64(req.ChunkSize), int(req.TotalChunks)); err != nil {
+		c.JSON(consts.StatusBadRequest, map[string]interface{}{
+			"code":    400,
+			"message": err.Error(),
+		})
+		return
+	}
 
 	// 匿名 per-IP 日配额（分片通道按整文件申报大小计数，仅匿名请求）
 	if gateUserID == nil {

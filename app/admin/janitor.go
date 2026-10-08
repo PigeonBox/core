@@ -212,22 +212,54 @@ func (j *Janitor) CleanupStaleUploads(ctx context.Context, maxAge time.Duration)
 // 且匿名 presign Init 可被滥用为免费网盘（2026-10-06 审计确认），此方法为其兜底。
 // 本地后端不适用（ReconcileOrphans 磁盘对账已覆盖）。
 func (j *Janitor) CleanRemotePresignOrphans(ctx context.Context, olderThan time.Duration) (int, error) {
+	keys, err := j.ScanRemotePresignOrphans(ctx, olderThan)
+	if err != nil {
+		return 0, err
+	}
+	removed := 0
+	for _, key := range keys {
+		if err := j.svc.DeleteFile(ctx, key); err != nil {
+			logger.Warn("remote presign orphan delete failed", zap.String("key", key), zap.Error(err))
+			continue
+		}
+		removed++
+	}
+	if removed > 0 {
+		logger.Info("remote presign orphan objects removed", zap.Int("count", removed))
+	}
+	return removed, nil
+}
+
+// CountRemotePresignOrphans 只读统计：当前满足清理判定的 presign 孤儿数
+// （存储洞察 /admin/storage/insights 用，不删除任何对象）。
+func (j *Janitor) CountRemotePresignOrphans(ctx context.Context, olderThan time.Duration) (int, error) {
+	keys, err := j.ScanRemotePresignOrphans(ctx, olderThan)
+	if err != nil {
+		return 0, err
+	}
+	return len(keys), nil
+}
+
+// ScanRemotePresignOrphans 列举满足清理判定的远端 presign 孤儿对象 key（只读）：
+// up_ 前缀 + 无 DB 引用 + 超过 olderThan 宽限期。本地后端返回空集
+// （磁盘对账 ReconcileOrphans 已覆盖，无 presign 孤儿语义）。
+func (j *Janitor) ScanRemotePresignOrphans(ctx context.Context, olderThan time.Duration) ([]string, error) {
 	if j.svc == nil {
-		return 0, fmt.Errorf("存储实例未就绪")
+		return nil, fmt.Errorf("存储实例未就绪")
 	}
 	if j.svc.EffectiveType() == storage.StorageTypeLocal {
-		return 0, nil // 本地由 ReconcileOrphans 覆盖
+		return nil, nil // 本地由 ReconcileOrphans 覆盖
 	}
 	lister, ok := j.svc.(interface {
 		ListRemoteObjects(ctx context.Context, prefix string) ([]storage.RemoteObjectInfo, error)
 	})
 	if !ok {
-		return 0, fmt.Errorf("存储实例不支持远端列举")
+		return nil, fmt.Errorf("存储实例不支持远端列举")
 	}
 
 	objs, err := lister.ListRemoteObjects(ctx, "uploads/")
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 
 	// 引用集：file_codes.file_path（含软删行——与 ReconcileOrphans 同口径）。
@@ -236,7 +268,7 @@ func (j *Janitor) CleanRemotePresignOrphans(ctx context.Context, olderThan time.
 	referenced := make(map[string]bool)
 	rows, err := dao.NewFileCodeRepository().ListAllIncludingDeleted(ctx)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	for _, r := range rows {
 		if p := r.GetFilePath(); p != "" {
@@ -245,7 +277,7 @@ func (j *Janitor) CleanRemotePresignOrphans(ctx context.Context, olderThan time.
 	}
 
 	cutoff := time.Now().Add(-olderThan)
-	removed := 0
+	var orphanKeys []string
 	for _, o := range objs {
 		base := path.Base(o.Key)
 		if !strings.HasPrefix(base, "up_") {
@@ -257,14 +289,7 @@ func (j *Janitor) CleanRemotePresignOrphans(ctx context.Context, olderThan time.
 		if o.ModTime.After(cutoff) {
 			continue // 宽限期内（可能正在直传）
 		}
-		if err := j.svc.DeleteFile(ctx, o.Key); err != nil {
-			logger.Warn("remote presign orphan delete failed", zap.String("key", o.Key), zap.Error(err))
-			continue
-		}
-		removed++
+		orphanKeys = append(orphanKeys, o.Key)
 	}
-	if removed > 0 {
-		logger.Info("remote presign orphan objects removed", zap.Int("count", removed))
-	}
-	return removed, nil
+	return orphanKeys, nil
 }

@@ -379,6 +379,9 @@ func UploadDirect(ctx context.Context, c *app.RequestContext) {
 			resp.NewErrorByCode(c, errcode.CodeUnauthorized)
 		case errors.Is(err, presignapp.ErrUploadExpired):
 			resp.NewErrorWithMessage(c, errcode.CodeInvalidParam, "upload expired")
+		case errors.Is(err, presignapp.ErrAlreadyComplete):
+			// 已完成会话拒绝重放直传（防已发布分享对象被静默替换，2026-10-08 加固）
+			resp.NewErrorByCode(c, errcode.CodePresignFailed)
 		default:
 			resp.NewTypedError(c, err) // 配额/审核等 typed error 按业务码透传
 		}

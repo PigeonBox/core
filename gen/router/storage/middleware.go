@@ -49,3 +49,13 @@ func _teststorageconnectionMw() []app.HandlerFunc {
 	// your code...
 	return nil
 }
+
+func _cleanpresignorphansMw() []app.HandlerFunc {
+	// your code...
+	return nil
+}
+
+func _getstorageinsightsMw() []app.HandlerFunc {
+	// your code...
+	return nil
+}

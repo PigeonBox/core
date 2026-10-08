@@ -209,10 +209,24 @@ func validateAPIKey(ctx context.Context, c *app.RequestContext, plainKey string)
 	c.Set("api_key_id", principal.KeyID) // 与 transport 侧 ContextKeyAPIKeyID 同字符串
 	c.Set("auth_type", "api_key")        // 与 transport 侧 ContextKeyAuthType 同字符串
 	c.Header("X-User-ID", fmt.Sprintf("%d", principal.UserID))
-	c.Header("X-Username", principal.Username)
+	// 回显头消毒（2026-10-08 加固）：新用户名建号时已白名单校验，但 legacy
+	// 存量用户名从未复验——header 值必须只含可见安全字符，防响应拆分/注入面
+	c.Header("X-Username", sanitizeHeaderValue(principal.Username))
 	c.Header("X-Role", principal.Role)
 
 	return withIdentity(ctx, principal.UserID, principal.Username, principal.Role, ClientIP(c), principal.KeyID), nil
+}
+
+// sanitizeHeaderValue 回显头消毒：剥离控制字符（CR/LF/其他 C0）与空白，
+// 只留可打印可见字符——存量 legacy 用户名未经过新白名单校验，出响应头前兜底。
+func sanitizeHeaderValue(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if r > 0x1f && r != 0x7f {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 // respondAPIKeyError 统一错误响应：总开关关闭 → 401；被锁定/单 Key 限流 → 429；无效 → 401（统一文案防枚举）。

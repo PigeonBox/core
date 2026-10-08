@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -300,4 +301,33 @@ func TestAbort_InvalidToken(t *testing.T) {
 
 	err = svc.Abort(ctx, initRes.UploadID, "wrong-token")
 	assert.ErrorIs(t, err, ErrTokenInvalid)
+}
+
+// TestUploadDirect_ReplayAfterCompleteRejected 重放覆盖防线（2026-10-08 加固 P0）：
+// Complete 之后 meta 仍存活、令牌未过期，持旧令牌重放 PUT 必须被拒——否则可
+// 静默替换已发布分享背后的对象（分享码不变、内容掉包）。
+func TestUploadDirect_ReplayAfterCompleteRejected(t *testing.T) {
+	svc, _ := newTestService(t)
+	mock := &mockShareService{returnCode: "code"}
+	svc.SetShareService(mock)
+
+	// nil storage 时 UploadDirect 走 ./data 本地兜底，隔离到临时目录
+	oldWd, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(t.TempDir()))
+	t.Cleanup(func() { _ = os.Chdir(oldWd) })
+
+	ctx := context.Background()
+	meta := InitMeta{FileName: "test.txt", FileSize: 4}
+	initRes, err := svc.Init(ctx, meta)
+	require.NoError(t, err)
+
+	// 首次直传成功
+	require.NoError(t, svc.UploadDirect(ctx, initRes.UploadID, initRes.Token, strings.NewReader("AAAA"), 4))
+
+	// Complete 后同令牌重放 PUT → ErrAlreadyComplete
+	_, err = svc.Complete(ctx, initRes.UploadID, initRes.Token, "127.0.0.1")
+	require.NoError(t, err)
+	err = svc.UploadDirect(ctx, initRes.UploadID, initRes.Token, strings.NewReader("BBBB"), 4)
+	assert.ErrorIs(t, err, ErrAlreadyComplete)
 }

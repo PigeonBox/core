@@ -607,5 +607,8 @@ type RateLimitSettings struct {
 type CORSConfig struct {
 	AllowOrigins     []string `mapstructure:"allow_origins"`     // 可信来源列表，env: FCB_CORS_ALLOW_ORIGINS（逗号分隔）
 	AllowCredentials bool     `mapstructure:"allow_credentials"` // 是否允许携带凭证
-	EnableHSTS       bool     `mapstructure:"enable_hsts"`       // 启用 HSTS（仅 HTTPS 部署）
+	// EnableHSTS 三态（2026-10-08 加固）：nil（未配置）= 生产模式默认开/开发默认关；
+	// 显式 true/false 恒以配置为准（自签证书等特殊拓扑的逃生开关）。
+	// env: FCB_ENABLE_HSTS
+	EnableHSTS *bool `mapstructure:"enable_hsts"`
 }

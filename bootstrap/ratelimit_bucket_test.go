@@ -70,15 +70,17 @@ func TestRateLimitBucketCoversRoutes(t *testing.T) {
 	}
 
 	// ---- 反向：所有路由要么进桶，要么在白名单内（漏网检测）----
-	// 白名单条目必须给理由：
+	// 白名单条目必须给理由。注意自 2026-10-08 起，未进桶且不在
+	// rateLimitGlobalExempt 豁免清单的路径会落全局默认桶（global_qps 兜底限流），
+	// 这里"无需限流"的白名单语义已弱化为"无需专属桶"。
 	noBucketAllowed := []string{
-		// 健康探针（k8s/LB 高频调用，成本低）
+		// 健康探针（k8s/LB 高频调用，成本低）——同时是全局桶豁免项
 		"/health", "/live", "/ready", "/readyz", "/ping", "/api/v1/ping",
 		// 管理员凭证门控（/version 由 bootstrap 中间件收权；/api/v1/mcp 自带 AdminMiddleware）
 		"/version", "/api/v1/mcp",
 		// 低成本元信息/静态
 		"/api/config", "/robots.txt", "/assets/",
-		// 认证后端点（登录态/API Key 是前提，IP 桶无意义）
+		// 认证后端点（登录态/API Key 是前提，专属 IP 桶意义有限；落全局默认桶）
 		"/admin/", "/user/", "/api/v1/user/", "/notifies/", "/api/v1/notifies/",
 	}
 	isNoBucket := func(p string) bool {
@@ -113,6 +115,22 @@ func TestRateLimitBucketCoversRoutes(t *testing.T) {
 	}
 	if got := rateLimitBucket("/request/abc"); got != "download" {
 		t.Errorf("寄件码 token 探测必须进 download 桶，got %q", got)
+	}
+
+	// ---- 全局兜底桶豁免清单断言（2026-10-08 GlobalMiddleware 接线配套）----
+	// 探针/静态资源必须豁免（k8s 探针被封禁会让部署假死）
+	for _, p := range []string{"/ping", "/health", "/live", "/ready", "/readyz",
+		"/api/v1/ping", "/favicon.ico", "/robots.txt", "/assets/index-abc123.js"} {
+		if !rateLimitGlobalExempt(p) {
+			t.Errorf("路径 %q 应在全局限流豁免清单内（探针/静态资源误封禁 = 部署假死）", p)
+		}
+	}
+	// 公开动态端点不得豁免：未归专属桶时必须吃全局默认桶
+	for _, p := range []string{"/api/config", "/api/v1/notifies/public",
+		"/api/v1/user/refresh", "/api/v1/user/logout", "/api/v1/mcp", "/version"} {
+		if rateLimitGlobalExempt(p) {
+			t.Errorf("路径 %q 不应在全局限流豁免清单内（公开/低门槛端点须有默认限流兜底）", p)
+		}
 	}
 }
 

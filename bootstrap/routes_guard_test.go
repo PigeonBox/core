@@ -77,6 +77,7 @@ func TestRegisteredRoutesMatchContract(t *testing.T) {
 		// ===== storage（IDL）=====
 		"GET /admin/storage", "PUT /admin/storage/config",
 		"POST /admin/storage/switch", "GET /admin/storage/test/:type",
+		"GET /admin/storage/insights", "POST /admin/storage/clean-presign-orphans",
 		// ===== notify（IDL）=====
 		"GET /admin/notifies", "POST /admin/notifies",
 		"GET /admin/notifies/:id", "PUT /admin/notifies/:id", "DELETE /admin/notifies/:id",

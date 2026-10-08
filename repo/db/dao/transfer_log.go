@@ -58,9 +58,9 @@ func (r *TransferLogRepository) List(ctx context.Context, query model.TransferLo
 	}
 
 	if query.Search != "" {
-		like := "%" + query.Search + "%"
+		like, esc := LikeContains(query.Search)
 		dbQuery = dbQuery.Where(
-			"file_code LIKE ? OR file_name LIKE ? OR username LIKE ? OR ip LIKE ?",
+			"file_code LIKE ? OR file_name LIKE ? OR username LIKE ? OR ip LIKE ? "+esc,
 			like, like, like, like,
 		)
 	}

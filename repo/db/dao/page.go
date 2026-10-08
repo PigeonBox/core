@@ -6,7 +6,11 @@
 //	page < 1 → 1；pageSize < 1 → 20；pageSize > max → 截断为 max。
 package dao
 
-import "gorm.io/gorm"
+import (
+	"strings"
+
+	"gorm.io/gorm"
+)
 
 // DefaultPageSize / MaxPageSize 分页默认值与上限（各 List 共用）。
 const (
@@ -41,4 +45,22 @@ func paginate[T any](q *gorm.DB, page, pageSize int) ([]*T, int64, error) {
 		return nil, 0, err
 	}
 	return rows, total, nil
+}
+
+// EscapeLike 转义 LIKE 模式中的通配符（%/ _）并用 ESCAPE 子句声明转义符。
+// 用户可控搜索词直接拼 %...% 时，"%%%" 之类的输入会退化为全表扫描级 LIKE
+// （成本注入 DoS），且越权语义上可被借做模糊探测。所有用户可控 LIKE 模式
+// 必须经此包装：`q.Where("col LIKE ? ESCAPE '\\'", EscapeLike(input))`。
+func EscapeLike(s string) string {
+	r := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	return r.Replace(s)
+}
+
+// LikeContains 按 contains 语义构造安全的 LIKE 参数（含 ESCAPE 声明片段）。
+// 返回 (pattern, escapeClause)，用法：
+//
+//	pattern, esc := LikeContains(search)
+//	q.Where("col LIKE ? "+esc, pattern)
+func LikeContains(s string) (string, string) {
+	return "%" + EscapeLike(s) + "%", `ESCAPE '\'`
 }

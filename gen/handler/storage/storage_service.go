@@ -6,13 +6,17 @@ package storage
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/pigeonbox/contracts/errcode"
 	storage "github.com/pigeonbox/contracts/gen/storage"
 	adminapp "github.com/pigeonbox/core/app/admin"
 	storageapp "github.com/pigeonbox/core/app/storage"
+	"github.com/pigeonbox/core/conf"
 	"github.com/pigeonbox/core/pkg/resp"
+	"github.com/pigeonbox/core/repo/db/dao"
+	storagedrv "github.com/pigeonbox/core/storage"
 )
 
 var storageSvc *storageapp.Service
@@ -157,4 +161,118 @@ func UpdateStorageConfig(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 	resp.SuccessWithMessage(c, "存储配置已更新", nil)
+}
+
+// ==================== 存储洞察 + 孤儿清理 ====================
+// 两端点在 IDL storage.thrift 既有宣告（openapi.json 一并广告），此前无
+// handler 实际 404——2026-10-08 全功能验证发现的幽灵端点，此处补实现。
+
+// GetStorageInsights 存储洞察：后端形态/直传策略/双端用量/今日流量/孤儿与回收站规模
+// GET /admin/storage/insights
+func GetStorageInsights(ctx context.Context, c *app.RequestContext) {
+	data := &storage.StorageInsightsData{
+		CurrentDetail: map[string]string{},
+		RemoteUsage:   &storage.StorageUsage{},
+		LocalUsage:    &storage.StorageUsage{},
+		TodayTraffic:  &storage.TodayTraffic{},
+	}
+
+	// 后端形态 + 当前配置摘要
+	info, err := getService().GetStorageInfo(ctx)
+	if err != nil {
+		resp.NewErrorWithMessage(c, errcode.CodeInternal, err.Error())
+		return
+	}
+	data.CurrentType = info.Current
+	data.EffectiveType = info.Effective
+	if info.StorageConfig != nil {
+		cfg := info.StorageConfig
+		data.CurrentDetail["type"] = cfg.Type
+		if cfg.StoragePath != "" {
+			data.CurrentDetail["storage_path"] = cfg.StoragePath
+		}
+		if cfg.S3 != nil {
+			data.CurrentDetail["endpoint"] = cfg.S3.EndpointURL
+			data.CurrentDetail["bucket"] = cfg.S3.BucketName
+			data.CurrentDetail["region"] = cfg.S3.RegionName
+		}
+		if cfg.WebDAV != nil && cfg.WebDAV.URL != "" {
+			data.CurrentDetail["webdav_url"] = cfg.WebDAV.URL
+		}
+	}
+	if data.CurrentType == "" {
+		data.CurrentType = string(storagedrv.StorageTypeLocal)
+	}
+	if data.EffectiveType == "" {
+		data.EffectiveType = data.CurrentType
+	}
+
+	// 直传策略 + s3 直下开关
+	data.PresignPolicy = conf.DownloadConfig{}.PresignPolicyOrDefault()
+	if cfg := conf.GetGlobalConfig(); cfg != nil {
+		data.PresignPolicy = cfg.Download.PresignPolicyOrDefault()
+		data.DirectDownload = cfg.Download.S3DirectDownload
+	}
+
+	// 用量（DB 口径：未 purge 行——软删对象 purge 前仍占实际存储）
+	// + 回收站规模。用量按当前生效后端归位：local 计入 LocalUsage，
+	// 远端计入 RemoteUsage；历史遗留跨后端行不作区分（口径见 InsightStats）。
+	total, totalSize, alive, softDeleted, err := dao.NewFileCodeRepository().InsightStats(ctx)
+	if err != nil {
+		resp.NewErrorWithMessage(c, errcode.CodeInternal, err.Error())
+		return
+	}
+	usage := &storage.StorageUsage{ObjectCount: total, TotalSize: totalSize}
+	if data.EffectiveType == string(storagedrv.StorageTypeLocal) {
+		data.LocalUsage = usage
+	} else {
+		data.RemoteUsage = usage
+	}
+	data.AliveShares = alive
+	data.SoftDeleted = softDeleted
+
+	// 今日流量（transfer_logs 按 operation 计数；计数失败不阻断洞察）
+	today := time.Now().Format("2006-01-02")
+	tl := dao.NewTransferLogRepository()
+	todayStart := time.Date(time.Now().Year(), time.Now().Month(), time.Now().Day(), 0, 0, 0, 0, time.Local)
+	if rows, err := tl.TrendByDay(ctx, todayStart, "upload"); err == nil {
+		for _, r := range rows {
+			if r.Date == today {
+				data.TodayTraffic.Uploads = r.Count
+			}
+		}
+	}
+	if rows, err := tl.TrendByDay(ctx, todayStart, "download"); err == nil {
+		for _, r := range rows {
+			if r.Date == today {
+				data.TodayTraffic.Downloads = r.Count
+			}
+		}
+	}
+
+	// presign 孤儿（远端后端只读计数；本地恒 0——磁盘对账覆盖，无此语义。
+	// janitor 未注入/列举失败保持 0，由后台对账兜底清理）
+	if storageJanitor != nil {
+		if n, err := storageJanitor.CountRemotePresignOrphans(ctx, 24*time.Hour); err == nil {
+			data.PresignOrphans = int64(n)
+		}
+	}
+
+	resp.Success(c, data)
+}
+
+// CleanPresignOrphans 清理远端 presign 孤儿对象（Init 后未 Complete 的直传残留，
+// 24h 宽限期；本地后端由磁盘对账覆盖，恒返回 removed=0）
+// POST /admin/storage/clean-presign-orphans
+func CleanPresignOrphans(ctx context.Context, c *app.RequestContext) {
+	if storageJanitor == nil {
+		resp.NewErrorWithMessage(c, errcode.CodeInternal, "存储实例未就绪")
+		return
+	}
+	removed, err := storageJanitor.CleanRemotePresignOrphans(ctx, 24*time.Hour)
+	if err != nil {
+		resp.NewErrorWithMessage(c, errcode.CodeInternal, err.Error())
+		return
+	}
+	resp.Success(c, map[string]int{"removed": removed})
 }

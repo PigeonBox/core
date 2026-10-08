@@ -29,6 +29,30 @@ type InitiateUploadReq struct {
 // 绑走已传分片（内容窃取）或覆写合并结果（内容替换）。HTTP 层映射 409。
 var ErrSessionConflict = errors.New("上传会话已被占用，请刷新上传")
 
+// MaxTotalChunks 单会话分片数硬上限（2026-10-08 加固）。TotalChunks 客户端
+// 可控且此前无上限：一次 init 可声明上亿分片刷控制行，后续每个 chunk PUT
+// 还会按 index 逐条建行。10000 片 × 常见 4MB 分片已承载 40GB，远超常规
+// upload.max_file_size 配置，正常客户端不可能触顶。
+const MaxTotalChunks = 10000
+
+// ValidateChunkPlan 校验分片计划自洽性：TotalChunks 必须恰为 ⌈FileSize/ChunkSize⌉
+// 且不超过 MaxTotalChunks。防两类滥用：① 总数虚高（配合逐片 PUT 刷 DB 行/
+// 存储写）；② 总数不足让 Complete 永不满足的僵尸会话占库。自家前端按
+// Math.ceil(file.size/chunkSize) 计算，严格相等不误伤。
+func ValidateChunkPlan(fileSize, chunkSize int64, totalChunks int) error {
+	if fileSize <= 0 || chunkSize <= 0 {
+		return errors.New("文件大小与分片大小必须大于0")
+	}
+	expect := (fileSize + chunkSize - 1) / chunkSize
+	if totalChunks <= 0 || int64(totalChunks) != expect {
+		return fmt.Errorf("分片计划不自洽: total_chunks=%d, 期望 %d（⌈file_size/chunk_size⌉）", totalChunks, expect)
+	}
+	if totalChunks > MaxTotalChunks {
+		return fmt.Errorf("分片数超过上限 %d", MaxTotalChunks)
+	}
+	return nil
+}
+
 type UploadChunkReq struct {
 	UploadID   string
 	ChunkIndex int

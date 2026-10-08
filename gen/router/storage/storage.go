@@ -22,7 +22,9 @@ func Register(r *server.Hertz) {
 		_admin.GET("/storage", append(_getstorageinfoMw(), storage.GetStorageInfo)...)
 		{
 			_storage := _admin.Group("/storage", _storageMw()...)
+			_storage.POST("/clean-presign-orphans", append(_cleanpresignorphansMw(), storage.CleanPresignOrphans)...)
 			_storage.PUT("/config", append(_updatestorageconfigMw(), storage.UpdateStorageConfig)...)
+			_storage.GET("/insights", append(_getstorageinsightsMw(), storage.GetStorageInsights)...)
 			_storage.POST("/switch", append(_switchstorageMw(), storage.SwitchStorage)...)
 			{
 				_test := _storage.Group("/test", _testMw()...)

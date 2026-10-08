@@ -49,3 +49,13 @@ func GetService() *Service {
 	}
 	return svc
 }
+
+// MaxFileSize 返回预览大小上限（字节，0=不限）。调用方应在打开对象前用
+// DB 记录的文件大小预判——否则任意大文件会先被全量拉到临时盘再由生成器
+// 拒绝，构成磁盘耗尽攻击面（2026-10-08 加固）。
+func (s *Service) MaxFileSize() int64 {
+	if s == nil || s.config == nil {
+		return 0
+	}
+	return s.config.MaxFileSize
+}

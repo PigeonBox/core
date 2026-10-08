@@ -199,6 +199,11 @@ func RestoreUserShare(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 	if err := getShareService().RestoreUserShare(ctx, uid, code); err != nil {
+		// 不在回收站（已硬删/不存在/本就活跃）：显式 400，替代此前 200 静默 no-op
+		if errors.Is(err, share.ErrNotInRecycleBin) {
+			c.JSON(consts.StatusBadRequest, map[string]interface{}{"code": 400, "message": err.Error()})
+			return
+		}
 		c.JSON(consts.StatusInternalServerError, map[string]interface{}{"code": 500, "message": "恢复失败: " + err.Error()})
 		return
 	}

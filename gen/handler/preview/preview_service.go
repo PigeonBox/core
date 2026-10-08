@@ -77,6 +77,11 @@ func GetPreview(ctx context.Context, c *app.RequestContext) {
 				"message": "需要密码",
 				"data":    map[string]interface{}{"has_password": true},
 			})
+		case errors.Is(err, previewapp.ErrPreviewBusy):
+			c.JSON(consts.StatusServiceUnavailable, map[string]interface{}{
+				"code":    503,
+				"message": "预览生成排队中，请稍后重试",
+			})
 		case errors.Is(err, previewapp.ErrPreviewUnavailable):
 			c.JSON(consts.StatusNotFound, map[string]interface{}{
 				"code":    404,

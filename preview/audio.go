@@ -22,7 +22,7 @@ func NewAudioGenerator(cfg *Config) *AudioGenerator {
 // Generate 生成音频预览
 func (g *AudioGenerator) Generate(ctx context.Context, filePath string, ext string) (*PreviewData, error) {
 	// 获取音频信息
-	info, err := g.getAudioInfo(filePath)
+	info, err := g.getAudioInfo(ctx, filePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get audio info: %w", err)
 	}
@@ -62,12 +62,18 @@ type AudioInfo struct {
 	SampleRate int
 }
 
-// getAudioInfo 获取音频信息
-func (g *AudioGenerator) getAudioInfo(filePath string) (*AudioInfo, error) {
+// getAudioInfo 获取音频信息（ffprobe 30s 超时，防损坏文件挂死 worker）
+func (g *AudioGenerator) getAudioInfo(ctx context.Context, filePath string) (*AudioInfo, error) {
 	ffprobePath := "ffprobe"
 
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, probeTimeout)
+		defer cancel()
+	}
+
 	// 获取音频时长
-	durationCmd := exec.Command(ffprobePath,
+	durationCmd := exec.CommandContext(ctx, ffprobePath,
 		"-v", "error",
 		"-show_entries", "format=duration",
 		"-of", "default=noprint_wrappers=1:nokey=1",

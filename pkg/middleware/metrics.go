@@ -11,6 +11,7 @@ package middleware
 import (
 	"context"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/cloudwego/hertz/pkg/app"
@@ -22,7 +23,21 @@ type Metrics struct {
 	requestsTotal    *prometheus.CounterVec
 	requestDuration  *prometheus.HistogramVec
 	requestsInFlight *prometheus.GaugeVec
+
+	// 路径标签基数守卫（2026-10-08 加固）：path 是攻击者可控的自由文本，
+	// 归一化启发式无法覆盖全部形态（全小写字母随机串即绕过）——超过上限的
+	// 新路径一律并进 "_overflow"，保证时间序列数量有界（内存有界）。
+	pathMu      sync.Mutex
+	seenPaths   map[string]struct{}
+	pathBounded bool
 }
+
+// maxPathLabelCardinality 单实例 path 标签 distinct 上限。真实路由约百条，
+// 512 给动态段归一化的边角留足余量；打满即视为攻击/异常流量。
+const maxPathLabelCardinality = 512
+
+// overflowPathLabel 超限路径的归并标签值。
+const overflowPathLabel = "_overflow"
 
 // metricsInstance 单例（由 NewMetrics 注册后持有，供 Handler 访问）。
 var metricsInstance *Metrics
@@ -49,10 +64,31 @@ func NewMetrics() *Metrics {
 			Name: "http_requests_in_flight",
 			Help: "Number of HTTP requests currently being processed.",
 		}, []string{"method"}),
+		seenPaths:   map[string]struct{}{},
+		pathBounded: true,
 	}
 	prometheus.MustRegister(m.requestsTotal, m.requestDuration, m.requestsInFlight)
 	metricsInstance = m
 	return m
+}
+
+// boundPath 路径标签基数封顶：已见路径原样放行；新路径超出 distinct 上限并入
+// "_overflow"。攻击者可用随机 URL 制造无限标签值（每值=一条新时间序列常驻
+// 内存），归一化启发式只是收敛手段，本方法是硬上限。
+func (m *Metrics) boundPath(p string) string {
+	if !m.pathBounded {
+		return p
+	}
+	m.pathMu.Lock()
+	defer m.pathMu.Unlock()
+	if _, ok := m.seenPaths[p]; ok {
+		return p
+	}
+	if len(m.seenPaths) >= maxPathLabelCardinality {
+		return overflowPathLabel
+	}
+	m.seenPaths[p] = struct{}{}
+	return p
 }
 
 // GetMetrics 返回已注册的指标实例（未初始化返回 nil）。
@@ -104,7 +140,9 @@ func isDynamicSegment(s string) bool {
 	if isNum {
 		return true
 	}
-	// 长度 >= 8 的字母数字混合（分享码/UUID 等）
+	// 长度 >= 8 的字母数字混合（分享码/UUID 等）。连字符计入：UUID 形态的
+	// upload_id 带 '-'，此前被当"特殊字符静态路径"漏收——真实基数放大点。
+	// 静态路由词带 '-' 的（local-files/batch-delete 等）均无数字，不受影响。
 	hasLetter, hasDigit := false, false
 	for _, c := range s {
 		switch {
@@ -112,8 +150,9 @@ func isDynamicSegment(s string) bool {
 			hasDigit = true
 		case (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'):
 			hasLetter = true
+		case c == '-':
 		default:
-			return false // 含特殊字符，视为静态路径
+			return false // 含其他特殊字符，视为静态路径
 		}
 	}
 	return hasLetter && hasDigit && len(s) >= 8
@@ -129,8 +168,9 @@ func MetricsMiddleware() app.HandlerFunc {
 			return
 		}
 		method := string(c.Method())
-		// 在 Next 之前读取原始请求路径，避免被下游 handler（如 c.File）改写污染标签
-		path := normalizePath(string(c.Request.URI().Path()))
+		// 在 Next 之前读取原始请求路径，避免被下游 handler（如 c.File）改写污染标签；
+		// boundPath 封顶 distinct 值数（防随机路径基数炸弹）
+		path := m.boundPath(normalizePath(string(c.Request.URI().Path())))
 		m.requestsInFlight.WithLabelValues(method).Inc()
 		start := time.Now()
 

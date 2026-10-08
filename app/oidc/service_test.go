@@ -91,20 +91,25 @@ func TestOIDC_FullFlow(t *testing.T) {
 		ClientSecret: "secret-1",
 	})
 
-	// 1. 登录 URL：含授权端点 + HMAC state
-	loginURL, err := svc.LoginURL(context.Background(), "http://fcb.local")
+	// 1. 登录 URL：含授权端点 + HMAC state（绑定浏览器 nonce）
+	nonce := GenerateNonce()
+	loginURL, err := svc.LoginURL(context.Background(), "http://fcb.local", nonce)
 	require.NoError(t, err)
 	assert.Contains(t, loginURL, srv.URL+"/auth?")
 	assert.Contains(t, loginURL, "client_id=client-1")
 	state := loginURL[strings.Index(loginURL, "state=")+len("state="):]
 
-	// 2. 伪造 state 拒绝
-	_, err = svc.ExchangeCallback(context.Background(), "http://fcb.local", "the-code", "1.deadbeef")
+	// 2. 伪造 state / nonce 不匹配（login CSRF 防线）拒绝
+	_, err = svc.ExchangeCallback(context.Background(), "http://fcb.local", "the-code", "1.deadbeef", nonce)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "state")
+	_, err = svc.ExchangeCallback(context.Background(), "http://fcb.local", "the-code", state, "attacker-nonce")
+	require.Error(t, err, "state 绑定 nonce，错配必须拒绝")
+	_, err = svc.ExchangeCallback(context.Background(), "http://fcb.local", "the-code", state, "")
+	require.Error(t, err, "缺失 nonce Cookie 必须拒绝")
 
 	// 3. 正常回调：code 换 token → userinfo → 建号 → 本站 JWT
-	token, err := svc.ExchangeCallback(context.Background(), "http://fcb.local", "the-code", state)
+	token, err := svc.ExchangeCallback(context.Background(), "http://fcb.local", "the-code", state, nonce)
 	require.NoError(t, err)
 	assert.NotEmpty(t, token)
 	assert.Equal(t, 1, *tokHits)
@@ -119,7 +124,7 @@ func TestOIDC_FullFlow(t *testing.T) {
 	assert.Equal(t, "alice@example.com", u.Email)
 
 	// 5. 二次登录：按 sub 命中既有用户（不重复建号）
-	token2, err := svc.ExchangeCallback(context.Background(), "http://fcb.local", "the-code", svc.signState(time.Now().Unix()))
+	token2, err := svc.ExchangeCallback(context.Background(), "http://fcb.local", "the-code", svc.signState(time.Now().Unix(), "n2"), "n2")
 	require.NoError(t, err)
 	claims2, err := auth.ParseToken(token2)
 	require.NoError(t, err)
@@ -142,7 +147,7 @@ func TestOIDC_EmailMatchBindsSub(t *testing.T) {
 	}
 	require.NoError(t, db.GetDB().Create(existing).Error)
 
-	token, err := svc.ExchangeCallback(context.Background(), "http://fcb.local", "the-code", svc.signState(time.Now().Unix()))
+	token, err := svc.ExchangeCallback(context.Background(), "http://fcb.local", "the-code", svc.signState(time.Now().Unix(), "n3"), "n3")
 	require.NoError(t, err)
 	claims, err := auth.ParseToken(token)
 	require.NoError(t, err)
@@ -151,4 +156,22 @@ func TestOIDC_EmailMatchBindsSub(t *testing.T) {
 	var u model.User
 	require.NoError(t, db.GetDB().First(&u, existing.ID).Error)
 	assert.Equal(t, "user-sub-42", u.OidcSub, "登录时应回写 sub 绑定")
+}
+
+// TestOIDC_BannedUserRejected 封禁用户回调拒发 JWT（2026-10-08 加固）：
+// 密码登录在同位检查拒绝非 active 用户，OIDC 匹配命中不得绕过。
+func TestOIDC_BannedUserRejected(t *testing.T) {
+	newOIDCDB(t)
+	auth.SetJWTSecret("oidc-test-secret-0123456789abcdef")
+	srv, _ := fakeIdP(t)
+	svc := NewService(Config{Enabled: true, Issuer: srv.URL, ClientID: "c", ClientSecret: "s"})
+
+	// 已有 sub 绑定但被封禁的账号
+	require.NoError(t, db.GetDB().Create(&model.User{
+		Username: "banned", OidcSub: "user-sub-42",
+		PasswordHash: "x", Role: "user", Status: "disabled",
+	}).Error)
+
+	_, err := svc.ExchangeCallback(context.Background(), "http://fcb.local", "the-code", svc.signState(time.Now().Unix(), "n"), "n")
+	require.ErrorIs(t, err, ErrAccountDisabled)
 }

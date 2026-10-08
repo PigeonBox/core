@@ -41,12 +41,16 @@ func VerifySessionToken(uploadID, token string) bool {
 }
 
 // OwnedByCaller 分片会话归属校验（治理）：控制记录记有 OwnerIP 时，要求
-// IP 一致、同一登录用户或持有效会话令牌；老数据（OwnerIP 为空）跳过保持兼容。
+// IP 一致、同一登录用户或持有效会话令牌；老数据（OwnerIP 为空）此前无条件
+// 放行——同网任意调用方可向他人进行中会话写分片/取消/完成（2026-10-08 加固
+// 收紧为 fail-closed：仅令牌或同用户可通过，匿名老会话不可恢复，分片会话是
+// 短生命周期数据，升级窗口外无存量）。
 // clientIP/callerUserID 由调用方按各路由的身份来源提取后传入（JWT/匿名、
 // ctx 值/c.Get 两种路径判定口径一致）。
 func OwnedByCaller(info *model.UploadChunk, clientIP string, sessionToken string, callerUserID *uint) bool {
 	if info.OwnerIP == "" {
-		return true
+		return VerifySessionToken(info.UploadID, sessionToken) ||
+			(info.UserID != nil && callerUserID != nil && *callerUserID == *info.UserID)
 	}
 	if info.OwnerIP == clientIP {
 		return true

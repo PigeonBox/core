@@ -5,6 +5,7 @@ import (
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/pigeonbox/core/pkg/auth"
+	pkgmw "github.com/pigeonbox/core/pkg/middleware"
 )
 
 const (
@@ -29,7 +30,8 @@ func UserAuth() app.HandlerFunc {
 			return
 		}
 
-		if err := parseAndSetClaims(c, tokenString); err != nil {
+		claims, err := auth.ParseToken(tokenString)
+		if err != nil {
 			respondUnauthorized(c, "Invalid or expired token")
 			return
 		}
@@ -40,6 +42,15 @@ func UserAuth() app.HandlerFunc {
 			respondUnauthorized(c, "Token has been revoked")
 			return
 		}
+
+		// 身份复核（2026-10-08 加固）：与 pkg AuthMiddleware 共享 30s 缓存回查——
+		// 此前本中间件只验签名+黑名单，封禁/降权/改密后的旧 token 在
+		// /api/v1/user/requests* 上仍可用到自然过期
+		if !pkgmw.IdentityFresh(ctx, claims) {
+			respondUnauthorized(c, "Session is no longer valid")
+			return
+		}
+		pkgmw.SetJWTClaims(c, claims)
 
 		c.Next(ctx)
 	}

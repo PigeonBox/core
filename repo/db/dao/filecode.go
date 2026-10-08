@@ -118,9 +118,9 @@ func (r *FileCodeRepository) List(ctx context.Context, page, pageSize int, searc
 
 	// 搜索条件
 	if search != "" {
-		searchPattern := "%" + search + "%"
-		query = query.Where("code LIKE ? OR prefix LIKE ? OR suffix LIKE ?",
-			searchPattern, searchPattern, searchPattern)
+		pattern, esc := LikeContains(search)
+		query = query.Where("code LIKE ? OR prefix LIKE ? OR suffix LIKE ? "+esc,
+			pattern, pattern, pattern)
 	}
 
 	return paginate[model.FileCode](query.Order("created_at DESC"), page, pageSize)
@@ -269,9 +269,9 @@ func (r *FileCodeRepository) GetUserSharesWithFilter(ctx context.Context, userID
 	}
 
 	if filter.Search != "" {
-		like := "%" + filter.Search + "%"
+		like, esc := LikeContains(filter.Search)
 		// 文件分享的原始文件名存 text（uuid_file_name 常为空），搜索需覆盖 text
-		q = q.Where("code LIKE ? OR prefix LIKE ? OR suffix LIKE ? OR uuid_file_name LIKE ? OR text LIKE ?",
+		q = q.Where("code LIKE ? OR prefix LIKE ? OR suffix LIKE ? OR uuid_file_name LIKE ? OR text LIKE ? "+esc,
 			like, like, like, like, like)
 	}
 
@@ -516,8 +516,8 @@ func (r *FileCodeRepository) ListWithFilter(ctx context.Context, q model.FileCod
 	}
 
 	if q.Keyword != "" {
-		like := "%" + q.Keyword + "%"
-		query = query.Where("code LIKE ? OR prefix LIKE ? OR suffix LIKE ? OR uuid_file_name LIKE ? OR text LIKE ?",
+		like, esc := LikeContains(q.Keyword)
+		query = query.Where("code LIKE ? OR prefix LIKE ? OR suffix LIKE ? OR uuid_file_name LIKE ? OR text LIKE ? "+esc,
 			like, like, like, like, like)
 	}
 	if q.UserID != nil {

@@ -30,6 +30,9 @@ import (
 	"github.com/pigeonbox/kit/singleflight"
 )
 
+// ErrAccountDisabled 匹配命中的本地账号已被禁用（回调不发 JWT，2026-10-08 加固）
+var ErrAccountDisabled = errors.New("OIDC 登录被拒绝：账号已被禁用")
+
 // Config OIDC 配置（conf.SecurityConfig.OIDC）
 type Config struct {
 	Enabled          bool   `mapstructure:"enabled"`
@@ -153,14 +156,24 @@ func (s *Service) TestDiscovery(ctx context.Context) error {
 	return nil
 }
 
-// signState HMAC 签名时间戳（1 小时有效；无需服务端会话）
-func (s *Service) signState(ts int64) string {
+// GenerateNonce 生成一次性的浏览器绑定 nonce（login CSRF 防线，2026-10-08 加固）：
+// 登录起点下发 HttpOnly Cookie，state 的 HMAC 绑定该 nonce——回调时 Cookie 与
+// state 必须同源同流，第三方拿"自己的 code+state"诱导受害者浏览器回调时，
+// 受害者没有匹配的 nonce Cookie，登录 CSRF 不成立。
+func GenerateNonce() string {
+	b := make([]byte, 16)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+// signState HMAC 签名（时间戳+nonce，1 小时有效；无需服务端会话）
+func (s *Service) signState(ts int64, nonce string) string {
 	mac := hmac.New(sha256.New, []byte(s.cfg.ClientSecret))
-	_, _ = fmt.Fprintf(mac, "oidc-state:%d", ts) // hash.Write 恒返回 nil
+	_, _ = fmt.Fprintf(mac, "oidc-state:%d:%s", ts, nonce) // hash.Write 恒返回 nil
 	return fmt.Sprintf("%d.%s", ts, hex.EncodeToString(mac.Sum(nil)))
 }
 
-func (s *Service) verifyState(state string) bool {
+func (s *Service) verifyState(state, nonce string) bool {
 	var ts int64
 	var sig string
 	if _, err := fmt.Sscanf(state, "%d.%s", &ts, &sig); err != nil {
@@ -169,11 +182,11 @@ func (s *Service) verifyState(state string) bool {
 	if time.Since(time.Unix(ts, 0)) > time.Hour {
 		return false
 	}
-	return hmac.Equal([]byte(s.signState(ts)), []byte(state))
+	return hmac.Equal([]byte(s.signState(ts, nonce)), []byte(state))
 }
 
-// LoginURL 构建授权跳转地址
-func (s *Service) LoginURL(ctx context.Context, baseURL string) (string, error) {
+// LoginURL 构建授权跳转地址（nonce 由调用方生成并下发 Cookie，见 GenerateNonce）
+func (s *Service) LoginURL(ctx context.Context, baseURL, nonce string) (string, error) {
 	d, err := s.discover(ctx)
 	if err != nil {
 		return "", err
@@ -184,7 +197,7 @@ func (s *Service) LoginURL(ctx context.Context, baseURL string) (string, error) 
 	q.Set("client_id", s.cfg.ClientID)
 	q.Set("redirect_uri", s.RedirectURI(baseURL))
 	q.Set("scope", s.cfg.Scopes)
-	q.Set("state", s.signState(ts))
+	q.Set("state", s.signState(ts, nonce))
 	// PKCE 可选：部分 IdP 对公共客户端要求；机密客户端可省略（v1 不启用）
 	return d.AuthorizationEndpoint + "?" + q.Encode(), nil
 }
@@ -198,10 +211,11 @@ type idClaims struct {
 	Name              string `json:"name"`
 }
 
-// ExchangeCallback 处理回调：code → token → userinfo → 本地用户 → JWT
-func (s *Service) ExchangeCallback(ctx context.Context, baseURL, code, state string) (string, error) {
-	if !s.verifyState(state) {
-		return "", errors.New("state 校验失败（过期或伪造），请重试登录")
+// ExchangeCallback 处理回调：code → token → userinfo → 本地用户 → JWT。
+// nonce 为登录起点下发的浏览器绑定值（Cookie 回读），state 校验必需。
+func (s *Service) ExchangeCallback(ctx context.Context, baseURL, code, state, nonce string) (string, error) {
+	if nonce == "" || !s.verifyState(state, nonce) {
+		return "", errors.New("state 校验失败（过期/伪造/缺少浏览器绑定），请重试登录")
 	}
 	d, err := s.discover(ctx)
 	if err != nil {
@@ -260,14 +274,22 @@ func (s *Service) ExchangeCallback(ctx context.Context, baseURL, code, state str
 // 此前只要 userinfo 带 email 就按邮箱绑定本地账号——自建 IdP（Keycloak 等）
 // 若允许未验证邮箱注册，攻击者用受害者邮箱在 IdP 注册即可接管本站账号
 // （pre-hijack）。email_verified 缺失/false 时仅 (issuer,sub) 精确匹配可用。
+// 匹配命中的既有账号必须处于 active（2026-10-08 加固）：此前封禁用户经 OIDC
+// 回调仍可换得新 JWT（密码登录在同位检查拒绝）。
 func (s *Service) matchOrCreate(ctx context.Context, claims idClaims) (*model.User, error) {
 	// 按 sub 精确匹配（身份链由 IdP 保证，无条件信任）
 	if u, err := s.userRepo.GetByOIDCSub(ctx, claims.Sub); err == nil && u != nil {
+		if u.Status != "active" {
+			return nil, ErrAccountDisabled
+		}
 		return u, nil
 	}
 	// 按邮箱匹配（用户先以密码注册、后用 OIDC 登录的场景）——仅限已验证邮箱
 	if claims.Email != "" && claims.EmailVerified {
 		if u, err := s.userRepo.GetByEmail(ctx, claims.Email); err == nil && u != nil {
+			if u.Status != "active" {
+				return nil, ErrAccountDisabled
+			}
 			// 绑定 sub，后续走精确匹配
 			_ = s.userRepo.UpdateColumns(ctx, u.ID, map[string]interface{}{"oidc_sub": claims.Sub})
 			return u, nil

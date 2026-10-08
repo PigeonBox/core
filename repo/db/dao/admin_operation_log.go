@@ -34,7 +34,8 @@ func (r *AdminOperationLogRepository) List(ctx context.Context, query model.Admi
 	}
 
 	if query.Actor != "" {
-		dbQuery = dbQuery.Where("actor_name LIKE ?", "%"+query.Actor+"%")
+		actorPattern, esc := LikeContains(query.Actor)
+		dbQuery = dbQuery.Where("actor_name LIKE ? "+esc, actorPattern)
 	}
 
 	if query.Success != nil {

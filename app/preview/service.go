@@ -31,14 +31,22 @@ var (
 	ErrPasswordRequired = errors.New("password required")
 	// ErrLocked 密码错误次数过多，临时锁定
 	ErrLocked = errors.New("too many attempts, temporarily locked")
-	// ErrPreviewUnavailable 预览不可用（生成失败/存储不可达）
-	ErrPreviewUnavailable = errors.New("preview unavailable")
+// ErrPreviewUnavailable 预览不可用（生成失败/存储不可达）
+ErrPreviewUnavailable = errors.New("preview unavailable")
+// ErrPreviewBusy 生成并发闸满（防 CPU/内存耗尽：图片解码与 ffmpeg 均为重活，
+// 攻击者跨 IP 并发预览未缓存的大图/视频可打满 CPU——限流按 IP 计数堵不住分布式）
+ErrPreviewBusy = errors.New("preview generation busy")
 )
 
 // LockedError 防爆破锁定态（携带剩余锁定秒数，供文案）
 type LockedError struct{ Remain int }
 
 func (e *LockedError) Error() string { return fmt.Sprintf("locked for %ds", e.Remain) }
+
+// previewGenSlots 预览生成并发闸（2026-10-08 加固）：生成是同步重活（图片
+// 全量解码/ffmpeg 子进程），用满配额即忙拒——try-acquire 不排队，避免请求
+// 堆积把内存换成另一种 DoS。
+var previewGenSlots = make(chan struct{}, 2)
 
 // Service 预览域服务。存储实例由 bootstrap 注入；nil 时预览生成不可用
 // （回归 2026-10-03：此前硬编码 data/uploads 路径基，与统一存储不一致）。
@@ -101,6 +109,13 @@ func (s *Service) GetOrCreate(ctx context.Context, req GetReq) (*model.FilePrevi
 	if err == nil {
 		return preview, nil
 	}
+	// 并发闸：只在真实生成路径占用（缓存命中零开销）
+	select {
+	case previewGenSlots <- struct{}{}:
+		defer func() { <-previewGenSlots }()
+	default:
+		return nil, ErrPreviewBusy
+	}
 	preview, err = s.generatePreview(ctx, fileCode)
 	if err != nil {
 		return nil, ErrPreviewUnavailable
@@ -111,12 +126,19 @@ func (s *Service) GetOrCreate(ctx context.Context, req GetReq) (*model.FilePrevi
 // generatePreview 生成预览。经统一存储实例读取文件（回归：此前硬编码
 // data/uploads 路径基且未拼 UUIDFileName，与存储布局不符）。
 func (s *Service) generatePreview(ctx context.Context, fileCode *model.FileCode) (*model.FilePreview, error) {
-	if s.storageSvc == nil {
-		return nil, fmt.Errorf("storage not available")
-	}
 	filePath := fileCode.GetFilePath()
 	if filePath == "" {
 		return nil, fmt.Errorf("file path is empty")
+	}
+	// 预览大小上限（2026-10-08 加固）：Config.MaxFileSize 此前从未生效，任意大
+	// 文件会先全量落临时盘才被生成器拒绝——磁盘耗尽 DoS 面。DB 有记录大小时
+	// 预判直接拒绝（连对象都不打开）；记录缺失/为 0 时退化为流式上限截断。
+	maxSize := previewService.GetService().MaxFileSize()
+	if maxSize > 0 && fileCode.Size > maxSize {
+		return nil, fmt.Errorf("file too large for preview: %d > %d", fileCode.Size, maxSize)
+	}
+	if s.storageSvc == nil {
+		return nil, fmt.Errorf("storage not available")
 	}
 	rc, _, err := s.storageSvc.GetFileReader(ctx, filePath)
 	if err != nil {
@@ -130,11 +152,19 @@ func (s *Service) generatePreview(ctx context.Context, fileCode *model.FileCode)
 	}
 	tmpPath := tmp.Name()
 	defer func() { _ = os.Remove(tmpPath) }()
-	_, copyErr := io.Copy(tmp, rc)
+	// 兜底截断：源大小未知（Size=0 老数据）时也不允许暂存超限内容
+	var src io.Reader = rc
+	if maxSize > 0 {
+		src = io.LimitReader(rc, maxSize+1)
+	}
+	written, copyErr := io.Copy(tmp, src)
 	_ = rc.Close()
 	_ = tmp.Close()
 	if copyErr != nil {
 		return nil, fmt.Errorf("stage file: %w", copyErr)
+	}
+	if maxSize > 0 && written > maxSize {
+		return nil, fmt.Errorf("file too large for preview: %d > %d", written, maxSize)
 	}
 	return s.generatePreviewFromPath(ctx, fileCode, tmpPath)
 }

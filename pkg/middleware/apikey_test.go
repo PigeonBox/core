@@ -11,12 +11,12 @@ import (
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/app/server"
 	"github.com/cloudwego/hertz/pkg/common/ut"
+	"github.com/glebarez/sqlite"
 	"github.com/pigeonbox/core/conf"
 	"github.com/pigeonbox/core/pkg/auth"
 	"github.com/pigeonbox/core/repo/db"
 	"github.com/pigeonbox/core/repo/db/dao"
 	"github.com/pigeonbox/core/repo/db/model"
-	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
@@ -377,4 +377,20 @@ func TestOptionalIdentity_MixedCredentials(t *testing.T) {
 	code, _, identity, _ = performProbe(t, OptionalIdentity(), "/probe")
 	assert.Equal(t, 200, code)
 	assert.Empty(t, identity)
+}
+
+// TestSanitizeHeaderValue 回显头消毒（2026-10-08 加固）：legacy 用户名未经
+// 新白名单校验，出响应头前剥离控制字符（防 CR/LF 注入响应）。
+func TestSanitizeHeaderValue(t *testing.T) {
+	cases := map[string]string{
+		"alice":       "alice",
+		"a\r\nX-Evil": "aX-Evil",
+		"a\x00b\x1fc": "abc",
+		"空格 ok":       "空格 ok",
+	}
+	for in, want := range cases {
+		if got := sanitizeHeaderValue(in); got != want {
+			t.Errorf("sanitizeHeaderValue(%q) = %q, want %q", in, got, want)
+		}
+	}
 }

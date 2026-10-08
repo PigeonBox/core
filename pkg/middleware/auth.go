@@ -182,6 +182,13 @@ func identityFresh(ctx context.Context, claims *auth.Claims) bool {
 	return true
 }
 
+// IdentityFresh 导出的身份复核入口：AuthMiddleware 之外的认证路径
+// （如 transport 层 UserAuth）共享同一 30s 缓存回查——封禁/降权/改密后
+// 旧 token 不再在这些路由越界可用（2026-10-08 加固）。
+func IdentityFresh(ctx context.Context, claims *auth.Claims) bool {
+	return identityFresh(ctx, claims)
+}
+
 // AuthMiddleware JWT认证中间件
 //
 // 令牌来源：Authorization: Bearer 头或会话 Cookie（fcb_token，浏览器端默认；

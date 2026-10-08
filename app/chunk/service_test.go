@@ -4,9 +4,9 @@ import (
 	"context"
 	"testing"
 
+	"github.com/glebarez/sqlite"
 	"github.com/pigeonbox/core/repo/db"
 	"github.com/pigeonbox/core/repo/db/model"
-	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
@@ -153,4 +153,63 @@ func TestGetUploadedChunkIndexes(t *testing.T) {
 	assert.Contains(t, indexes, 1)
 	assert.Contains(t, indexes, 2)
 	assert.NotContains(t, indexes, 0)
+}
+
+// =====================================================================
+// 2026-10-08 攻击面加固：分片计划自洽校验 + 会话归属 fail-closed
+// =====================================================================
+
+func TestValidateChunkPlan(t *testing.T) {
+	// 合法：恰为 ⌈size/chunk⌉
+	assert.NoError(t, ValidateChunkPlan(30, 10, 3))
+	assert.NoError(t, ValidateChunkPlan(31, 10, 4)) // 尾部不满片
+	assert.NoError(t, ValidateChunkPlan(10, 10, 1))
+	assert.NoError(t, ValidateChunkPlan(1, 10, 1))
+
+	// 总数与 ⌈size/chunk⌉ 不符（虚高刷行 / 不足造僵尸会话）
+	assert.Error(t, ValidateChunkPlan(30, 10, 2))
+	assert.Error(t, ValidateChunkPlan(30, 10, 4))
+	assert.Error(t, ValidateChunkPlan(30, 10, 0))
+	assert.Error(t, ValidateChunkPlan(30, 10, -1))
+
+	// 超硬上限
+	assert.Error(t, ValidateChunkPlan(20001, 1, 20001))
+
+	// 非法入参
+	assert.Error(t, ValidateChunkPlan(0, 10, 1))
+	assert.Error(t, ValidateChunkPlan(30, 0, 3))
+}
+
+// TestValidateChunkPlan_UpperBound MaxTotalChunks 上限内必须可通过（防把正常
+// 大文件上传误杀：10000 片 × 4MB = 40GB）
+func TestValidateChunkPlan_UpperBound(t *testing.T) {
+	assert.NoError(t, ValidateChunkPlan(int64(MaxTotalChunks)*1024*1024, 1024*1024, MaxTotalChunks))
+}
+
+// TestOwnedByCaller_LegacyEmptyOwnerIP 空 OwnerIP 老会话归属收紧（2026-10-08）：
+// 此前无条件放行（任何同网调用方可写分片/取消他人进行中会话）。
+func TestOwnedByCaller_LegacyEmptyOwnerIP(t *testing.T) {
+	uid := uint(7)
+	legacy := &model.UploadChunk{UploadID: "legacy-1", OwnerIP: ""} // 匿名老数据
+
+	// 无令牌无用户：一律拒绝（fail-closed）
+	assert.False(t, OwnedByCaller(legacy, "1.2.3.4", "", nil))
+	// 任何 IP 都不再天然通过
+	assert.False(t, OwnedByCaller(legacy, "1.2.3.4", "", &uid))
+
+	// 同登录用户可通过
+	owner := &model.UploadChunk{UploadID: "legacy-2", OwnerIP: "", UserID: &uid}
+	assert.True(t, OwnedByCaller(owner, "9.9.9.9", "", &uid))
+	assert.False(t, OwnedByCaller(owner, "9.9.9.9", "", nil))
+}
+
+// TestOwnedByCaller_NormalPath 常规路径（有 OwnerIP）语义不回归
+func TestOwnedByCaller_NormalPath(t *testing.T) {
+	uid := uint(7)
+	rec := &model.UploadChunk{UploadID: "u1", OwnerIP: "1.2.3.4", UserID: &uid}
+
+	assert.True(t, OwnedByCaller(rec, "1.2.3.4", "", nil))                                       // IP 一致
+	assert.True(t, OwnedByCaller(rec, "5.6.7.8", "", &uid))                                      // 同用户
+	assert.False(t, OwnedByCaller(rec, "5.6.7.8", "", nil))                                      // 陌生者
+	assert.True(t, OwnedByCaller(rec, "5.6.7.8", "tok", nil) == VerifySessionToken("u1", "tok")) // 令牌通道随密钥配置而定
 }

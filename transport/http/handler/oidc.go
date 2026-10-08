@@ -4,8 +4,10 @@ package handler
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/cloudwego/hertz/pkg/app"
+	"github.com/cloudwego/hertz/pkg/protocol"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
 	oidcApp "github.com/pigeonbox/core/app/oidc"
 	"github.com/pigeonbox/core/conf"
@@ -37,6 +39,23 @@ func redirectOIDCError(c *app.RequestContext, msg string) {
 	c.Redirect(consts.StatusFound, []byte("/#/user/login?oidc_error=1"))
 }
 
+// oidcNonceCookie OIDC state 的浏览器绑定 nonce（login CSRF 防线，2026-10-08）：
+// 登录起点随机下发 HttpOnly Cookie，state 的 HMAC 绑定该 nonce；回调强制回读
+// 比对后立即作废——第三方拿"自己的 code+state"诱导受害者浏览器回调时，受害者
+// 没有匹配的 nonce Cookie，登录 CSRF 不成立。
+const oidcNonceCookie = "fcb_oidc_nonce"
+
+// setOIDCNonceCookie 下发 nonce Cookie（HttpOnly + Lax + 1h，与 state TTL 同步）
+func setOIDCNonceCookie(c *app.RequestContext, nonce string) {
+	secure := strings.EqualFold(string(c.Request.Header.Peek("X-Forwarded-Proto")), "https")
+	c.SetCookie(oidcNonceCookie, nonce, 3600, "/", "", protocol.CookieSameSiteLaxMode, secure, true)
+}
+
+// clearOIDCNonceCookie 作废 nonce Cookie（一次性：回调无论成败都清除）
+func clearOIDCNonceCookie(c *app.RequestContext) {
+	c.SetCookie(oidcNonceCookie, "", -1, "/", "", protocol.CookieSameSiteLaxMode, false, true)
+}
+
 // OIDCLogin 302 跳转到 IdP 授权页（GET /api/v1/user/oidc/login）
 func OIDCLogin(ctx context.Context, c *app.RequestContext) {
 	svc := getOIDCService()
@@ -44,12 +63,14 @@ func OIDCLogin(ctx context.Context, c *app.RequestContext) {
 		c.JSON(consts.StatusNotFound, map[string]interface{}{"code": 404, "message": "OIDC 登录未启用"})
 		return
 	}
+	nonce := oidcApp.GenerateNonce()
 	baseURL := getOIDCBaseURL()
-	loginURL, err := svc.LoginURL(ctx, baseURL)
+	loginURL, err := svc.LoginURL(ctx, baseURL, nonce)
 	if err != nil {
 		c.JSON(consts.StatusBadGateway, map[string]interface{}{"code": 502, "message": err.Error()})
 		return
 	}
+	setOIDCNonceCookie(c, nonce)
 	c.Header("Cache-Control", "no-store")
 	c.Redirect(consts.StatusFound, []byte(loginURL))
 }
@@ -61,13 +82,16 @@ func OIDCCallback(ctx context.Context, c *app.RequestContext) {
 		c.JSON(consts.StatusNotFound, map[string]interface{}{"code": 404, "message": "OIDC 登录未启用"})
 		return
 	}
+	// nonce Cookie 一次性：无论成败回调结束即作废，旧 code+state 重放不再可用
+	nonce := string(c.Cookie(oidcNonceCookie))
+	defer clearOIDCNonceCookie(c)
 	code := c.Query("code")
 	state := c.Query("state")
 	if code == "" {
 		redirectOIDCError(c, "授权失败：缺少 code")
 		return
 	}
-	token, err := svc.ExchangeCallback(ctx, getOIDCBaseURL(), code, state)
+	token, err := svc.ExchangeCallback(ctx, getOIDCBaseURL(), code, state, nonce)
 	if err != nil {
 		redirectOIDCError(c, err.Error())
 		return
