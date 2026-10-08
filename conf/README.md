@@ -47,5 +47,5 @@ addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
 - 配置文件放在 `configs/` 目录（server 仓模板为准）
 - 敏感信息（密码等）应通过环境变量覆盖
 - 支持默认配置 InitWithDefault()
-- 部署模式 `deployment.mode`（env `FCB_DEPLOY_MODE`）：standalone（默认）/ public / admin，
+- 部署模式 `deployment.mode`（env `PB_DEPLOY_MODE`）：standalone（默认）/ public / admin，
   多副本拆分语义见 server 配置模板注释与 hub 仓 `docs/specs/2026-10-06-multi-replica-deployment-modes.md`
