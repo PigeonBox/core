@@ -461,7 +461,7 @@ func (s *Service) execTool(ctx context.Context, name string, args json.RawMessag
 			return "content_base64 不是合法 base64: " + err.Error(), true
 		}
 		if int64(len(content)) > s.mcpMaxFileSize() {
-			return fmt.Sprintf("文件 %d 字节超过 MCP 上限（%d 字节，FCB_MCP_MAX_FILE_SIZE 可调；超过请求体上限还需调大 upload.max_file_size）",
+			return fmt.Sprintf("文件 %d 字节超过 MCP 上限（%d 字节，PB_MCP_MAX_FILE_SIZE 可调；超过请求体上限还需调大 upload.max_file_size）",
 				len(content), s.mcpMaxFileSize()), true
 		}
 		style := argStr("expire_style")
@@ -536,7 +536,7 @@ func (s *Service) execTool(ctx context.Context, name string, args json.RawMessag
 			return "读取文件大小失败: " + serr.Error(), true
 		}
 		if size > s.mcpMaxFileSize() {
-			return fmt.Sprintf("文件 %d 字节超过 MCP 下载上限（%d 字节，FCB_MCP_MAX_FILE_SIZE 可调）", size, s.mcpMaxFileSize()), true
+			return fmt.Sprintf("文件 %d 字节超过 MCP 下载上限（%d 字节，PB_MCP_MAX_FILE_SIZE 可调）", size, s.mcpMaxFileSize()), true
 		}
 		data, derr := s.storageSvc.GetFile(ctx, path)
 		if derr != nil {

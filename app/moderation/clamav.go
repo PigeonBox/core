@@ -26,7 +26,7 @@ import (
 
 // ClamAVConfig clamd 连接配置（conf.ModerationConfig.ClamAV）
 type ClamAVConfig struct {
-	Enabled        bool   `mapstructure:"enabled"`         // 总开关（env: FCB_MODERATION_CLAMAV_ENABLED）
+	Enabled        bool   `mapstructure:"enabled"`         // 总开关（env: PB_MODERATION_CLAMAV_ENABLED）
 	Addr           string `mapstructure:"addr"`            // host:port（默认 localhost:3310）
 	TimeoutSeconds int    `mapstructure:"timeout_seconds"` // 单文件扫描超时，默认 60
 	MaxScanBytes   int64  `mapstructure:"max_scan_bytes"`  // 超过跳过扫描（0=不限，建议 512MB）

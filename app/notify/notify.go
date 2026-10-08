@@ -426,7 +426,7 @@ func (s *Service) SetMailer(m *SMTPMailer) { s.mailer = m }
 
 // ==================== Webhook 外部通知渠道 ====================
 
-// SetWebhookURL 注入 Webhook 推送地址（bootstrap 从 notify.webhook.url / FCB_WEBHOOK_URL 注入；
+// SetWebhookURL 注入 Webhook 推送地址（bootstrap 从 notify.webhook.url / PB_WEBHOOK_URL 注入；
 // 空串 = 禁用）。推送失败只记日志，绝不影响站内信主流程。
 func (s *Service) SetWebhookURL(url string) {
 	s.webhookURL = strings.TrimSpace(url)
@@ -444,7 +444,7 @@ type webhookPayload struct {
 }
 
 // sendWebhook 统一推送出口：发送前对目标 URL 复跑 SSRF 校验（2026-10-08 加固）。
-// 此前只有保存期校验（env/file 注入的 FCB_WEBHOOK_URL 完全绕过）与 302 逐跳
+// 此前只有保存期校验（env/file 注入的 PB_WEBHOOK_URL 完全绕过）与 302 逐跳
 // 校验——首发请求本身从未被校验，DNS 重绑定/换配置窗口内可打私网。
 func (s *Service) sendWebhook(ctx context.Context, event string, body []byte) error {
 	if s.webhookURL == "" {
@@ -459,7 +459,7 @@ func (s *Service) sendWebhook(ctx context.Context, event string, body []byte) er
 		Body:   body,
 		Header: func(h http.Header) {
 			h.Set("Content-Type", "application/json")
-			h.Set("X-FCB-Event", event)
+			h.Set("X-PB-Event", event)
 		},
 	}, nil)
 }

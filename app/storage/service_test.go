@@ -103,7 +103,7 @@ func TestUpdateStorageConfigWebDAVValidation(t *testing.T) {
 
 	// 合法 URL（公网形态，不实际连接会被 Probe 拦）——这里仅验证校验通过后
 	// Probe 失败同样不落配置（沙箱无外网，Probe 必败，恰好覆盖回滚路径）
-	req.Config.WebDAV.URL = "https://webdav.invalid-host-fcb-test.example/dav"
+	req.Config.WebDAV.URL = "https://webdav.invalid-host-pb-test.example/dav"
 	require.Error(t, s.UpdateStorageConfig(ctx, req))
 	require.Equal(t, "local", conf.GetGlobalConfig().Storage.Type)
 	require.Len(t, p.saved, 0)

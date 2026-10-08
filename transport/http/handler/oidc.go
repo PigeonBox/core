@@ -43,7 +43,7 @@ func redirectOIDCError(c *app.RequestContext, msg string) {
 // 登录起点随机下发 HttpOnly Cookie，state 的 HMAC 绑定该 nonce；回调强制回读
 // 比对后立即作废——第三方拿"自己的 code+state"诱导受害者浏览器回调时，受害者
 // 没有匹配的 nonce Cookie，登录 CSRF 不成立。
-const oidcNonceCookie = "fcb_oidc_nonce"
+const oidcNonceCookie = "pb_oidc_nonce"
 
 // setOIDCNonceCookie 下发 nonce Cookie（HttpOnly + Lax + 1h，与 state TTL 同步）
 func setOIDCNonceCookie(c *app.RequestContext, nonce string) {

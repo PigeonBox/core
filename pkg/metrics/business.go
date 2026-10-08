@@ -2,10 +2,10 @@
 //
 // 此前 Prometheus 只有 3 个 HTTP RED 指标，"上传了多少、被拒了多少、为什么被拒"
 // 完全不可观测。本文件补业务计数器（Counter 天然廉价，无需开关）：
-//   - fcb_upload_bytes_total{channel}       上传字节累计
-//   - fcb_share_created_total{upload_type}  分享创建数
-//   - fcb_upload_rejected_total{reason}     上传/取件拒绝数（按原因）
-//   - fcb_moderation_hits_total{action}     审核命中数（reject/pending）
+//   - pb_upload_bytes_total{channel}       上传字节累计
+//   - pb_share_created_total{upload_type}  分享创建数
+//   - pb_upload_rejected_total{reason}     上传/取件拒绝数（按原因）
+//   - pb_moderation_hits_total{action}     审核命中数（reject/pending）
 //
 // 接线点：share service（创建/审核）、pkg/gate（闸门拒绝）、pkg/utils（类型拒绝）。
 // 未初始化（单测/未启用 metrics 中间件）时全部 no-op，零开销。
@@ -27,22 +27,22 @@ const (
 
 var (
 	uploadBytes = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name: "fcb_upload_bytes_total",
+		Name: "pb_upload_bytes_total",
 		Help: "Total uploaded bytes.",
 	}, []string{"channel"})
 
 	shareCreated = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name: "fcb_share_created_total",
+		Name: "pb_share_created_total",
 		Help: "Total shares created.",
 	}, []string{"upload_type"})
 
 	uploadRejected = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name: "fcb_upload_rejected_total",
+		Name: "pb_upload_rejected_total",
 		Help: "Upload/pickup rejections by reason.",
 	}, []string{"reason"})
 
 	moderationHits = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name: "fcb_moderation_hits_total",
+		Name: "pb_moderation_hits_total",
 		Help: "Moderation hook hits by action.",
 	}, []string{"action"})
 )

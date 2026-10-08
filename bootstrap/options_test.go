@@ -13,9 +13,9 @@ func TestDefaultOptions(t *testing.T) {
 }
 
 func TestWithStaticDir(t *testing.T) {
-	o := applyOptions(WithStaticDir("/opt/fcb/ui"))
-	if o.StaticDir != "/opt/fcb/ui" {
-		t.Fatalf("StaticDir = %q, want /opt/fcb/ui", o.StaticDir)
+	o := applyOptions(WithStaticDir("/opt/pb/ui"))
+	if o.StaticDir != "/opt/pb/ui" {
+		t.Fatalf("StaticDir = %q, want /opt/pb/ui", o.StaticDir)
 	}
 	// 空串保持默认
 	o = applyOptions(WithStaticDir(""))

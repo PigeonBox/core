@@ -36,7 +36,7 @@ var ErrAccountDisabled = errors.New("OIDC 登录被拒绝：账号已被禁用")
 // Config OIDC 配置（conf.SecurityConfig.OIDC）
 type Config struct {
 	Enabled          bool   `mapstructure:"enabled"`
-	Issuer           string `mapstructure:"issuer"` // 如 https://idp.example.com/realms/fcb
+	Issuer           string `mapstructure:"issuer"` // 如 https://idp.example.com/realms/pb
 	ClientID         string `mapstructure:"client_id"`
 	ClientSecret     string `mapstructure:"client_secret"`
 	Scopes           string `mapstructure:"scopes"`            // 默认 "openid profile email"

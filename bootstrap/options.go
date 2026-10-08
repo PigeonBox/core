@@ -5,7 +5,7 @@ package bootstrap
 // 用法:
 //
 //	h, err := bootstrap.BootstrapWithOptions(configPath,
-//	    bootstrap.WithStaticDir("/opt/fcb/ui"),
+//	    bootstrap.WithStaticDir("/opt/pb/ui"),
 //	)
 //
 // 兼容性:Bootstrap(configPath) 等价于无选项的 BootstrapWithOptions,

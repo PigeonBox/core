@@ -100,7 +100,7 @@ func CheckAnonymousQuota(ctx context.Context, ip string, addBytes int64) error {
 }
 
 func (d *dailyQuota) incrRedis(ctx context.Context, ip, day string, addBytes int64) (int64, int64, error) {
-	key := fmt.Sprintf("fcb:quota:%s:%s", ip, day)
+	key := fmt.Sprintf("pb:quota:%s:%s", ip, day)
 	pipe := d.rdb.TxPipeline()
 	cntCmd := pipe.Incr(ctx, key+":count")
 	byteCmd := pipe.IncrBy(ctx, key+":bytes", addBytes)

@@ -145,7 +145,7 @@ func (s *Service) generatePreview(ctx context.Context, fileCode *model.FileCode)
 		return nil, fmt.Errorf("open file from storage: %w", err)
 	}
 	// GeneratePreview 以磁盘路径为输入，落临时文件后清理
-	tmp, err := os.CreateTemp("", "fcb-preview-*")
+	tmp, err := os.CreateTemp("", "pb-preview-*")
 	if err != nil {
 		_ = rc.Close()
 		return nil, fmt.Errorf("create temp file: %w", err)

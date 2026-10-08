@@ -12,8 +12,8 @@ import (
 
 // 波次3：security.api_token.* 环境变量绑定（显式映射表，非 AutomaticEnv）。
 func TestBindEnvironment_APIToken(t *testing.T) {
-	t.Setenv("FCB_API_TOKEN_PER_KEY_QPS", "1")
-	t.Setenv("FCB_API_TOKEN_PER_KEY_BURST", "3")
+	t.Setenv("PB_API_TOKEN_PER_KEY_QPS", "1")
+	t.Setenv("PB_API_TOKEN_PER_KEY_BURST", "3")
 
 	v := viper.New()
 	v.SetDefault("security.api_token.enabled", true)
@@ -33,7 +33,7 @@ func TestBindEnvironment_APIToken(t *testing.T) {
 // 交由 bootstrap 按 IsProduction 裁决。
 func TestBindEnvironment_EnableHSTS_TriState(t *testing.T) {
 	t.Run("env_true", func(t *testing.T) {
-		t.Setenv("FCB_ENABLE_HSTS", "true")
+		t.Setenv("PB_ENABLE_HSTS", "true")
 		v := viper.New()
 		bindEnvironment(v)
 		var cfg conf.AppConfiguration
@@ -42,7 +42,7 @@ func TestBindEnvironment_EnableHSTS_TriState(t *testing.T) {
 		assert.True(t, *cfg.Security.CORS.EnableHSTS)
 	})
 	t.Run("env_false", func(t *testing.T) {
-		t.Setenv("FCB_ENABLE_HSTS", "false")
+		t.Setenv("PB_ENABLE_HSTS", "false")
 		v := viper.New()
 		bindEnvironment(v)
 		var cfg conf.AppConfiguration

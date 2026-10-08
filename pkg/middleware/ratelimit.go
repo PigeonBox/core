@@ -229,7 +229,7 @@ func blockKey(s scope, ip string) string { return string(s) + "|" + ip }
 func (rl *RateLimiter) isBlocked(ctx context.Context, s scope, ip string) bool {
 	key := blockKey(s, ip)
 	if rl.rdb != nil {
-		if n, err := rl.rdb.Exists(ctx, "fcb:rl:block:"+key).Result(); err == nil && n > 0 {
+		if n, err := rl.rdb.Exists(ctx, "pb:rl:block:"+key).Result(); err == nil && n > 0 {
 			return true
 		}
 	}
@@ -252,7 +252,7 @@ func (rl *RateLimiter) addBlock(ctx context.Context, s scope, ip string) {
 	rl.blockedTotal++
 	rl.mu.Unlock()
 	if rl.rdb != nil {
-		rl.rdb.Set(ctx, "fcb:rl:block:"+key, "1", time.Duration(secs)*time.Second)
+		rl.rdb.Set(ctx, "pb:rl:block:"+key, "1", time.Duration(secs)*time.Second)
 	}
 }
 
@@ -262,7 +262,7 @@ func (rl *RateLimiter) allowRedis(ctx context.Context, s scope, ip string) bool 
 	if qps <= 0 {
 		qps = 1
 	}
-	key := fmt.Sprintf("fcb:rl:cnt:%s:%s:%d", s, ip, time.Now().Unix())
+	key := fmt.Sprintf("pb:rl:cnt:%s:%s:%d", s, ip, time.Now().Unix())
 	n, err := rl.rdb.Incr(ctx, key).Result()
 	if err != nil {
 		// Redis 故障：回退进程内 bucket

@@ -18,8 +18,8 @@ import (
 )
 
 // apiKeyPlainPrefix API Key 明文前缀（与 app/user 签发端一致）。
-// 同时承担 Bearer 凭证与 JWT 的确定性区分：fcb_sk_ 开头必为 Key（JWT 恒为 eyJ 开头）。
-const apiKeyPlainPrefix = "fcb_sk_"
+// 同时承担 Bearer 凭证与 JWT 的确定性区分：pb_sk_ 开头必为 Key（JWT 恒为 eyJ 开头）。
+const apiKeyPlainPrefix = "pb_sk_"
 
 // errInvalidAPIKey 统一拒绝原因（对外一律 401 "Invalid API Key"，不区分过期/吊销/封禁，防枚举）。
 var errInvalidAPIKey = errors.New("invalid api key")
@@ -40,7 +40,7 @@ func apiTokenEnabled() bool {
 
 // extractAPIKey 从请求头提取 API Key。拒绝 query 传参（防访问日志/Referer/代理日志泄露）。
 // 支持三种形式：
-//  1. Authorization: Bearer fcb_sk_xxx（首选）
+//  1. Authorization: Bearer pb_sk_xxx（首选）
 //  2. Authorization: ApiKey xxx
 //  3. X-API-Key: xxx
 //

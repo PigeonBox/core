@@ -34,7 +34,7 @@ type AppConfiguration struct {
 	Deployment    DeploymentConfig    `mapstructure:"deployment"`
 }
 
-// 部署模式取值（deployment.mode / env FCB_DEPLOY_MODE）。
+// 部署模式取值（deployment.mode / env PB_DEPLOY_MODE）。
 // 详见 docs/specs/2026-10-06-multi-replica-deployment-modes.md。
 const (
 	// DeployModeStandalone 单进程全功能（默认，即历史形态：全部路由 + 后台任务 + 迁移）。
@@ -51,7 +51,7 @@ const (
 // 同一镜像三种运行模式：public×N + admin×1 组成多副本拓扑；
 // 单机部署保持默认 standalone，行为与历史版本完全一致。
 type DeploymentConfig struct {
-	// Mode standalone(默认) | public | admin。env: FCB_DEPLOY_MODE
+	// Mode standalone(默认) | public | admin。env: PB_DEPLOY_MODE
 	Mode string `mapstructure:"mode"`
 }
 
@@ -93,16 +93,16 @@ func (c *AppConfiguration) ServesAdminPlane() bool {
 // 启用后本站注册进联邦注册中心，口令分享跨站可达（文件仍从本站直出，
 // 注册中心不落盘不见明文）。详见 docs/specs/2026-10-04-p2p-registry-service-design.md。
 type FederationConfig struct {
-	// Enabled 总开关（默认 false）。env: FCB_FEDERATION_ENABLED
+	// Enabled 总开关（默认 false）。env: PB_FEDERATION_ENABLED
 	Enabled bool `mapstructure:"enabled"`
 	// RegistryURL 联邦注册中心基址，如 http://p2p:12346；支持逗号分隔多主备
-	// （写路径全推、读路径依次 failover）。env: FCB_FEDERATION_REGISTRY_URL
+	// （写路径全推、读路径依次 failover）。env: PB_FEDERATION_REGISTRY_URL
 	RegistryURL string `mapstructure:"registry_url"`
 	// PublicURL 本站对外可达基址（公告给取件方直连下载用；必须公网/局域网可达，
-	// 一般与 server.base_url 一致）。env: FCB_FEDERATION_PUBLIC_URL
+	// 一般与 server.base_url 一致）。env: PB_FEDERATION_PUBLIC_URL
 	PublicURL string `mapstructure:"public_url"`
 	// NodeKeyPath 节点身份密钥（Ed25519 seed hex, 0600），首次启动自动生成。
-	// 缺失/损坏会重新生成=联邦身份更换。env: FCB_FEDERATION_NODE_KEY_PATH
+	// 缺失/损坏会重新生成=联邦身份更换。env: PB_FEDERATION_NODE_KEY_PATH
 	NodeKeyPath string `mapstructure:"node_key_path"`
 	// AnnounceMinEntropyBits 口令公告熵门槛（位），低于此熵的口令不出站
 	// （6 位数字取件码默认只在本站有效，防 registry 侧枚举）。0=默认 40。
@@ -112,25 +112,25 @@ type FederationConfig struct {
 // MCPConfig Model Context Protocol server（AI 客户端集成；上游没有的差异化能力）。
 // 端点 POST /api/v1/mcp（Streamable HTTP / JSON-RPC 2.0），挂管理员 JWT 认证。
 type MCPConfig struct {
-	// Enabled 默认 true（认证已强制，无暴露风险）。env: FCB_MCP_ENABLED
+	// Enabled 默认 true（认证已强制，无暴露风险）。env: PB_MCP_ENABLED
 	Enabled bool `mapstructure:"enabled"`
 	// MaxFileSize MCP 单文件上传/下载上限（字节）。默认 6MB——base64 膨胀 4/3 后
 	// 约 8MB，低于默认请求体上限（max(10MB, upload.max_file_size)）；
-	// 调大超过请求体上限时须同步调大 upload.max_file_size。env: FCB_MCP_MAX_FILE_SIZE
+	// 调大超过请求体上限时须同步调大 upload.max_file_size。env: PB_MCP_MAX_FILE_SIZE
 	MaxFileSize int64 `mapstructure:"max_file_size"`
 }
 
 // AdminConfig 管理端运维配置（治理 2026-10-03）
 type AdminConfig struct {
-	// LogRetentionDays 审计/传输日志保留天数（0 = 永久）。env: FCB_ADMIN_LOG_RETENTION_DAYS
+	// LogRetentionDays 审计/传输日志保留天数（0 = 永久）。env: PB_ADMIN_LOG_RETENTION_DAYS
 	LogRetentionDays int `mapstructure:"log_retention_days"`
 }
 
 // ModerationConfig 内容审核配置（治理 2026-10-03；默认关闭，词表为空恒放行）
 type ModerationConfig struct {
-	// Enabled 审核钩子总开关（默认 false；env: FCB_MODERATION_ENABLED）
+	// Enabled 审核钩子总开关（默认 false；env: PB_MODERATION_ENABLED）
 	Enabled bool `mapstructure:"enabled"`
-	// BlockedWords 敏感词表（子串匹配、大小写不敏感；env: FCB_MODERATION_BLOCKED_WORDS，逗号分隔）
+	// BlockedWords 敏感词表（子串匹配、大小写不敏感；env: PB_MODERATION_BLOCKED_WORDS，逗号分隔）
 	BlockedWords []string `mapstructure:"blocked_words"`
 	// BlockAction 命中处置策略：reject（默认，直接拒绝）| pending（建分享后置待审，进管理端队列）
 	BlockAction string `mapstructure:"block_action"`
@@ -140,8 +140,8 @@ type ModerationConfig struct {
 
 // ClamAVConfig clamd 病毒扫描配置（默认关闭；详见 app/moderation/clamav.go）
 type ClamAVConfig struct {
-	Enabled        bool   `mapstructure:"enabled"`         // env: FCB_MODERATION_CLAMAV_ENABLED
-	Addr           string `mapstructure:"addr"`            // 默认 localhost:3310；env: FCB_MODERATION_CLAMAV_ADDR
+	Enabled        bool   `mapstructure:"enabled"`         // env: PB_MODERATION_CLAMAV_ENABLED
+	Addr           string `mapstructure:"addr"`            // 默认 localhost:3310；env: PB_MODERATION_CLAMAV_ADDR
 	TimeoutSeconds int    `mapstructure:"timeout_seconds"` // 单文件扫描超时，默认 60
 	MaxScanBytes   int64  `mapstructure:"max_scan_bytes"`  // 超过跳过扫描，默认 512MB
 }
@@ -149,7 +149,7 @@ type ClamAVConfig struct {
 // NotifyConfig 通知配置（站内信 + 外部 Webhook + SMTP 邮件渠道）
 type NotifyConfig struct {
 	// WebhookURL 外部推送地址：notify.created 事件以 JSON POST 推送（空 = 禁用）。
-	// env: FCB_WEBHOOK_URL
+	// env: PB_WEBHOOK_URL
 	WebhookURL string `mapstructure:"webhook_url" json:"webhook_url"`
 	// SMTP 邮件通知（站内信创建后对登记邮箱异步补发；空 host = 禁用）
 	SMTP SMTPConfig `mapstructure:"smtp" json:"smtp"`
@@ -157,11 +157,11 @@ type NotifyConfig struct {
 
 // SMTPConfig SMTP 邮件配置（P2；默认禁用）
 type SMTPConfig struct {
-	Host     string `mapstructure:"host" json:"host"`         // env: FCB_SMTP_HOST
-	Port     int    `mapstructure:"port" json:"port"`         // 465=隐式 TLS；25/587=STARTTLS；env: FCB_SMTP_PORT
-	Username string `mapstructure:"username" json:"username"` // env: FCB_SMTP_USERNAME
-	Password string `mapstructure:"password" json:"password"` // env: FCB_SMTP_PASSWORD
-	From     string `mapstructure:"from" json:"from"`         // 发件地址，空 = 取 Username；env: FCB_SMTP_FROM
+	Host     string `mapstructure:"host" json:"host"`         // env: PB_SMTP_HOST
+	Port     int    `mapstructure:"port" json:"port"`         // 465=隐式 TLS；25/587=STARTTLS；env: PB_SMTP_PORT
+	Username string `mapstructure:"username" json:"username"` // env: PB_SMTP_USERNAME
+	Password string `mapstructure:"password" json:"password"` // env: PB_SMTP_PASSWORD
+	From     string `mapstructure:"from" json:"from"`         // 发件地址，空 = 取 Username；env: PB_SMTP_FROM
 }
 
 // SetGlobalConfig 设置全局配置
@@ -292,8 +292,8 @@ type UploadConfig struct {
 
 // LocalImportConfig 本地文件导入配置
 type LocalImportConfig struct {
-	Enabled bool     `mapstructure:"enabled" json:"enabled"` // env: FCB_LOCAL_IMPORT_ENABLED
-	Roots   []string `mapstructure:"roots" json:"roots"`     // 允许导入的绝对目录白名单；env: FCB_LOCAL_IMPORT_ROOTS（逗号分隔）
+	Enabled bool     `mapstructure:"enabled" json:"enabled"` // env: PB_LOCAL_IMPORT_ENABLED
+	Roots   []string `mapstructure:"roots" json:"roots"`     // 允许导入的绝对目录白名单；env: PB_LOCAL_IMPORT_ROOTS（逗号分隔）
 }
 
 // DownloadConfig 下载配置
@@ -301,7 +301,7 @@ type DownloadConfig struct {
 	DownloadTimeout int  `mapstructure:"download_timeout" json:"download_timeout"`
 	RequireLogin    bool `mapstructure:"require_login" json:"require_login"`
 	// S3DirectDownload s3 直下：存储后端为 s3 且开启时，文件下载 302 到短时效
-	// 预签名 GET URL（下载流量不经过服务器）。env: FCB_DOWNLOAD_S3_DIRECT
+	// 预签名 GET URL（下载流量不经过服务器）。env: PB_DOWNLOAD_S3_DIRECT
 	S3DirectDownload bool `mapstructure:"s3_direct_download" json:"s3_direct_download"`
 	// PresignPolicy 直传策略：everyone=所有人可直传 / authenticated=仅登录用户 /
 	// disabled=完全关闭直传（全部走服务器中转）。空串=未设置，按
@@ -309,7 +309,7 @@ type DownloadConfig struct {
 	PresignPolicy string `mapstructure:"presign_policy" json:"presign_policy"`
 	// PresignAnonymousEnabled 旧版匿名直传开关（被 PresignPolicy 取代，仍读取兼容）。
 	// 指针三态：nil=未设置（默认开启，兼容存量 download 段无此键的库）。
-	// env: FCB_DOWNLOAD_PRESIGN_ANONYMOUS
+	// env: PB_DOWNLOAD_PRESIGN_ANONYMOUS
 	PresignAnonymousEnabled *bool `mapstructure:"presign_anonymous_enabled" json:"presign_anonymous_enabled"`
 	// PresignExpireSeconds 直传签名时效（秒）。0=默认 600；钳位 60..3600。
 	PresignExpireSeconds int `mapstructure:"presign_expire_seconds" json:"presign_expire_seconds"`
@@ -396,7 +396,7 @@ type StorageConfig struct {
 	Type        string `mapstructure:"type" json:"type"` // local, s3, oss, cos, bos, ks3, obs, webdav
 	StoragePath string `mapstructure:"storage_path" json:"storage_path"`
 	// Quota 站点级全局存储配额（字节，0=不限）。统计口径=存活 file_codes 尺寸合计；
-	// 全通道统一闸口（直传/分片完成/预签名完成/本地导入/多文件）。env: FCB_STORAGE_QUOTA
+	// 全通道统一闸口（直传/分片完成/预签名完成/本地导入/多文件）。env: PB_STORAGE_QUOTA
 	Quota     int64               `mapstructure:"quota" json:"quota"`
 	S3        *S3Config           `mapstructure:"s3" json:"s3"`
 	WebDAV    *WebDAVConfig       `mapstructure:"webdav" json:"webdav"`
@@ -513,7 +513,7 @@ type UIConfig struct {
 	Background    string `mapstructure:"background" json:"background"`
 	AccentColor   string `mapstructure:"accent_color" json:"accent_color"`
 	// ExposeOpenAPI 是否公开 /openapi.json（默认 true，前端 /api-docs 页依赖）；
-	// 生产部署可置 false 收缩端点清单侦察面（env: FCB_UI_EXPOSE_OPENAPI）。
+	// 生产部署可置 false 收缩端点清单侦察面（env: PB_UI_EXPOSE_OPENAPI）。
 	ExposeOpenAPI bool `mapstructure:"expose_openapi" json:"expose_openapi"`
 }
 
@@ -547,16 +547,16 @@ type SecurityConfig struct {
 // OIDCConfig OIDC 单点登录配置（P2；默认关闭。启用需 issuer/client_id/client_secret，
 // 回调地址 <base_url>/api/v1/user/oidc/callback）
 type OIDCConfig struct {
-	Enabled          bool   `mapstructure:"enabled" json:"enabled"`                     // env: FCB_OIDC_ENABLED
-	Issuer           string `mapstructure:"issuer" json:"issuer"`                       // env: FCB_OIDC_ISSUER
-	ClientID         string `mapstructure:"client_id" json:"client_id"`                 // env: FCB_OIDC_CLIENT_ID
-	ClientSecret     string `mapstructure:"client_secret" json:"client_secret"`         // env: FCB_OIDC_CLIENT_SECRET
-	Scopes           string `mapstructure:"scopes" json:"scopes"`                       // 默认 "openid profile email"；env: FCB_OIDC_SCOPES
+	Enabled          bool   `mapstructure:"enabled" json:"enabled"`                     // env: PB_OIDC_ENABLED
+	Issuer           string `mapstructure:"issuer" json:"issuer"`                       // env: PB_OIDC_ISSUER
+	ClientID         string `mapstructure:"client_id" json:"client_id"`                 // env: PB_OIDC_CLIENT_ID
+	ClientSecret     string `mapstructure:"client_secret" json:"client_secret"`         // env: PB_OIDC_CLIENT_SECRET
+	Scopes           string `mapstructure:"scopes" json:"scopes"`                       // 默认 "openid profile email"；env: PB_OIDC_SCOPES
 	FrontendCallback string `mapstructure:"frontend_callback" json:"frontend_callback"` // 默认 /#/oidc/callback
 }
 
-// APITokenConfig 用户级 API Key（个人访问令牌，fcb_sk_）。
-// Enabled 为认证总开关（env FCB_API_TOKEN_ENABLED）：false 时携带 Key 的请求一律 401。
+// APITokenConfig 用户级 API Key（个人访问令牌，pb_sk_）。
+// Enabled 为认证总开关（env PB_API_TOKEN_ENABLED）：false 时携带 Key 的请求一律 401。
 // PerKeyQPS 为单 Key 独立限流（令牌桶，进程内）：0 = 不限（默认 20，burst 默认 2×QPS）。
 type APITokenConfig struct {
 	Enabled     bool `mapstructure:"enabled" json:"enabled"`             // 默认 true
@@ -605,10 +605,10 @@ type RateLimitSettings struct {
 // 必须显式列出可信来源。若 AllowOrigins 为空且 AllowCredentials=true，
 // 中间件会退化为反射 Origin（仅适合开发环境）。
 type CORSConfig struct {
-	AllowOrigins     []string `mapstructure:"allow_origins"`     // 可信来源列表，env: FCB_CORS_ALLOW_ORIGINS（逗号分隔）
+	AllowOrigins     []string `mapstructure:"allow_origins"`     // 可信来源列表，env: PB_CORS_ALLOW_ORIGINS（逗号分隔）
 	AllowCredentials bool     `mapstructure:"allow_credentials"` // 是否允许携带凭证
 	// EnableHSTS 三态（2026-10-08 加固）：nil（未配置）= 生产模式默认开/开发默认关；
 	// 显式 true/false 恒以配置为准（自签证书等特殊拓扑的逃生开关）。
-	// env: FCB_ENABLE_HSTS
+	// env: PB_ENABLE_HSTS
 	EnableHSTS *bool `mapstructure:"enable_hsts"`
 }

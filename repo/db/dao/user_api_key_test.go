@@ -28,7 +28,7 @@ func newAPIKeyDAOTestDB(t *testing.T) {
 
 func insertKey(t *testing.T, mutate func(*model.UserAPIKey)) *model.UserAPIKey {
 	t.Helper()
-	k := &model.UserAPIKey{UserID: 1, Name: "t", Prefix: "fcb_sk_te", KeyHash: "h" + time.Now().Format("150405.000000000")}
+	k := &model.UserAPIKey{UserID: 1, Name: "t", Prefix: "pb_sk_te", KeyHash: "h" + time.Now().Format("150405.000000000")}
 	if mutate != nil {
 		mutate(k)
 	}

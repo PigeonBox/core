@@ -159,7 +159,7 @@ func TestOptionalAPIKey_ValidKey_InjectsIdentity(t *testing.T) {
 	assert.Equal(t, rec.ID, gotKeyID)
 }
 
-func TestOptionalAPIKey_BearerFcbSkPrefix(t *testing.T) {
+func TestOptionalAPIKey_BearerPbSkPrefix(t *testing.T) {
 	newAPIKeyTestEnv(t)
 	u := newFixtureUser(t, "active")
 	plain, _ := newFixtureKey(t, u.ID, nil)

@@ -22,7 +22,7 @@ import (
 
 const (
 	// SessionCookieName 会话 Cookie 名（host-only，不设 Domain）
-	SessionCookieName = "fcb_token"
+	SessionCookieName = "pb_token"
 	// CSRFHeaderName Cookie 认证下非安全方法的必备请求头
 	CSRFHeaderName = "X-Requested-With"
 	// CSRFHeaderValue 该请求头的期望值

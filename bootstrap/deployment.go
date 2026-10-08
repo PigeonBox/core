@@ -186,10 +186,10 @@ func stripAdminPlanePaths(spec []byte) []byte {
 
 const (
 	// configChangeChannel 管理端配置/存储变更通知频道（广播语义，副本各自订阅）。
-	configChangeChannel = "fcb:config:changed"
+	configChangeChannel = "pb:config:changed"
 	// configRevisionKey 变更版本号（INCR）。pubsub 是 fire-and-forget，副本以
 	// 30s 周期对账 revision 兜底订阅断线窗口内丢消息。
-	configRevisionKey = "fcb:config:revision"
+	configRevisionKey = "pb:config:revision"
 )
 
 // propagatedRevision 已应用的最新变更版本（-1/0 = 未初始化或无历史变更）。

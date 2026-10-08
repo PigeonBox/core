@@ -445,7 +445,7 @@ func (s *Service) GetStats(ctx context.Context, userID uint) (*model.UserStats, 
 // ==================== API Key 相关常量和类型 ====================
 
 const (
-	apiKeyPrefix   = "fcb_sk_"
+	apiKeyPrefix   = "pb_sk_"
 	maxUserAPIKeys = 5 // 每个用户最多保留的有效密钥数量
 )
 

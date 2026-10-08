@@ -49,7 +49,7 @@ func getBlacklist() *tokenBlacklist {
 
 func tokenKey(token string) string {
 	sum := sha256.Sum256([]byte(token))
-	return "fcb:jwt:bl:" + hex.EncodeToString(sum[:])
+	return "pb:jwt:bl:" + hex.EncodeToString(sum[:])
 }
 
 // memBlacklistMax 内存兜底表容量上限（防无界增长；只影响降级窗口内写入量）

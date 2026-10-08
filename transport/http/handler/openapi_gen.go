@@ -104,7 +104,7 @@ func BuildOpenAPISpec(routes []OpenAPIRoute, info SpecInfo) []byte {
 				},
 				"apiKeyAuth": map[string]any{
 					"type": "apiKey", "in": "header", "name": "Authorization",
-					"description": "用户 API Key：Authorization: Bearer fcb_sk_...（/api/v1 双认证端点可用）",
+					"description": "用户 API Key：Authorization: Bearer pb_sk_...（/api/v1 双认证端点可用）",
 				},
 			},
 		},

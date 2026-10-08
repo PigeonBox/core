@@ -53,8 +53,8 @@ type failWindow struct {
 }
 
 const (
-	lockKeyPrefix = "fcb:lock:hit:"   // 锁定标记
-	failKeyPrefix = "fcb:lock:count:" // 失败计数
+	lockKeyPrefix = "pb:lock:hit:"   // 锁定标记
+	failKeyPrefix = "pb:lock:count:" // 失败计数
 )
 
 // NewLockout 创建失败锁定器。rdb 为 nil 或配置未启用时仍返回可用实例（内存模式）。

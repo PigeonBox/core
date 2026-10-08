@@ -113,7 +113,7 @@ type Service struct {
 // PublicBaseCtxKey hertz ctx 中请求级公开 base 的键。bootstrap 在
 // server.base_url 未配置时挂中间件，把每条请求的来源(scheme://host)写入
 // ctx（hertz RequestContext.Value 读取 Set 的 kv）。
-const PublicBaseCtxKey = "fcb.public_base"
+const PublicBaseCtxKey = "pb.public_base"
 
 // ResolveBase 公开链接 base 解析：显式配置 > 请求来源（中间件注入）> 空串。
 // 禁止回退到 server.host——那是监听地址（0.0.0.0），拼进分享链接对外不可达

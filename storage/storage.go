@@ -405,7 +405,7 @@ func ProbeConfig(ctx context.Context, cfg *StorageConfig) error {
 		if err := os.MkdirAll(path, 0o755); err != nil {
 			return fmt.Errorf("存储路径不可创建: %w", err)
 		}
-		probe := filepath.Join(path, ".fcb_probe")
+		probe := filepath.Join(path, ".pb_probe")
 		if err := os.WriteFile(probe, []byte("probe"), 0o644); err != nil {
 			return fmt.Errorf("存储路径不可写: %w", err)
 		}

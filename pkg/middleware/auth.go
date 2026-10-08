@@ -191,7 +191,7 @@ func IdentityFresh(ctx context.Context, claims *auth.Claims) bool {
 
 // AuthMiddleware JWT认证中间件
 //
-// 令牌来源：Authorization: Bearer 头或会话 Cookie（fcb_token，浏览器端默认；
+// 令牌来源：Authorization: Bearer 头或会话 Cookie（pb_token，浏览器端默认；
 // Cookie 认证的非安全方法另有 CSRF 头门禁，见 session.go）。
 func AuthMiddleware() app.HandlerFunc {
 	return func(ctx context.Context, c *app.RequestContext) {

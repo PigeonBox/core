@@ -2,8 +2,8 @@
 
 // 存储驱动真机集成测试（需本地 Docker 起真实 FTP/SFTP 服务，CI 跳过）：
 //
-//	docker run -d --name fcb-sftp -p 2222:22 -e SFTP_USERS=tester:testerpass:1001 atmoz/sftp:alpine
-//	docker run -d --name fcb-ftp -p 2121:21 -p 21000-21010:21000-21010 \
+//	docker run -d --name pb-sftp -p 2222:22 -e SFTP_USERS=tester:testerpass:1001 atmoz/sftp:alpine
+//	docker run -d --name pb-ftp -p 2121:21 -p 21000-21010:21000-21010 \
 //	  -e FTP_USER_NAME=tester -e FTP_USER_PASS=testerpass \
 //	  -e PASV_ADDRESS=127.0.0.1 -e PASV_MIN_PORT=21000 -e PASV_MAX_PORT=21010 \
 //	  stilliard/pure-ftpd:hardened

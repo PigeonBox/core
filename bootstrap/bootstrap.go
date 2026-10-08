@@ -140,11 +140,11 @@ func rateLimitGlobalExempt(path string) bool {
 //
 // 同时允许 X-Trace-Id / X-API-Key 等自定义请求头跨域。
 // allow_origins 来源：yaml 的 security.cors.allow_origins（数组）或
-// 环境变量 FCB_CORS_ALLOW_ORIGINS（逗号分隔，如 "https://a.com,https://b.com"）。
+// 环境变量 PB_CORS_ALLOW_ORIGINS（逗号分隔，如 "https://a.com,https://b.com"）。
 func CORS() app.HandlerFunc {
 	allowOrigins := map[string]bool{}
 	// 优先从环境变量读取（逗号分隔），兼容 slice 字段在 env 下的传递
-	if envOrigins := os.Getenv("FCB_CORS_ALLOW_ORIGINS"); envOrigins != "" {
+	if envOrigins := os.Getenv("PB_CORS_ALLOW_ORIGINS"); envOrigins != "" {
 		for _, o := range strings.Split(envOrigins, ",") {
 			if o = strings.TrimSpace(o); o != "" {
 				allowOrigins[o] = true
@@ -158,7 +158,7 @@ func CORS() app.HandlerFunc {
 	allowCredentials := config.Security.CORS.AllowCredentials
 	// localhost 兜底仅限开发模式：生产实例放行任意 localhost Origin 等于给
 	// 本机/内网里的恶意页面开跨域读通道（2026-10-06 审计收紧）。
-	// 生产需要本地联调时用 FCB_CORS_ALLOW_ORIGINS 显式加白名单。
+	// 生产需要本地联调时用 PB_CORS_ALLOW_ORIGINS 显式加白名单。
 	localhostFallback := config != nil && !config.IsProduction()
 
 	return func(ctx context.Context, c *app.RequestContext) {
@@ -200,7 +200,7 @@ func CORS() app.HandlerFunc {
 }
 
 // isLocalhostOrigin 判断是否 localhost/127.0.0.1 的任意端口（开发环境跨域放行）。
-// 生产环境应通过 FCB_CORS_ALLOW_ORIGINS 显式配置白名单。
+// 生产环境应通过 PB_CORS_ALLOW_ORIGINS 显式配置白名单。
 func isLocalhostOrigin(origin string) bool {
 	return strings.HasPrefix(origin, "http://localhost:") ||
 		strings.HasPrefix(origin, "http://127.0.0.1:") ||
@@ -218,7 +218,7 @@ func GetConfig() *Config {
 // InitConfig 初始化配置。
 //
 // 配置来源优先级（高 → 低）：
-//  1. 环境变量（FCB_ 前缀完整名 / 文档化的短名，见 bindEnvironment）
+//  1. 环境变量（PB_ 前缀完整名 / 文档化的短名，见 bindEnvironment）
 //  2. 配置文件（yaml，路径由 configPath 或 CONFIG_PATH 决定）
 //  3. 代码内默认值（SetDefault）
 //
@@ -302,7 +302,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("mcp.enabled", true)
 	v.SetDefault("mcp.max_file_size", 6<<20) // 单文件上限；默认 6MB（base64 后约 8MB < 默认请求体上限 10MB）
 	// /openapi.json 公开开关：默认保持公开（前端 /api-docs 页依赖），
-	// 生产部署建议关闭以收缩端点清单侦察面（FCB_UI_EXPOSE_OPENAPI=false）
+	// 生产部署建议关闭以收缩端点清单侦察面（PB_UI_EXPOSE_OPENAPI=false）
 	v.SetDefault("ui.expose_openapi", true)
 	// 内容审核默认关闭、命中默认直接拒绝（治理 2026-10-03）
 	v.SetDefault("moderation.enabled", false)
@@ -317,119 +317,119 @@ func setDefaults(v *viper.Viper) {
 // envBindings 环境变量 → 配置 key 的映射。
 // 同时支持两套命名：
 //   - 文档化的短扁平名（PORT / DATABASE_HOST 等，便于运维记忆）
-//   - FCB_ 前缀 + 下划线的完整名（FCB_SERVER_PORT，与 mapstructure key 对齐）
+//   - PB_ 前缀 + 下划线的完整名（PB_SERVER_PORT，与 mapstructure key 对齐）
 var envBindings = map[string][]string{
 	// deployment（多副本部署模式）
-	"deployment.mode": {"FCB_DEPLOY_MODE"},
+	"deployment.mode": {"PB_DEPLOY_MODE"},
 	// server
-	"server.host":          {"FCB_SERVER_HOST", "HOST"},
-	"server.port":          {"FCB_SERVER_PORT", "PORT"},
-	"server.mode":          {"FCB_SERVER_MODE"},
-	"server.base_url":      {"FCB_SERVER_BASE_URL", "BASE_URL"},
-	"server.read_timeout":  {"FCB_SERVER_READ_TIMEOUT"},
-	"server.write_timeout": {"FCB_SERVER_WRITE_TIMEOUT"},
+	"server.host":          {"PB_SERVER_HOST", "HOST"},
+	"server.port":          {"PB_SERVER_PORT", "PORT"},
+	"server.mode":          {"PB_SERVER_MODE"},
+	"server.base_url":      {"PB_SERVER_BASE_URL", "BASE_URL"},
+	"server.read_timeout":  {"PB_SERVER_READ_TIMEOUT"},
+	"server.write_timeout": {"PB_SERVER_WRITE_TIMEOUT"},
 	// database
-	"database.driver":   {"FCB_DATABASE_DRIVER", "DATABASE_TYPE", "DB_TYPE"},
-	"database.db_name":  {"FCB_DATABASE_DB_NAME", "DATABASE_NAME", "DB_NAME"},
-	"database.host":     {"FCB_DATABASE_HOST", "DATABASE_HOST", "DB_HOST"},
-	"database.port":     {"FCB_DATABASE_PORT", "DATABASE_PORT", "DB_PORT"},
-	"database.user":     {"FCB_DATABASE_USER", "DATABASE_USER", "DB_USER"},
-	"database.password": {"FCB_DATABASE_PASSWORD", "DATABASE_PASS", "DB_PASS"},
+	"database.driver":   {"PB_DATABASE_DRIVER", "DATABASE_TYPE", "DB_TYPE"},
+	"database.db_name":  {"PB_DATABASE_DB_NAME", "DATABASE_NAME", "DB_NAME"},
+	"database.host":     {"PB_DATABASE_HOST", "DATABASE_HOST", "DB_HOST"},
+	"database.port":     {"PB_DATABASE_PORT", "DATABASE_PORT", "DB_PORT"},
+	"database.user":     {"PB_DATABASE_USER", "DATABASE_USER", "DB_USER"},
+	"database.password": {"PB_DATABASE_PASSWORD", "DATABASE_PASS", "DB_PASS"},
 	// redis
-	"redis.host":     {"FCB_REDIS_HOST", "REDIS_HOST"},
-	"redis.port":     {"FCB_REDIS_PORT", "REDIS_PORT"},
-	"redis.password": {"FCB_REDIS_PASSWORD", "REDIS_PASSWORD"},
-	"redis.db":       {"FCB_REDIS_DB", "REDIS_DB"},
+	"redis.host":     {"PB_REDIS_HOST", "REDIS_HOST"},
+	"redis.port":     {"PB_REDIS_PORT", "REDIS_PORT"},
+	"redis.password": {"PB_REDIS_PASSWORD", "REDIS_PASSWORD"},
+	"redis.db":       {"PB_REDIS_DB", "REDIS_DB"},
 	// app
-	"app.datapath":   {"FCB_DATA_PATH", "DATA_PATH"},
-	"app.production": {"FCB_PRODUCTION", "PRODUCTION"},
+	"app.datapath":   {"PB_DATA_PATH", "DATA_PATH"},
+	"app.production": {"PB_PRODUCTION", "PRODUCTION"},
 	// user
-	"user.jwt_secret":              {"FCB_JWT_SECRET", "JWT_SECRET"},
-	"user.allow_user_registration": {"FCB_USER_ALLOW_REGISTRATION"},
+	"user.jwt_secret":              {"PB_JWT_SECRET", "JWT_SECRET"},
+	"user.allow_user_registration": {"PB_USER_ALLOW_REGISTRATION"},
 	// upload
-	"upload.open_upload": {"FCB_OPEN_UPLOAD", "OPEN_UPLOAD"},
-	"upload.upload_size": {"FCB_UPLOAD_SIZE", "UPLOAD_SIZE"},
+	"upload.open_upload": {"PB_OPEN_UPLOAD", "OPEN_UPLOAD"},
+	"upload.upload_size": {"PB_UPLOAD_SIZE", "UPLOAD_SIZE"},
 	// storage
-	"storage.type":         {"FCB_STORAGE_TYPE"},
-	"storage.storage_path": {"FCB_STORAGE_PATH"},
-	"storage.quota":        {"FCB_STORAGE_QUOTA"},
+	"storage.type":         {"PB_STORAGE_TYPE"},
+	"storage.storage_path": {"PB_STORAGE_PATH"},
+	"storage.quota":        {"PB_STORAGE_QUOTA"},
 	// storage.s3(config.example.yaml 注明"生产请用 env 注入",此前映射缺失,现补齐)
-	"storage.s3.access_key": {"FCB_STORAGE_S3_ACCESS_KEY"},
-	"storage.s3.secret_key": {"FCB_STORAGE_S3_SECRET_KEY"},
-	"storage.s3.endpoint":   {"FCB_STORAGE_S3_ENDPOINT"},
-	"storage.s3.region":     {"FCB_STORAGE_S3_REGION"},
-	"storage.s3.bucket":     {"FCB_STORAGE_S3_BUCKET"},
-	"storage.s3.use_ssl":    {"FCB_STORAGE_S3_USE_SSL"},
-	"storage.s3.path_style": {"FCB_STORAGE_S3_PATH_STYLE"},
+	"storage.s3.access_key": {"PB_STORAGE_S3_ACCESS_KEY"},
+	"storage.s3.secret_key": {"PB_STORAGE_S3_SECRET_KEY"},
+	"storage.s3.endpoint":   {"PB_STORAGE_S3_ENDPOINT"},
+	"storage.s3.region":     {"PB_STORAGE_S3_REGION"},
+	"storage.s3.bucket":     {"PB_STORAGE_S3_BUCKET"},
+	"storage.s3.use_ssl":    {"PB_STORAGE_S3_USE_SSL"},
+	"storage.s3.path_style": {"PB_STORAGE_S3_PATH_STYLE"},
 	// download
-	"download.s3_direct_download": {"FCB_DOWNLOAD_S3_DIRECT"},
+	"download.s3_direct_download": {"PB_DOWNLOAD_S3_DIRECT"},
 	// observability
-	"observability.metrics.enabled": {"FCB_METRICS_ENABLED"},
-	"observability.metrics.path":    {"FCB_METRICS_PATH"},
+	"observability.metrics.enabled": {"PB_METRICS_ENABLED"},
+	"observability.metrics.path":    {"PB_METRICS_PATH"},
 	// security
-	"security.cors.allow_origins":          {"FCB_CORS_ALLOW_ORIGINS"},
-	"security.cors.enable_hsts":            {"FCB_ENABLE_HSTS"},
-	"security.trusted_proxies":             {"FCB_TRUSTED_PROXIES"},
-	"security.download_token.enabled":      {"FCB_DOWNLOAD_TOKEN_ENABLED"},
-	"security.lockout.enabled":             {"FCB_LOCKOUT_ENABLED"},
-	"security.api_token.enabled":           {"FCB_API_TOKEN_ENABLED"},
-	"security.api_token.per_key_qps":       {"FCB_API_TOKEN_PER_KEY_QPS"},
-	"security.api_token.per_key_burst":     {"FCB_API_TOKEN_PER_KEY_BURST"},
-	"security.lockout.max_attempts":        {"FCB_LOCKOUT_MAX_ATTEMPTS"},
-	"security.ssrf.allow_private_networks": {"FCB_SSRF_ALLOW_PRIVATE"},
+	"security.cors.allow_origins":          {"PB_CORS_ALLOW_ORIGINS"},
+	"security.cors.enable_hsts":            {"PB_ENABLE_HSTS"},
+	"security.trusted_proxies":             {"PB_TRUSTED_PROXIES"},
+	"security.download_token.enabled":      {"PB_DOWNLOAD_TOKEN_ENABLED"},
+	"security.lockout.enabled":             {"PB_LOCKOUT_ENABLED"},
+	"security.api_token.enabled":           {"PB_API_TOKEN_ENABLED"},
+	"security.api_token.per_key_qps":       {"PB_API_TOKEN_PER_KEY_QPS"},
+	"security.api_token.per_key_burst":     {"PB_API_TOKEN_PER_KEY_BURST"},
+	"security.lockout.max_attempts":        {"PB_LOCKOUT_MAX_ATTEMPTS"},
+	"security.ssrf.allow_private_networks": {"PB_SSRF_ALLOW_PRIVATE"},
 	// security.oidc（单点登录）
-	"security.oidc.enabled":       {"FCB_OIDC_ENABLED"},
-	"security.oidc.issuer":        {"FCB_OIDC_ISSUER"},
-	"security.oidc.client_id":     {"FCB_OIDC_CLIENT_ID"},
-	"security.oidc.client_secret": {"FCB_OIDC_CLIENT_SECRET"},
-	"security.oidc.scopes":        {"FCB_OIDC_SCOPES"},
+	"security.oidc.enabled":       {"PB_OIDC_ENABLED"},
+	"security.oidc.issuer":        {"PB_OIDC_ISSUER"},
+	"security.oidc.client_id":     {"PB_OIDC_CLIENT_ID"},
+	"security.oidc.client_secret": {"PB_OIDC_CLIENT_SECRET"},
+	"security.oidc.scopes":        {"PB_OIDC_SCOPES"},
 	// notify
-	"notify.webhook_url": {"FCB_WEBHOOK_URL", "WEBHOOK_URL"},
+	"notify.webhook_url": {"PB_WEBHOOK_URL", "WEBHOOK_URL"},
 	// notify.smtp（邮件通知渠道）
-	"notify.smtp.host":     {"FCB_SMTP_HOST"},
-	"notify.smtp.port":     {"FCB_SMTP_PORT"},
-	"notify.smtp.username": {"FCB_SMTP_USERNAME"},
-	"notify.smtp.password": {"FCB_SMTP_PASSWORD"},
-	"notify.smtp.from":     {"FCB_SMTP_FROM"},
+	"notify.smtp.host":     {"PB_SMTP_HOST"},
+	"notify.smtp.port":     {"PB_SMTP_PORT"},
+	"notify.smtp.username": {"PB_SMTP_USERNAME"},
+	"notify.smtp.password": {"PB_SMTP_PASSWORD"},
+	"notify.smtp.from":     {"PB_SMTP_FROM"},
 	// mcp
-	"mcp.enabled":       {"FCB_MCP_ENABLED"},
-	"mcp.max_file_size": {"FCB_MCP_MAX_FILE_SIZE"},
+	"mcp.enabled":       {"PB_MCP_ENABLED"},
+	"mcp.max_file_size": {"PB_MCP_MAX_FILE_SIZE"},
 	// ui
-	"ui.expose_openapi": {"FCB_UI_EXPOSE_OPENAPI"},
+	"ui.expose_openapi": {"PB_UI_EXPOSE_OPENAPI"},
 	// moderation（内容审核，治理 2026-10-03）
-	"moderation.enabled":       {"FCB_MODERATION_ENABLED"},
-	"moderation.blocked_words": {"FCB_MODERATION_BLOCKED_WORDS"},
-	"moderation.block_action":  {"FCB_MODERATION_BLOCK_ACTION"},
+	"moderation.enabled":       {"PB_MODERATION_ENABLED"},
+	"moderation.blocked_words": {"PB_MODERATION_BLOCKED_WORDS"},
+	"moderation.block_action":  {"PB_MODERATION_BLOCK_ACTION"},
 	// moderation.clamav（文件病毒扫描）
-	"moderation.clamav.enabled": {"FCB_MODERATION_CLAMAV_ENABLED"},
-	"moderation.clamav.addr":    {"FCB_MODERATION_CLAMAV_ADDR"},
+	"moderation.clamav.enabled": {"PB_MODERATION_CLAMAV_ENABLED"},
+	"moderation.clamav.addr":    {"PB_MODERATION_CLAMAV_ADDR"},
 	// admin 运维
-	"admin.log_retention_days": {"FCB_ADMIN_LOG_RETENTION_DAYS"},
+	"admin.log_retention_days": {"PB_ADMIN_LOG_RETENTION_DAYS"},
 	// federation（P2P 联邦接入）
-	"federation.enabled":                   {"FCB_FEDERATION_ENABLED"},
-	"federation.registry_url":              {"FCB_FEDERATION_REGISTRY_URL"},
-	"federation.public_url":                {"FCB_FEDERATION_PUBLIC_URL"},
-	"federation.node_key_path":             {"FCB_FEDERATION_NODE_KEY_PATH"},
-	"federation.announce_min_entropy_bits": {"FCB_FEDERATION_MIN_ENTROPY"},
+	"federation.enabled":                   {"PB_FEDERATION_ENABLED"},
+	"federation.registry_url":              {"PB_FEDERATION_REGISTRY_URL"},
+	"federation.public_url":                {"PB_FEDERATION_PUBLIC_URL"},
+	"federation.node_key_path":             {"PB_FEDERATION_NODE_KEY_PATH"},
+	"federation.announce_min_entropy_bits": {"PB_FEDERATION_MIN_ENTROPY"},
 	// upload 安全项
-	"upload.text_max_bytes":        {"FCB_TEXT_MAX_BYTES"},
-	"upload.allowed_extensions":    {"FCB_UPLOAD_ALLOWED_EXTENSIONS"},
-	"upload.blocked_extensions":    {"FCB_UPLOAD_BLOCKED_EXTENSIONS"},
-	"upload.enable_magic_check":    {"FCB_ENABLE_MAGIC_CHECK"},
-	"upload.max_save_seconds_cap":  {"FCB_UPLOAD_MAX_SAVE_SECONDS_CAP"},
-	"upload.anonymous_daily_count": {"FCB_UPLOAD_ANON_DAILY_COUNT"},
-	"upload.anonymous_daily_bytes": {"FCB_UPLOAD_ANON_DAILY_BYTES"},
+	"upload.text_max_bytes":        {"PB_TEXT_MAX_BYTES"},
+	"upload.allowed_extensions":    {"PB_UPLOAD_ALLOWED_EXTENSIONS"},
+	"upload.blocked_extensions":    {"PB_UPLOAD_BLOCKED_EXTENSIONS"},
+	"upload.enable_magic_check":    {"PB_ENABLE_MAGIC_CHECK"},
+	"upload.max_save_seconds_cap":  {"PB_UPLOAD_MAX_SAVE_SECONDS_CAP"},
+	"upload.anonymous_daily_count": {"PB_UPLOAD_ANON_DAILY_COUNT"},
+	"upload.anonymous_daily_bytes": {"PB_UPLOAD_ANON_DAILY_BYTES"},
 	// upload.local_import（NAS 本地文件免上传导入）
-	"upload.local_import.enabled": {"FCB_LOCAL_IMPORT_ENABLED"},
-	"upload.local_import.roots":   {"FCB_LOCAL_IMPORT_ROOTS"},
+	"upload.local_import.enabled": {"PB_LOCAL_IMPORT_ENABLED"},
+	"upload.local_import.roots":   {"PB_LOCAL_IMPORT_ROOTS"},
 	// rate_limit
-	"rate_limit.enabled":       {"FCB_RATE_LIMIT_ENABLED"},
-	"rate_limit.global_qps":    {"FCB_RATE_LIMIT_GLOBAL_QPS"},
-	"rate_limit.upload_qps":    {"FCB_RATE_LIMIT_UPLOAD_QPS"},
-	"rate_limit.download_qps":  {"FCB_RATE_LIMIT_DOWNLOAD_QPS"},
-	"rate_limit.login_qps":     {"FCB_RATE_LIMIT_LOGIN_QPS"},
-	"rate_limit.block_seconds": {"FCB_RATE_LIMIT_BLOCK_SECONDS"},
-	"rate_limit.use_redis":     {"FCB_RATE_LIMIT_USE_REDIS"},
+	"rate_limit.enabled":       {"PB_RATE_LIMIT_ENABLED"},
+	"rate_limit.global_qps":    {"PB_RATE_LIMIT_GLOBAL_QPS"},
+	"rate_limit.upload_qps":    {"PB_RATE_LIMIT_UPLOAD_QPS"},
+	"rate_limit.download_qps":  {"PB_RATE_LIMIT_DOWNLOAD_QPS"},
+	"rate_limit.login_qps":     {"PB_RATE_LIMIT_LOGIN_QPS"},
+	"rate_limit.block_seconds": {"PB_RATE_LIMIT_BLOCK_SECONDS"},
+	"rate_limit.use_redis":     {"PB_RATE_LIMIT_USE_REDIS"},
 }
 
 // listValuedKeys 值为列表（[]string）的配置 key：env 只能传字符串，
@@ -495,7 +495,7 @@ var insecureDefaultSecrets = map[string]string{
 func validateSecrets(cfg *Config) error {
 	// jwt_secret：空或命中黑名单一律拒绝
 	if sec := cfg.User.JWTSecret; sec == "" || insecureDefaultSecrets[sec] != "" {
-		return fmt.Errorf("a secure user.jwt_secret is required in ALL environments: current value is empty or a known default; set FCB_JWT_SECRET env to a strong random string (>=32 chars)")
+		return fmt.Errorf("a secure user.jwt_secret is required in ALL environments: current value is empty or a known default; set PB_JWT_SECRET env to a strong random string (>=32 chars)")
 	}
 	return nil
 }
@@ -553,15 +553,15 @@ func InitDatabase(config *conf.DatabaseConfig) (*gorm.DB, error) {
 }
 
 // ErrInsecureDefaultAdmin 生产模式下拒绝以已知默认口令创建默认管理员时返回
-// （errors.Is 可判）。逃生门：FCB_ADMIN_PASSWORD 注入强密码，或
-// FCB_DISABLE_DEFAULT_ADMIN=true 走 /setup 首启向导。
+// （errors.Is 可判）。逃生门：PB_ADMIN_PASSWORD 注入强密码，或
+// PB_DISABLE_DEFAULT_ADMIN=true 走 /setup 首启向导。
 var ErrInsecureDefaultAdmin = errors.New("refusing to create default admin with known default password in production mode")
 
 // CreateDefaultAdmin 创建默认管理员。
 //
-// 密码来源（优先级）：FCB_ADMIN_PASSWORD 环境变量 > 默认 admin123。
+// 密码来源（优先级）：PB_ADMIN_PASSWORD 环境变量 > 默认 admin123。
 // 密码用 bcrypt 现场哈希（此前硬编码的哈希与 admin123 不匹配，导致管理员无法登录）。
-// 生产模式（app.production 或 server.mode=release）下若未注入 FCB_ADMIN_PASSWORD
+// 生产模式（app.production 或 server.mode=release）下若未注入 PB_ADMIN_PASSWORD
 // 且库中无管理员，返回 ErrInsecureDefaultAdmin 由调用方终止启动——已知弱口令
 // 不允许上线（2026-10-08 审计：此前仅 Warn，与 JWT secret 的全环境 fail-fast 不对称）。
 // 仅在"即将创建"时校验：库中已有 admin 的存量部署升级不受影响（每次启动都查会
@@ -576,10 +576,10 @@ func CreateDefaultAdmin(database *gorm.DB, cfg *conf.AppConfiguration) error {
 	}
 
 	// 密码：env 注入优先，否则默认 admin123
-	password := os.Getenv("FCB_ADMIN_PASSWORD")
+	password := os.Getenv("PB_ADMIN_PASSWORD")
 	if password == "" {
 		if cfg != nil && cfg.IsProduction() {
-			return fmt.Errorf("%w: set FCB_ADMIN_PASSWORD env to a strong password, or set FCB_DISABLE_DEFAULT_ADMIN=true to configure via the /setup wizard (known credentials admin/admin123 must not ship in production)", ErrInsecureDefaultAdmin)
+			return fmt.Errorf("%w: set PB_ADMIN_PASSWORD env to a strong password, or set PB_DISABLE_DEFAULT_ADMIN=true to configure via the /setup wizard (known credentials admin/admin123 must not ship in production)", ErrInsecureDefaultAdmin)
 		}
 		password = "admin123"
 	}
@@ -603,10 +603,10 @@ func CreateDefaultAdmin(database *gorm.DB, cfg *conf.AppConfiguration) error {
 		return fmt.Errorf("failed to create admin user: %w", err)
 	}
 
-	if os.Getenv("FCB_ADMIN_PASSWORD") == "" {
-		logger.Warn("Default admin created with default password 'admin123' — change it immediately in production (set FCB_ADMIN_PASSWORD for a custom one)")
+	if os.Getenv("PB_ADMIN_PASSWORD") == "" {
+		logger.Warn("Default admin created with default password 'admin123' — change it immediately in production (set PB_ADMIN_PASSWORD for a custom one)")
 	} else {
-		logger.Info("Default admin created with password from FCB_ADMIN_PASSWORD")
+		logger.Info("Default admin created with password from PB_ADMIN_PASSWORD")
 	}
 	return nil
 }
@@ -726,18 +726,18 @@ func BootstrapWithOptions(configPath string, opts ...Option) (*server.Hertz, err
 	}
 	// 下载令牌签名密钥：优先独立 env（2026-10-05 审计 P3：派生自 jwt_secret
 	// 时 JWT 泄露即波及防盗链令牌伪造），缺省回退旧派生保持兼容
-	dlSecret := os.Getenv("FCB_DOWNLOAD_TOKEN_SECRET")
+	dlSecret := os.Getenv("PB_DOWNLOAD_TOKEN_SECRET")
 	if dlSecret == "" {
-		dlSecret = "fcb-dl:" + config.User.JWTSecret
+		dlSecret = "pb-dl:" + config.User.JWTSecret
 	}
 	securityPkg.SetDownloadTokenSecret(dlSecret)
 
 	// 4. 创建默认管理员（public 副本不执行：管理员初始化归 admin/standalone）
-	// FCB_DISABLE_DEFAULT_ADMIN=true 时跳过——首启向导（/setup）模式：由访问者
+	// PB_DISABLE_DEFAULT_ADMIN=true 时跳过——首启向导（/setup）模式：由访问者
 	// 在浏览器完成管理员创建与站点预配置，自建默认口令与向导互斥（2026-10-07）。
 	if config.ServesAdminPlane() {
-		if os.Getenv("FCB_DISABLE_DEFAULT_ADMIN") == "true" {
-			logger.Info("default admin creation disabled (FCB_DISABLE_DEFAULT_ADMIN=true); use /setup wizard")
+		if os.Getenv("PB_DISABLE_DEFAULT_ADMIN") == "true" {
+			logger.Info("default admin creation disabled (PB_DISABLE_DEFAULT_ADMIN=true); use /setup wizard")
 		} else if err := CreateDefaultAdmin(database, config); err != nil {
 			if errors.Is(err, ErrInsecureDefaultAdmin) {
 				// 生产模式拒绝弱口令 admin 是致命错误：带已知口令上线不可接受，
@@ -788,7 +788,7 @@ func BootstrapWithOptions(configPath string, opts ...Option) (*server.Hertz, err
 
 	// 安全：配置安全响应头。HSTS 三态（2026-10-08 加固）：未配置时生产模式默认
 	// 开启、开发默认关——浏览器忽略 HTTP 响应上的 STS 头，纯 HTTP 的 LAN 部署
-	// 零影响；自签证书等特殊拓扑显式 enable_hsts=false（或 env FCB_ENABLE_HSTS）
+	// 零影响；自签证书等特殊拓扑显式 enable_hsts=false（或 env PB_ENABLE_HSTS）
 	// 即可关闭，恒以显式配置为准。
 	hstsEnabled := config.IsProduction()
 	if v := config.Security.CORS.EnableHSTS; v != nil {
@@ -1203,14 +1203,14 @@ func customizedRegister(r *server.Hertz) {
 	})
 
 	// ===== Prometheus 指标端点（独立内网 server，默认不暴露到主端口）=====
-	// 开启时绑定 127.0.0.1:9090（可用 FCB_METRICS_ADDR 配置），供同节点 Prometheus 抓取。
+	// 开启时绑定 127.0.0.1:9090（可用 PB_METRICS_ADDR 配置），供同节点 Prometheus 抓取。
 	// 主 server 不注册 /metrics，避免公网泄露内部指标。
 	if config.Observability.Metrics.Enabled {
 		metricsPath := config.Observability.Metrics.Path
 		if metricsPath == "" {
 			metricsPath = "/metrics"
 		}
-		metricsAddr := os.Getenv("FCB_METRICS_ADDR")
+		metricsAddr := os.Getenv("PB_METRICS_ADDR")
 		if metricsAddr == "" {
 			metricsAddr = "127.0.0.1:9090"
 		}
@@ -1231,7 +1231,7 @@ func customizedRegister(r *server.Hertz) {
 	r.GET("/readyz", readinessHandler)
 
 	// ===== 自定义 REST API（用户 JWT 或 API Key 认证）=====
-	// UserOrAPIKey：浏览器走 JWT（含黑名单），第三方脚本走 X-API-Key / Bearer fcb_sk_。
+	// UserOrAPIKey：浏览器走 JWT（含黑名单），第三方脚本走 X-API-Key / Bearer pb_sk_。
 	// 覆盖我的分享管理与站内通知；Key 永不进入 /admin 与 /user/api-keys（Key 不能管 Key）。
 	apiV1 := r.Group("/api/v1", middleware.UserOrAPIKey())
 	{
@@ -1543,8 +1543,8 @@ func initThriftIDLServices(database *gorm.DB) {
 	// 禁止回退到 host:port 拼接——server.host 是监听地址（0.0.0.0），
 	// 拼进分享链接对外不可达（2026-10-07 真机事故：分享成功弹窗 0.0.0.0 链接）。
 	baseURL := config.Server.BaseURL
-	// presign 签名密钥：优先专用 FCB_PRESIGN_SIGNING_KEY，否则复用 jwt_secret
-	signingKey := os.Getenv("FCB_PRESIGN_SIGNING_KEY")
+	// presign 签名密钥：优先专用 PB_PRESIGN_SIGNING_KEY，否则复用 jwt_secret
+	signingKey := os.Getenv("PB_PRESIGN_SIGNING_KEY")
 	if signingKey == "" {
 		signingKey = config.User.JWTSecret
 	}
@@ -2049,7 +2049,7 @@ func (adminDefaultsAdapter) DefaultUploadSize(ctx context.Context) int64 {
 }
 
 // restoreRuntimeStorage 启动时把 system_configs.runtime_storage 恢复进全局配置。
-// 优先级：env（FCB_STORAGE_TYPE/FCB_STORAGE_PATH）> DB（管理端在线修改的意图，
+// 优先级：env（PB_STORAGE_TYPE/PB_STORAGE_PATH）> DB（管理端在线修改的意图，
 // 晚于 yaml）> yaml。DB 无记录时不动 conf（yaml/env 生效）。
 func restoreRuntimeStorage() {
 	rs := adminApp.Default().LoadRuntimeStorage(context.Background()) // DB 已于 InitDatabase 就绪
@@ -2101,10 +2101,10 @@ func restoreRuntimeStorage() {
 		config.Storage.OBS = rs.OBS
 	}
 	// env 优先级最高：显式注入的环境变量覆盖 DB 恢复值
-	if v := os.Getenv("FCB_STORAGE_TYPE"); v != "" {
+	if v := os.Getenv("PB_STORAGE_TYPE"); v != "" {
 		config.Storage.Type = v
 	}
-	if v := os.Getenv("FCB_STORAGE_PATH"); v != "" {
+	if v := os.Getenv("PB_STORAGE_PATH"); v != "" {
 		config.Storage.StoragePath = v
 	}
 	log.Println("runtime storage config restored from database, type =", config.Storage.Type)
