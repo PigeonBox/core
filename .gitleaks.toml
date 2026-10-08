@@ -1,0 +1,21 @@
+# gitleaks 配置（CI Security Scan 与本地 `gitleaks detect` 自动读取）。
+# 默认规则全量继承，仅豁免已核实误报——豁免必须写明理由，禁止无说明扩条。
+[extend]
+useDefault = true
+
+# 不安全默认密钥黑名单（bootstrap.insecureDefaultSecrets）自身的内容——
+# 这些值是公开文档化的"禁止使用"名单，出现在代码/文档里正是守卫生效的证据
+[[allowlists]]
+description = "不安全默认密钥黑名单的公开占位值"
+regexes = [
+  '''PigeonBox2025JWT''',
+  '''PigeonBox2025SecretKey''',
+  '''pigeonbox-dev-signing-key-change-me''',
+  '''dev-only-change-me''',
+  '''REPLACE_WITH_STRONG_RANDOM_SECRET''',
+]
+
+# apikey 中间件测试夹具（随机生成/明文写死的测试 key）
+[[allowlists]]
+description = "apikey 测试夹具"
+paths = ['''^pkg/middleware/apikey_test\.go$''']
