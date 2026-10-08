@@ -131,11 +131,16 @@ func (f *fakeDriver) RemoveAll(_ context.Context, key string) error {
 	return nil
 }
 
-// Presign 让 fakeDriver 具备 presigner 能力（验证 Operator→驱动的预签名分派）
-func (f *fakeDriver) Presign(_ context.Context, method, key string, _ time.Duration) (*opendal.PresignedResult, error) {
+// Presign 让 fakeDriver 具备 presigner 能力（验证 Operator→驱动的预签名分派；
+// 签名须与 storage/opendal presigner 接口一致，含 opts——aac55cd 起透传
+// response-content-disposition，fake 落后签名会使分派静默落到 not-implemented）
+func (f *fakeDriver) Presign(_ context.Context, method, key string, _ time.Duration, opts map[string]string) (*opendal.PresignedResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record("Presign:" + method + ":" + key)
+	if len(opts) > 0 {
+		f.record("PresignOpts:" + method)
+	}
 	return &opendal.PresignedResult{
 		URL:    "https://signed.example/" + method + "/" + key,
 		Method: method,
