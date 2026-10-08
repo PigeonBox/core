@@ -3,6 +3,9 @@ on:
   push: { branches: [main] }
   pull_request: { branches: [main] }
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -19,6 +22,10 @@ jobs:
       # -race 与本机同门槛:transfer/federation 两起数据竞争都是 CI 外本地才暴露的
       - name: Test (race)
         run: go test -race ./...
+
+      # 依赖漏洞门禁（govulncheck）：可达漏洞即红；修复策略=升依赖地板，不许注释绕过
+      - name: Govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
       # lint 棘轮（.golangci.yml 从 0 issues 起步，只收紧不放宽）
       - name: Lint (golangci-lint)
         uses: golangci/golangci-lint-action@v8
