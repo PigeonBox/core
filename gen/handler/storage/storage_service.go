@@ -10,6 +10,7 @@ import (
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/pigeonbox/contracts/errcode"
 	storage "github.com/pigeonbox/contracts/gen/storage"
+	adminapp "github.com/pigeonbox/core/app/admin"
 	storageapp "github.com/pigeonbox/core/app/storage"
 	"github.com/pigeonbox/core/pkg/resp"
 )
@@ -26,6 +27,14 @@ func getService() *storageapp.Service {
 		storageSvc = storageapp.NewService()
 	}
 	return storageSvc
+}
+
+var storageJanitor *adminapp.Janitor
+
+// SetJanitor 注入 janitor（bootstrap 调用）——孤儿清理端点与洞察计数
+// 复用后台对账的同一实例，避免双份列举逻辑。
+func SetJanitor(j *adminapp.Janitor) {
+	storageJanitor = j
 }
 
 // GetStorageInfo .
