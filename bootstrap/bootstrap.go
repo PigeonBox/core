@@ -552,12 +552,21 @@ func InitDatabase(config *conf.DatabaseConfig) (*gorm.DB, error) {
 	return database, nil
 }
 
+// ErrInsecureDefaultAdmin 生产模式下拒绝以已知默认口令创建默认管理员时返回
+// （errors.Is 可判）。逃生门：FCB_ADMIN_PASSWORD 注入强密码，或
+// FCB_DISABLE_DEFAULT_ADMIN=true 走 /setup 首启向导。
+var ErrInsecureDefaultAdmin = errors.New("refusing to create default admin with known default password in production mode")
+
 // CreateDefaultAdmin 创建默认管理员。
 //
 // 密码来源（优先级）：FCB_ADMIN_PASSWORD 环境变量 > 默认 admin123。
 // 密码用 bcrypt 现场哈希（此前硬编码的哈希与 admin123 不匹配，导致管理员无法登录）。
-// 生产环境务必通过 FCB_ADMIN_PASSWORD 注入强密码并在首次登录后修改。
-func CreateDefaultAdmin(database *gorm.DB) error {
+// 生产模式（app.production 或 server.mode=release）下若未注入 FCB_ADMIN_PASSWORD
+// 且库中无管理员，返回 ErrInsecureDefaultAdmin 由调用方终止启动——已知弱口令
+// 不允许上线（2026-10-08 审计：此前仅 Warn，与 JWT secret 的全环境 fail-fast 不对称）。
+// 仅在"即将创建"时校验：库中已有 admin 的存量部署升级不受影响（每次启动都查会
+// 打断未配 env 的老部署）。cfg 允许 nil（视为非生产，保持旧行为）。
+func CreateDefaultAdmin(database *gorm.DB, cfg *conf.AppConfiguration) error {
 	var count int64
 	database.Model(&model.User{}).Where("role = ?", "admin").Count(&count)
 
@@ -569,6 +578,9 @@ func CreateDefaultAdmin(database *gorm.DB) error {
 	// 密码：env 注入优先，否则默认 admin123
 	password := os.Getenv("FCB_ADMIN_PASSWORD")
 	if password == "" {
+		if cfg != nil && cfg.IsProduction() {
+			return fmt.Errorf("%w: set FCB_ADMIN_PASSWORD env to a strong password, or set FCB_DISABLE_DEFAULT_ADMIN=true to configure via the /setup wizard (known credentials admin/admin123 must not ship in production)", ErrInsecureDefaultAdmin)
+		}
 		password = "admin123"
 	}
 
@@ -726,7 +738,12 @@ func BootstrapWithOptions(configPath string, opts ...Option) (*server.Hertz, err
 	if config.ServesAdminPlane() {
 		if os.Getenv("FCB_DISABLE_DEFAULT_ADMIN") == "true" {
 			logger.Info("default admin creation disabled (FCB_DISABLE_DEFAULT_ADMIN=true); use /setup wizard")
-		} else if err := CreateDefaultAdmin(database); err != nil {
+		} else if err := CreateDefaultAdmin(database, config); err != nil {
+			if errors.Is(err, ErrInsecureDefaultAdmin) {
+				// 生产模式拒绝弱口令 admin 是致命错误：带已知口令上线不可接受，
+				// 无 admin 静默启动同样不可接受（管理面裸奔）——终止启动。
+				return nil, err
+			}
 			logger.Error("Failed to create default admin", zap.Error(err))
 		}
 	}
