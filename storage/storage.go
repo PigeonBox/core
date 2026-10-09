@@ -10,7 +10,6 @@ import (
 	"mime/multipart"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -72,164 +71,19 @@ type StorageInterface interface {
 	GetFileReader(ctx context.Context, filePath string) (io.ReadCloser, int64, error)
 }
 
-// buildOperator 按配置类型构造远端 Operator；local 返回 (nil, nil)。
+// buildOperator 按注册表构造远端 Operator（backends.go backendBuilders）；
+// local/空类型返回 (nil, nil)（StorageService 走本地文件系统分支）；
+// 未注册的未知类型 fail-loud——此前 default 分支静默当 local，坏配置无声上线
+// （2026-10-05 215 实测事故族），现改为显式报错，兼容入口 NewStorageService
+// 仍会降级 local 并记录 InitError。
 func buildOperator(cfg *StorageConfig) (*opendal.Operator, error) {
-	switch cfg.Type {
-	case StorageTypeS3:
-		if cfg.Endpoint == "" || cfg.Bucket == "" || cfg.AccessKey == "" || cfg.SecretKey == "" {
-			return nil, fmt.Errorf("s3 配置不完整：endpoint/bucket/access_key/secret_key 均必填")
-		}
-		return opendal.New(opendal.Config{
-			Scheme: opendal.SchemeS3,
-			Root:   cfg.Bucket,
-			Options: map[string]string{
-				"endpoint":   cfg.Endpoint,
-				"access_key": cfg.AccessKey,
-				"secret_key": cfg.SecretKey,
-				"bucket":     cfg.Bucket,
-				"region":     cfg.Region,
-				"use_ssl":    strconv.FormatBool(cfg.UseSSL),
-				"path_style": strconv.FormatBool(cfg.PathStyle),
-			},
-		})
-	case StorageTypeOSS, StorageTypeCOS, StorageTypeBOS, StorageTypeKS3, StorageTypeOBS:
-		// 云厂商：全部走 S3 兼容驱动（minio-go SigV4），endpoint 按厂商+region
-		// 推导（显式配置优先）；映射为 SchemeS3 后 presign 直传/直下随之生效。
-		// force_virtual_host：minio-go 的 Auto 对自定义端点退化 path-style，
-		// 云厂商桶一律 virtual-host（COS ap-beijing 等对 path-style 直接拒绳）。
-		opts, err := ResolveCloudProvider(cfg.Type, cfg.Region, cfg.Bucket,
-			cfg.AccessKey, cfg.SecretKey, cfg.Endpoint,
-			boolPtr(cfg.UseSSL), boolPtr(cfg.PathStyle))
-		if err != nil {
-			return nil, err
-		}
-		return opendal.New(opendal.Config{
-			Scheme: opendal.SchemeS3,
-			Root:   opts["bucket"],
-			Options: map[string]string{
-				"endpoint":           opts["endpoint"],
-				"access_key":         opts["access_key"],
-				"secret_key":         opts["secret_key"],
-				"bucket":             opts["bucket"],
-				"region":             opts["region"],
-				"use_ssl":            opts["use_ssl"],
-				"path_style":         opts["path_style"],
-				"force_virtual_host": "true",
-			},
-		})
-	case StorageTypeWebDAV:
-		if cfg.WebDAVURL == "" {
-			return nil, fmt.Errorf("webdav 配置不完整：url 必填")
-		}
-		// root 必传：所有对象挂远端子目录下（此前缺省导致 abs() 生成
-		// "/uploads/..." 绝对路径，多数 WebDAV 服务端拒绝 MkdirAll）
-		root := cfg.Root
-		if root == "" {
-			root = "pigeonbox"
-		}
-		return opendal.New(opendal.Config{
-			Scheme: opendal.SchemeWebDAV,
-			Options: map[string]string{
-				"url":      cfg.WebDAVURL,
-				"root":     root,
-				"username": cfg.WebDAVUsername,
-				"password": cfg.WebDAVPassword,
-			},
-		})
-	case StorageTypeFTP:
-		if cfg.FTP == nil || cfg.FTP.Host == "" {
-			return nil, fmt.Errorf("ftp 配置不完整：host 必填")
-		}
-		opts := map[string]string{
-			"host":     cfg.FTP.Host,
-			"username": cfg.FTP.Username,
-			"password": cfg.FTP.Password,
-			"tls":      cfg.FTP.TLS,
-			"root":     defaultRoot(cfg.FTP.Root, "pigeonbox"),
-		}
-		return opendal.New(opendal.Config{Scheme: opendal.SchemeFTP, Options: opts})
-	case StorageTypeSFTP:
-		if cfg.SFTP == nil || cfg.SFTP.Host == "" || cfg.SFTP.Username == "" {
-			return nil, fmt.Errorf("sftp 配置不完整：host/username 必填")
-		}
-		return opendal.New(opendal.Config{
-			Scheme: opendal.SchemeSFTP,
-			Options: map[string]string{
-				"host":        cfg.SFTP.Host,
-				"username":    cfg.SFTP.Username,
-				"password":    cfg.SFTP.Password,
-				"private_key": cfg.SFTP.PrivateKey,
-				"host_key":    cfg.SFTP.HostKey,
-				"root":        defaultRoot(cfg.SFTP.Root, "pigeonbox"),
-			},
-		})
-	case StorageTypeAzBlob:
-		if cfg.Azure == nil || cfg.Azure.Account == "" || cfg.Azure.Container == "" {
-			return nil, fmt.Errorf("azureblob 配置不完整：account/container 必填")
-		}
-		return opendal.New(opendal.Config{
-			Scheme: opendal.SchemeAzBlob,
-			Options: map[string]string{
-				"account":   cfg.Azure.Account,
-				"container": cfg.Azure.Container,
-				"key":       cfg.Azure.Key,
-				"sas":       cfg.Azure.SAS,
-				"endpoint":  cfg.Azure.Endpoint,
-				"root":      defaultRoot(cfg.Azure.Root, "pigeonbox"),
-			},
-		})
-	case StorageTypeHDFS:
-		if cfg.HDFS == nil || cfg.HDFS.Endpoint == "" {
-			return nil, fmt.Errorf("hdfs 配置不完整：endpoint（WebHDFS 根地址）必填")
-		}
-		return opendal.New(opendal.Config{
-			Scheme: opendal.SchemeHDFS,
-			Options: map[string]string{
-				"endpoint": cfg.HDFS.Endpoint,
-				"user":     cfg.HDFS.User,
-				"root":     defaultRoot(cfg.HDFS.Root, "pigeonbox"),
-			},
-		})
-	case StorageTypeOneDrv:
-		if cfg.OneDrive == nil || cfg.OneDrive.ClientID == "" || cfg.OneDrive.RefreshToken == "" {
-			return nil, fmt.Errorf("onedrive 配置不完整：client_id/refresh_token 必填")
-		}
-		return opendal.New(opendal.Config{
-			Scheme: opendal.SchemeOneDrive,
-			Options: map[string]string{
-				"client_id":     cfg.OneDrive.ClientID,
-				"client_secret": cfg.OneDrive.ClientSecret,
-				"refresh_token": cfg.OneDrive.RefreshToken,
-				"tenant":        cfg.OneDrive.Tenant,
-				"drive_id":      cfg.OneDrive.DriveID,
-				"root":          defaultRoot(cfg.OneDrive.Root, "pigeonbox"),
-			},
-		})
-	case StorageTypeGCS:
-		// GCS 走其 S3 兼容 XML 端点（需 HMAC 密钥：GCS 控制台 Settings→Interoperability）
-		// force_virtual_host 同云厂商分支（GCS 互操作端点同为 virtual-host 风格）
-		opts, err := ResolveCloudProvider(StorageTypeGCS, cfg.Region, cfg.Bucket,
-			cfg.AccessKey, cfg.SecretKey, cfg.Endpoint,
-			boolPtr(cfg.UseSSL), boolPtr(cfg.PathStyle))
-		if err != nil {
-			return nil, err
-		}
-		return opendal.New(opendal.Config{
-			Scheme: opendal.SchemeS3,
-			Root:   opts["bucket"],
-			Options: map[string]string{
-				"endpoint":           opts["endpoint"],
-				"access_key":         opts["access_key"],
-				"secret_key":         opts["secret_key"],
-				"bucket":             opts["bucket"],
-				"region":             opts["region"],
-				"use_ssl":            opts["use_ssl"],
-				"path_style":         opts["path_style"],
-				"force_virtual_host": "true",
-			},
-		})
-	default:
+	switch {
+	case isLocalBackend(cfg.Type):
 		return nil, nil
+	case isRemoteBackend(cfg.Type):
+		return backendBuilders[cfg.Type](cfg)
+	default:
+		return nil, fmt.Errorf("未知存储类型: %s", cfg.Type)
 	}
 }
 

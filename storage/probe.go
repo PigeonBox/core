@@ -24,22 +24,20 @@ func BuildAndProbe(ctx context.Context, cfg *StorageConfig) error {
 }
 
 // ProbeConfig 认证级验证存储配置（管理端切换/保存前调用）。
-// s3/webdav：凭据+可达性；云厂商（oss/cos/bos/ks3/obs）：凭据有效且桶存在；
-// local：路径可创建可写。
-// 注意：云厂商类型必须显式列入下方 case——ConfigFromConf 归一后 Type 仍是
-// 厂商名（cos 等），若落入 default 会被当 local 只探本地路径，坏配置静默上线
-// （2026-10-05 215 实测：不存在的桶 Probe 照样通过，上传全挂）。
+// s3/webdav/ftp/sftp/云厂商：凭据+可达性；local：路径可创建可写。
+// 远端/本地分流由 backends.go 注册表派生——此前是手写 case 清单，云厂商类型
+// 漏列即落 default 被当 local 只探本地路径，坏配置静默上线（2026-10-05 215
+// 实测：不存在的桶 Probe 照样通过，上传全挂）；现新后端注册即自动被远端探测，
+// 未知类型显式报错而非静默按 local 放行。
 func ProbeConfig(ctx context.Context, cfg *StorageConfig) error {
-	switch cfg.Type {
-	case StorageTypeS3, StorageTypeWebDAV, StorageTypeFTP, StorageTypeSFTP, StorageTypeGCS,
-		StorageTypeAzBlob, StorageTypeHDFS, StorageTypeOneDrv,
-		StorageTypeOSS, StorageTypeCOS, StorageTypeBOS, StorageTypeKS3, StorageTypeOBS:
+	switch {
+	case isRemoteBackend(cfg.Type):
 		op, err := buildOperator(cfg)
 		if err != nil {
 			return err
 		}
 		return opendal.Probe(ctx, op)
-	default:
+	case isLocalBackend(cfg.Type):
 		path := cfg.DataPath
 		if path == "" {
 			return fmt.Errorf("存储路径未配置")
@@ -53,5 +51,7 @@ func ProbeConfig(ctx context.Context, cfg *StorageConfig) error {
 		}
 		_ = os.Remove(probe)
 		return nil
+	default:
+		return fmt.Errorf("未知存储类型: %s", cfg.Type)
 	}
 }
