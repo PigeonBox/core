@@ -107,7 +107,7 @@ func TestRetrieve_HappyPath(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, code, 6)
 
-	meta, err := svc.Retrieve(ctx, code, "")
+	meta, err := svc.Retrieve(ctx, code, "", "")
 	require.NoError(t, err)
 	assert.Equal(t, "SHARE1", meta.ShareCode)
 	assert.Equal(t, "f.txt", meta.FileName)
@@ -122,7 +122,7 @@ func TestRetrieve_HappyPath(t *testing.T) {
 // TestRetrieve_NotFound 取件码不存在
 func TestRetrieve_NotFound(t *testing.T) {
 	svc, _, _ := newTestService(t)
-	_, err := svc.Retrieve(context.Background(), "NOEXIST", "")
+	_, err := svc.Retrieve(context.Background(), "NOEXIST", "", "")
 	assert.ErrorIs(t, err, ErrCodeNotFound)
 }
 
@@ -135,7 +135,7 @@ func TestRetrieve_Expired(t *testing.T) {
 	code, err := svc.GenerateCode(ctx, CodeMeta{ShareCode: "SHARE_EXP"}, time.Now().Add(time.Hour))
 	require.NoError(t, err)
 
-	_, err = svc.Retrieve(ctx, code, "")
+	_, err = svc.Retrieve(ctx, code, "", "")
 	assert.ErrorIs(t, err, ErrCodeExpired)
 }
 
@@ -148,10 +148,10 @@ func TestRetrieve_Exhausted(t *testing.T) {
 	require.NoError(t, err)
 
 	// 第一次成功（1→0）
-	_, err = svc.Retrieve(ctx, code, "")
+	_, err = svc.Retrieve(ctx, code, "", "")
 	require.NoError(t, err)
 	// 第二次：ExpiredCount=0 → IsExpired=true
-	_, err = svc.Retrieve(ctx, code, "")
+	_, err = svc.Retrieve(ctx, code, "", "")
 	assert.ErrorIs(t, err, ErrCodeExpired)
 }
 
@@ -166,11 +166,11 @@ func TestRetrieve_PasswordWrong(t *testing.T) {
 	require.NoError(t, err)
 
 	// 错误密码
-	_, err = svc.Retrieve(ctx, code, "wrong")
+	_, err = svc.Retrieve(ctx, code, "wrong", "")
 	assert.ErrorIs(t, err, ErrPasswordWrong)
 
 	// 正确密码
-	meta, err := svc.Retrieve(ctx, code, "right")
+	meta, err := svc.Retrieve(ctx, code, "right", "")
 	require.NoError(t, err)
 	assert.Equal(t, "SHARE_PW", meta.ShareCode)
 }
@@ -184,7 +184,7 @@ func TestRetrieve_NoPasswordButRequired(t *testing.T) {
 	code, _ := svc.GenerateCode(ctx, CodeMeta{ShareCode: "SHARE_NP", RequireAuth: true}, time.Now().Add(time.Hour))
 
 	// 空密码 → CheckPassword("", "") 对 bcrypt hash 返回 false
-	_, err := svc.Retrieve(ctx, code, "")
+	_, err := svc.Retrieve(ctx, code, "", "")
 	assert.ErrorIs(t, err, ErrPasswordWrong)
 }
 
@@ -196,7 +196,7 @@ func TestRetrieve_Unlimited(t *testing.T) {
 	code, _ := svc.GenerateCode(ctx, CodeMeta{ShareCode: "SHARE_INF"}, time.Now().Add(time.Hour))
 
 	for i := 0; i < 5; i++ {
-		_, err := svc.Retrieve(ctx, code, "")
+		_, err := svc.Retrieve(ctx, code, "", "")
 		require.NoError(t, err, "第 %d 次取件应成功", i+1)
 	}
 	fc, _ := svc.fileCodeRepo.GetByCode(ctx, "SHARE_INF")
@@ -212,7 +212,7 @@ func TestCancel(t *testing.T) {
 	code, _ := svc.GenerateCode(ctx, CodeMeta{ShareCode: "SHARE_CAN"}, time.Now().Add(time.Hour))
 
 	require.NoError(t, svc.Cancel(ctx, code))
-	_, err := svc.Retrieve(ctx, code, "")
+	_, err := svc.Retrieve(ctx, code, "", "")
 	assert.ErrorIs(t, err, ErrCodeNotFound)
 }
 
@@ -233,7 +233,7 @@ func TestRetrieve_ShareCodeFallback(t *testing.T) {
 		Code: "Piqck7ZN", UUIDFileName: "note.txt", Size: 42, FilePath: "uploads/x/note.txt", ExpiredCount: 3,
 	}))
 
-	meta, err := svc.Retrieve(ctx, "Piqck7ZN", "")
+	meta, err := svc.Retrieve(ctx, "Piqck7ZN", "", "")
 	require.NoError(t, err)
 	assert.Equal(t, "Piqck7ZN", meta.ShareCode)
 	assert.Equal(t, "note.txt", meta.FileName)
@@ -256,12 +256,12 @@ func TestRetrieve_ShareCodeFallback_CaseFold(t *testing.T) {
 
 	t.Run("折叠关：大小写必须精确", func(t *testing.T) {
 		setCodeFold(t, false)
-		_, err := svc.Retrieve(ctx, "PIQCK7ZN", "")
+		_, err := svc.Retrieve(ctx, "PIQCK7ZN", "", "")
 		assert.ErrorIs(t, err, ErrCodeNotFound)
 	})
 	t.Run("折叠开（默认）：变体命中", func(t *testing.T) {
 		setCodeFold(t, true)
-		meta, err := svc.Retrieve(ctx, "TZQX8WLP", "")
+		meta, err := svc.Retrieve(ctx, "TZQX8WLP", "", "")
 		require.NoError(t, err)
 		assert.Equal(t, "Tzqx8WLp", meta.ShareCode)
 	})
@@ -277,10 +277,10 @@ func TestRetrieve_ShareCodeFallback_RespectsPassword(t *testing.T) {
 		Code: "Passw0rd", PasswordHash: hash, RequireAuth: true, FilePath: "uploads/x/a", ExpiredCount: -1,
 	}))
 
-	_, err = svc.Retrieve(ctx, "Passw0rd", "")
+	_, err = svc.Retrieve(ctx, "Passw0rd", "", "")
 	assert.ErrorIs(t, err, ErrPasswordWrong)
 
-	meta, err := svc.Retrieve(ctx, "Passw0rd", "secret1")
+	meta, err := svc.Retrieve(ctx, "Passw0rd", "secret1", "")
 	require.NoError(t, err)
 	assert.Equal(t, "Passw0rd", meta.ShareCode)
 	assert.True(t, meta.RequireAuth)
@@ -306,7 +306,7 @@ func TestRetrieve_PickupCodeLowercaseInput(t *testing.T) {
 	code, err := svc.GenerateCode(ctx, CodeMeta{ShareCode: "SHARE_LC", FileName: "f.bin"}, time.Now().Add(time.Hour))
 	require.NoError(t, err)
 
-	meta, err := svc.Retrieve(ctx, strings.ToLower(code), "")
+	meta, err := svc.Retrieve(ctx, strings.ToLower(code), "", "")
 	require.NoError(t, err)
 	assert.Equal(t, "SHARE_LC", meta.ShareCode)
 }

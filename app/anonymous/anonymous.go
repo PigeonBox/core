@@ -22,7 +22,9 @@ import (
 
 	"github.com/pigeonbox/core/conf"
 	pkgerrors "github.com/pigeonbox/core/pkg/errors"
+	"github.com/pigeonbox/core/pkg/gate"
 	"github.com/pigeonbox/core/pkg/logger"
+	"github.com/pigeonbox/core/pkg/middleware"
 	"github.com/pigeonbox/core/pkg/utils"
 	"github.com/pigeonbox/core/repo/db/dao"
 	"github.com/pigeonbox/core/repo/db/model"
@@ -251,7 +253,8 @@ func enrichMetaFromDB(meta *CodeMeta, fc *model.FileCode) {
 
 // Retrieve 按取件码取件（校验 + 扣减次数，DB 为准）。
 // 返回展示信息 CodeMeta。每次成功调用扣减一次剩余次数。
-func (s *Service) Retrieve(ctx context.Context, code, password string) (*CodeMeta, error) {
+// clientIP 为可信代理解析后的取件方 IP（handler 注入，防爆破锁定键维度）。
+func (s *Service) Retrieve(ctx context.Context, code, password, clientIP string) (*CodeMeta, error) {
 	if s.rdb == nil {
 		return nil, errors.New("redis 未配置，匿名取件功能不可用")
 	}
@@ -272,26 +275,35 @@ func (s *Service) Retrieve(ctx context.Context, code, password string) (*CodeMet
 	}
 	enrichMetaFromDB(meta, fc)
 
-	// 4. 校验过期（时间 + 次数）
-	if fc.IsExpired() {
+	// 4. 统一取件闸门（pkg/gate.CheckPickup）：过期（时间+次数）→ 管控
+	// （blocked/pending_review）→ 未完成登记（FilePath 空且非文本，此前会先扣
+	// 次数再在下载时 500）→ 密码 + 防爆破锁定。锁定与 select/download/preview
+	// 面共享 scope "pickup" 的 (IP, code) 失败计数——此前本域锁定在 handler 层
+	// 且独立 scope "anon"，同一口令跨入口爆破预算翻倍。
+	decision := gate.CheckPickup(ctx, gate.PickupState{
+		Expired:       fc.IsExpired(),
+		Blocked:       fc.IsBlockedShare(),
+		BlockedStatus: fc.Status,
+		NotReady:      !fc.IsTextShare() && fc.GetFilePath() == "",
+		RequireAuth:   fc.RequireAuth,
+		PasswordHash:  fc.PasswordHash,
+	}, gate.PickupCheck{
+		ClientIP:             clientIP,
+		Code:                 code,
+		Password:             password,
+		MissingCountsFailure: true, // 保持本域历史规格：空密码按失败记账
+	})
+	switch decision.Verdict {
+	case gate.PickupUnavailable:
 		return nil, ErrCodeExpired
-	}
-
-	// 4.5 管控状态：blocked / pending_review 拒绝取件
-	if fc.IsBlockedShare() {
-		return nil, &BlockedError{Status: fc.Status}
-	}
-
-	// 4.6 未完成登记（FilePath 空且非文本）：此前会先扣次数再在下载时 500
-	if !fc.IsTextShare() && fc.GetFilePath() == "" {
+	case gate.PickupBlocked:
+		return nil, &BlockedError{Status: decision.BlockedStatus}
+	case gate.PickupNotReady:
 		return nil, ErrNotReady
-	}
-
-	// 5. 校验密码（bcrypt，DB 为准）
-	if fc.RequireAuth {
-		if !utils.CheckPassword(fc.PasswordHash, password) {
-			return nil, ErrPasswordWrong
-		}
+	case gate.PickupLocked:
+		return nil, &middleware.LockedError{RemainingSeconds: decision.LockRemain}
+	case gate.PickupPasswordMissing, gate.PickupPasswordWrong:
+		return nil, ErrPasswordWrong
 	}
 
 	// 6. 原子扣减次数（DB 为准，防并发超卖）

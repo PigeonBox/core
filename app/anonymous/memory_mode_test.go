@@ -62,7 +62,7 @@ func TestMemoryMode_EndToEnd(t *testing.T) {
 	assert.Equal(t, "demo.bin", meta.FileName)
 	require.NotNil(t, fc)
 
-	meta, err = svc.Retrieve(ctx, code, "")
+	meta, err = svc.Retrieve(ctx, code, "", "")
 	require.NoError(t, err)
 	assert.Equal(t, int64(123), meta.FileSize)
 
@@ -193,10 +193,10 @@ func TestMemoryMode_RedisAndMemoryParity(t *testing.T) {
 		if err != nil {
 			return "", false, err
 		}
-		if _, err := svc.Retrieve(ctx, code, ""); err != nil {
+		if _, err := svc.Retrieve(ctx, code, "", ""); err != nil {
 			return code, false, err
 		}
-		_, err = svc.Retrieve(ctx, "ZZZZ99", "")
+		_, err = svc.Retrieve(ctx, "ZZZZ99", "", "")
 		if !errors.Is(err, ErrCodeNotFound) {
 			return code, true, fmt.Errorf("期望 ErrCodeNotFound, got %w", err)
 		}

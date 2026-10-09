@@ -163,9 +163,10 @@ func Retrieve(ctx context.Context, c *app.RequestContext) {
 		password = *req.Password
 	}
 
-	// 失败锁定检查（防取件码枚举/密码爆破；维度 = IP + 取件码）
+	// 失败锁定预检（防取件码枚举/密码爆破；统一 scope "pickup"，与 Retrieve
+	// 内部闸门及 select/download/preview 面共享 (IP, 取件码) 失败计数）
 	lock := middleware.GetDefaultLockout()
-	lockKey := middleware.LookupLockKey("anon", middleware.ClientIP(c), req.Code)
+	lockKey := gate.PickupLockKey(middleware.ClientIP(c), req.Code)
 	if remain, locked := lock.CheckLocked(ctx, lockKey); locked {
 		c.JSON(consts.StatusTooManyRequests, map[string]interface{}{
 			"code":    errcode.CodeTooManyAttempts,
@@ -174,25 +175,34 @@ func Retrieve(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
-	meta, err := getService().Retrieve(ctx, req.Code, password)
+	meta, err := getService().Retrieve(ctx, req.Code, password, middleware.ClientIP(c))
 	if err != nil {
 		var blocked *anonapp.BlockedError
 		if errors.As(err, &blocked) {
 			resp.NewTypedError(c, blocked)
 			return
 		}
+		var lockedErr *middleware.LockedError
+		if errors.As(err, &lockedErr) {
+			c.JSON(consts.StatusTooManyRequests, map[string]interface{}{
+				"code":    errcode.CodeTooManyAttempts,
+				"message": "尝试过于频繁，已临时锁定，请 " + strconv.Itoa(lockedErr.RemainingSeconds) + " 秒后重试",
+			})
+			return
+		}
 		switch err {
 		case anonapp.ErrNotReady:
 			resp.NewErrorWithMessage(c, errcode.CodeShareNotFound, "分享未完成上传，暂时无法取件")
 		case anonapp.ErrCodeNotFound:
-			_, _ = lock.RecordFailure(ctx, lockKey)
+			// 枚举防护记账：码不存在到不了域内闸门，在统一键上记失败
+			gate.RecordPickupFailure(ctx, middleware.ClientIP(c), req.Code)
 			resp.NewErrorByCode(c, errcode.CodePickupCodeNotFound)
 		case anonapp.ErrCodeExpired:
 			resp.NewErrorByCode(c, errcode.CodePickupCodeExpired)
 		case anonapp.ErrCodeExhausted:
 			resp.NewErrorByCode(c, errcode.CodePickupCodeExhausted)
 		case anonapp.ErrPasswordWrong:
-			_, _ = lock.RecordFailure(ctx, lockKey)
+			// 失败已由统一闸门记账（达阈值触发锁定），此处不再重复计数
 			resp.NewErrorByCode(c, errcode.CodeSharePasswordWrong)
 		default:
 			resp.NewErrorWithMessage(c, errcode.CodeInternal, sanitizeInternalMsg(err))

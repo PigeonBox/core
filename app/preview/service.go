@@ -12,8 +12,6 @@ import (
 	"os"
 
 	"github.com/pigeonbox/core/pkg/gate"
-	"github.com/pigeonbox/core/pkg/middleware"
-	"github.com/pigeonbox/core/pkg/utils"
 	previewService "github.com/pigeonbox/core/preview"
 	"github.com/pigeonbox/core/repo/db/dao"
 	dao_preview "github.com/pigeonbox/core/repo/db/dao_preview"
@@ -82,25 +80,31 @@ func (s *Service) GetOrCreate(ctx context.Context, req GetReq) (*model.FilePrevi
 	if err != nil {
 		return nil, ErrShareNotFound
 	}
-	if fileCode.IsExpired() {
+	// 统一取件闸门（pkg/gate.CheckPickup）：过期/管控/密码/防爆破锁定与
+	// select/download/匿名取件面同规格、同 (IP, code) 失败计数（此前本域
+	// 独立 scope "preview" 且用 FormatLockKey 不折叠取件码大小写，存在
+	// 变体绕过锁定漏洞，随收口一并修复）。
+	decision := gate.CheckPickup(ctx, gate.PickupState{
+		Expired:       fileCode.IsExpired(),
+		Blocked:       fileCode.IsBlockedShare(),
+		BlockedStatus: fileCode.Status,
+		RequireAuth:   fileCode.RequireAuth,
+		PasswordHash:  fileCode.PasswordHash,
+	}, gate.PickupCheck{
+		ClientIP:             req.ClientIP,
+		Code:                 req.Code,
+		Password:             req.Password,
+		MissingCountsFailure: true, // 保持本域历史规格：空密码按失败记账
+	})
+	switch decision.Verdict {
+	case gate.PickupUnavailable:
 		return nil, ErrShareNotFound
-	}
-	if fileCode.IsBlockedShare() {
+	case gate.PickupBlocked:
 		return nil, ErrShareBlocked
-	}
-
-	// 密码保护分享：预览必须携带正确密码（防爆破锁定与取件查询同规格）
-	if fileCode.RequireAuth {
-		lock := middleware.GetDefaultLockout()
-		lockKey := middleware.FormatLockKey("preview", req.ClientIP, req.Code)
-		if remain, locked := lock.CheckLocked(ctx, lockKey); locked {
-			return nil, &LockedError{Remain: remain}
-		}
-		if req.Password == "" || fileCode.PasswordHash == "" || !utils.CheckPassword(fileCode.PasswordHash, req.Password) {
-			_, _ = lock.RecordFailure(ctx, lockKey)
-			return nil, ErrPasswordRequired
-		}
-		lock.Reset(ctx, lockKey)
+	case gate.PickupLocked:
+		return nil, &LockedError{Remain: decision.LockRemain}
+	case gate.PickupPasswordMissing, gate.PickupPasswordWrong:
+		return nil, ErrPasswordRequired
 	}
 
 	// 取预览；不存在则生成

@@ -450,9 +450,10 @@ func GetShare(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
-	// 失败锁定检查（防取件码/密码爆破）
+	// 失败锁定预检（防取件码/密码爆破；统一 scope "pickup"，与 download/
+	// 匿名取件/preview 面共享 (IP, code) 失败计数）
 	lock := middleware.GetDefaultLockout()
-	lockKey := middleware.LookupLockKey("pickup", middleware.ClientIP(c), code)
+	lockKey := gate.PickupLockKey(middleware.ClientIP(c), code)
 	if remain, locked := lock.CheckLocked(ctx, lockKey); locked {
 		c.JSON(consts.StatusTooManyRequests, map[string]interface{}{
 			"code":    errcode.CodeTooManyAttempts,
@@ -476,10 +477,28 @@ func GetShare(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
-	// 密码保护校验(修复:此处响应包含分享正文,空密码提示后必须真正校验密码,
-	// 此前 TODO 未实现导致任意非空密码均可取到内容)
+	// 密码保护校验（统一取件闸门 pkg/gate.CheckPickup；修复史:此处响应包含
+	// 分享正文,空密码提示后必须真正校验密码,此前 TODO 未实现导致任意非空
+	// 密码均可取到内容）
 	if fileCode.RequireAuth {
-		if password == "" {
+		decision := gate.CheckPickup(ctx, gate.PickupState{
+			RequireAuth:  true,
+			PasswordHash: fileCode.PasswordHash,
+		}, gate.PickupCheck{
+			ClientIP: middleware.ClientIP(c),
+			Code:     code,
+			Password: password,
+			// 本面历史规格：空密码是「需要密码」提示态，不记失败
+			MissingCountsFailure: false,
+		})
+		switch decision.Verdict {
+		case gate.PickupLocked:
+			c.JSON(consts.StatusTooManyRequests, map[string]interface{}{
+				"code":    errcode.CodeTooManyAttempts,
+				"message": fmt.Sprintf("尝试过于频繁，已临时锁定，请 %d 秒后重试", decision.LockRemain),
+			})
+			return
+		case gate.PickupPasswordMissing:
 			c.JSON(consts.StatusUnauthorized, map[string]interface{}{
 				"code":    401,
 				"message": "需要密码",
@@ -488,10 +507,8 @@ func GetShare(ctx context.Context, c *app.RequestContext) {
 				},
 			})
 			return
-		}
-		if fileCode.PasswordHash == "" || !utils.CheckPassword(fileCode.PasswordHash, password) {
-			// 记录失败（达到阈值触发锁定）
-			_, _ = lock.RecordFailure(ctx, lockKey)
+		case gate.PickupPasswordWrong:
+			// 失败已由闸门在统一键记账（达到阈值触发锁定）
 			c.JSON(consts.StatusUnauthorized, map[string]interface{}{
 				"code":    errcode.CodeSharePasswordWrong,
 				"message": "密码错误",
@@ -583,9 +600,10 @@ func authorizeAndCharge(ctx context.Context, c *app.RequestContext, code, passwo
 		return nil, false
 	}
 
-	// 失败锁定检查（防密码爆破）
+	// 失败锁定预检（防密码爆破；统一 scope "pickup"，与 select/匿名取件/
+	// preview 面共享 (IP, code) 失败计数——此前独立 scope "download"）
 	lock := middleware.GetDefaultLockout()
-	lockKey := middleware.LookupLockKey("download", middleware.ClientIP(c), code)
+	lockKey := gate.PickupLockKey(middleware.ClientIP(c), code)
 	if remain, locked := lock.CheckLocked(ctx, lockKey); locked {
 		c.JSON(consts.StatusTooManyRequests, map[string]interface{}{
 			"code":    errcode.CodeTooManyAttempts,
@@ -630,8 +648,16 @@ func authorizeAndCharge(ctx context.Context, c *app.RequestContext, code, passwo
 			resp.NewTypedError(c, blocked)
 			return nil, false
 		}
+		var lockedErr *middleware.LockedError
+		if errors.As(err, &lockedErr) {
+			c.JSON(consts.StatusTooManyRequests, map[string]interface{}{
+				"code":    errcode.CodeTooManyAttempts,
+				"message": fmt.Sprintf("尝试过于频繁，已临时锁定，请 %d 秒后重试", lockedErr.RemainingSeconds),
+			})
+			return nil, false
+		}
 		if err.Error() == "密码错误" {
-			_, _ = lock.RecordFailure(ctx, lockKey)
+			// 失败已由域内统一闸门记账（达阈值触发锁定），此处不再重复计数
 			c.JSON(consts.StatusUnauthorized, map[string]interface{}{
 				"code":    errcode.CodeSharePasswordWrong,
 				"message": "密码错误",

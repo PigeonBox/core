@@ -31,12 +31,12 @@ func TestRetrieve_TextShareFlag(t *testing.T) {
 		return code
 	}
 
-	textMeta, err := svc.Retrieve(ctx, mint("TEXTABC"), "")
+	textMeta, err := svc.Retrieve(ctx, mint("TEXTABC"), "", "")
 	require.NoError(t, err)
 	assert.True(t, textMeta.IsText, "文本分享 Retrieve 应标注 IsText")
 	assert.Equal(t, "TEXTABC", textMeta.ShareCode)
 
-	fileMeta, err := svc.Retrieve(ctx, mint("FILEABC"), "")
+	fileMeta, err := svc.Retrieve(ctx, mint("FILEABC"), "", "")
 	require.NoError(t, err)
 	assert.False(t, fileMeta.IsText)
 }

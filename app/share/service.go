@@ -13,8 +13,10 @@ import (
 	"github.com/pigeonbox/core/app/moderation"
 	"github.com/pigeonbox/core/conf"
 	pkgerrors "github.com/pigeonbox/core/pkg/errors"
+	"github.com/pigeonbox/core/pkg/gate"
 	"github.com/pigeonbox/core/pkg/logger"
 	"github.com/pigeonbox/core/pkg/metrics"
+	"github.com/pigeonbox/core/pkg/middleware"
 	"github.com/pigeonbox/core/pkg/utils"
 	"github.com/pigeonbox/core/repo/db/dao"
 	"github.com/pigeonbox/core/repo/db/model"
@@ -823,14 +825,26 @@ func (s *Service) GetFileWithUsage(ctx context.Context, code, password, viewerIP
 		return nil, err
 	}
 
-	// 真实密码校验（替代原 TODO：仅检查非空）；持有效下载令牌视为已认证
+	// 真实密码校验 + 防爆破锁定（统一取件闸门 pkg/gate.CheckPickup）；持有效
+	// 下载令牌视为已认证。锁定与 select/匿名取件/preview 面共享 scope "pickup"
+	// 的 (IP, code) 失败计数——此前锁定在 handler 层且独立 scope "download"。
+	// 历史脏数据（require_auth=true 而哈希缺失）与密码错误一律按「密码错误」
+	// 拒绝并记账（旧「配置异常」专属文案会被 handler 兜底分支吞成 404，
+	// 实际到不了客户端，收口后统一为 401 密码错误语义）。
 	if fileCode.RequireAuth && !authedByToken {
-		// 防御历史脏数据:require_auth=true 但哈希缺失 → 一律拒绝,
-		// 而非以"密码错误"之外的方式放行(CheckPassword 对空哈希已收紧为全拒)
-		if fileCode.PasswordHash == "" {
-			return nil, errors.New("该分享的密码保护配置异常，请联系分享者")
-		}
-		if !utils.CheckPassword(fileCode.PasswordHash, password) {
+		decision := gate.CheckPickup(ctx, gate.PickupState{
+			RequireAuth:  true,
+			PasswordHash: fileCode.PasswordHash,
+		}, gate.PickupCheck{
+			ClientIP:             viewerIP,
+			Code:                 code,
+			Password:             password,
+			MissingCountsFailure: true, // 保持本通道历史规格：空密码按失败记账
+		})
+		switch decision.Verdict {
+		case gate.PickupLocked:
+			return nil, &middleware.LockedError{RemainingSeconds: decision.LockRemain}
+		case gate.PickupPasswordMissing, gate.PickupPasswordWrong:
 			return nil, errors.New("密码错误")
 		}
 	}
