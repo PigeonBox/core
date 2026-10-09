@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pigeonbox/core/repo/db/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/pigeonbox/core/repo/db/model"
 )
 
 // TestMintForShare 文件分享铸造取件码（2026-10-07 对标"文件另有 6 位取件码"语义）。

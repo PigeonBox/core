@@ -16,7 +16,7 @@ func TestMergeWithIDLSpec(t *testing.T) {
 	skeleton := BuildOpenAPISpec([]OpenAPIRoute{
 		{Method: "POST", Path: "/admin/login"},
 		{Method: "GET", Path: "/admin/stats"},
-		{Method: "POST", Path: "/api/v1/mcp"},        // 手写路由（IDL 无）
+		{Method: "POST", Path: "/api/v1/mcp"},         // 手写路由（IDL 无）
 		{Method: "GET", Path: "/api/v1/user/refresh"}, // 手写路由（IDL 无）
 	}, SpecInfo{Version: "test"})
 

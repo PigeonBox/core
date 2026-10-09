@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pigeonbox/core/repo/db/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/pigeonbox/core/repo/db/model"
 )
 
 // TestRetrieve_TextShareFlag 文本分享取件标注 IsText（2026-10-08 "只保留 6 位码"）：

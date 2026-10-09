@@ -163,7 +163,7 @@ type FileCodeQuery struct {
 	Expired       *bool // true=仅过期(时间或次数)，false=仅未过期
 	// Health 健康洞察过滤（2026-10-07）：active/expired/expiring_soon/never_picked/forever，
 	// 空串=不过滤；口径见 dao.applyHealthFilter（与 CountByHealth 同源）
-	Health       string
+	Health string
 	// Deleted 软删筛选：""=默认仅存活 / "only"=仅回收站(已软删) / "all"=全部。
 	// 回收站视图用 "only"；配合 status/keyword 等既有筛选叠加。
 	Deleted  string // "", "only", "all"

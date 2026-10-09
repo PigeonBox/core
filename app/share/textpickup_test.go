@@ -16,12 +16,12 @@ import (
 
 // stubMinter 记录铸造调用的窄接口桩。
 type stubMinter struct {
-	calls    int
+	calls int
 	shareCode,
 	fileName string
-	fileSize   int64
+	fileSize    int64
 	requireAuth bool
-	expireAt   *time.Time
+	expireAt    *time.Time
 }
 
 func (m *stubMinter) MintForShare(_ context.Context, shareCode, fileName string, fileSize int64, requireAuth bool, expireAt *time.Time) (string, error) {

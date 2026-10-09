@@ -9,10 +9,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/url"
-	"strings"
 	"io"
 	"mime/multipart"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/pigeonbox/core/pkg/utils"

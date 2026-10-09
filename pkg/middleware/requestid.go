@@ -4,8 +4,8 @@ import (
 	"context"
 
 	"github.com/cloudwego/hertz/pkg/app"
-	"github.com/pigeonbox/core/pkg/resp"
 	"github.com/google/uuid"
+	"github.com/pigeonbox/core/pkg/resp"
 )
 
 // TraceIDHeader 请求链路 ID 透传 header，与 internal/pkg/resp 对齐。

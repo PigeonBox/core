@@ -31,11 +31,11 @@ var (
 	ErrPasswordRequired = errors.New("password required")
 	// ErrLocked 密码错误次数过多，临时锁定
 	ErrLocked = errors.New("too many attempts, temporarily locked")
-// ErrPreviewUnavailable 预览不可用（生成失败/存储不可达）
-ErrPreviewUnavailable = errors.New("preview unavailable")
-// ErrPreviewBusy 生成并发闸满（防 CPU/内存耗尽：图片解码与 ffmpeg 均为重活，
-// 攻击者跨 IP 并发预览未缓存的大图/视频可打满 CPU——限流按 IP 计数堵不住分布式）
-ErrPreviewBusy = errors.New("preview generation busy")
+	// ErrPreviewUnavailable 预览不可用（生成失败/存储不可达）
+	ErrPreviewUnavailable = errors.New("preview unavailable")
+	// ErrPreviewBusy 生成并发闸满（防 CPU/内存耗尽：图片解码与 ffmpeg 均为重活，
+	// 攻击者跨 IP 并发预览未缓存的大图/视频可打满 CPU——限流按 IP 计数堵不住分布式）
+	ErrPreviewBusy = errors.New("preview generation busy")
 )
 
 // LockedError 防爆破锁定态（携带剩余锁定秒数，供文案）

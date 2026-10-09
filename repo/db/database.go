@@ -5,9 +5,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/glebarez/sqlite"
 	"github.com/pigeonbox/core/conf"
 	"github.com/pigeonbox/core/repo/db/model"
-	"github.com/glebarez/sqlite"
 	"go.uber.org/zap"
 	"gorm.io/driver/mysql"
 	"gorm.io/driver/postgres"
