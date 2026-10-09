@@ -20,8 +20,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pigeonbox/contracts/errcode"
 	"github.com/pigeonbox/core/conf"
+	pkgerrors "github.com/pigeonbox/core/pkg/errors"
 	"github.com/pigeonbox/core/pkg/logger"
 	"github.com/pigeonbox/core/pkg/utils"
 	"github.com/pigeonbox/core/repo/db/dao"
@@ -65,21 +65,10 @@ var (
 
 // BlockedError 分享处于管控拒绝态（治理状态机）。
 // handler 侧 errors.As 后按 ErrCode 透传（20012 blocked / 20013 pending_review）。
-type BlockedError struct{ Status string }
-
-func (e *BlockedError) Error() string {
-	if e.Status == "pending_review" {
-		return "分享内容待审核，暂不可取件"
-	}
-	return "分享已被管理员禁用"
-}
-
-func (e *BlockedError) ErrCode() int {
-	if e.Status == "pending_review" {
-		return errcode.CodeSharePendingReview
-	}
-	return errcode.CodeShareBlocked
-}
+// 实现收口 pkg/errors.ShareBlocked——历史上 share.ShareBlockedError 持有一份
+// 逐字相同的拷贝（本域还用字面量而非常量，已漂移），2026-10-10 合并；
+// 别名保持域内构造点与 handler 用法不变。
+type BlockedError = pkgerrors.ShareBlocked
 
 // redisKV 匿名取件所需的最小 Redis 命令集（*redis.Client 天然满足；
 // 字段收窄为方法集以便注入内存 mock，构造函数仍收具体客户端）。

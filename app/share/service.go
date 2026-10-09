@@ -12,6 +12,7 @@ import (
 	sharemodel "github.com/pigeonbox/contracts/gen/share"
 	"github.com/pigeonbox/core/app/moderation"
 	"github.com/pigeonbox/core/conf"
+	pkgerrors "github.com/pigeonbox/core/pkg/errors"
 	"github.com/pigeonbox/core/pkg/logger"
 	"github.com/pigeonbox/core/pkg/metrics"
 	"github.com/pigeonbox/core/pkg/utils"
@@ -199,23 +200,10 @@ func (e *ContentRejectedError) ErrCode() int { return errcode.CodeContentRejecte
 
 // ShareBlockedError 分享处于管控拒绝态（管理员禁用 / 待审核）。
 // handler 侧按 ErrCode 透传（20012 blocked / 20013 pending_review）。
-type ShareBlockedError struct {
-	Status string
-}
-
-func (e *ShareBlockedError) Error() string {
-	if e.Status == model.StatusPendingReview {
-		return "分享内容待审核，暂不可取件"
-	}
-	return "分享已被管理员禁用"
-}
-
-func (e *ShareBlockedError) ErrCode() int {
-	if e.Status == model.StatusPendingReview {
-		return errcode.CodeSharePendingReview
-	}
-	return errcode.CodeShareBlocked
-}
+// 实现收口 pkg/errors.ShareBlocked——历史上 anonymous.BlockedError 持有一份
+// 逐字相同的拷贝（状态常量还各自漂移），2026-10-10 合并；别名保持域内
+// 构造点与 handler errors.As 用法不变。
+type ShareBlockedError = pkgerrors.ShareBlocked
 
 // SetShareStatus 管理员设置分享管控状态（禁用/恢复/待审），返回受影响行数。
 func (s *Service) SetShareStatus(ctx context.Context, ids []uint, status string) (int64, error) {
