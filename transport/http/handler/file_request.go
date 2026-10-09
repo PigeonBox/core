@@ -1,4 +1,9 @@
-// 寄件码/反向收件 HTTP 端点（P2，手写路由）。
+// 寄件码/反向收件 HTTP 端点（P2）。
+// 2026-10-09 IDL 化（idl/request.thrift）：链接管理四端点迁至
+// core/gen/handler/request/request_service.go（gen/router/request 注册，
+// /api/v1/user 组挂 JWT-only UserAuth）；本文件保留访客投递重管道
+// （multipart 解析/匿名日配额/存储/传输日志/失败清理——包内私有助手依赖），
+// 由 gen/handler/request.GuestUpload 桥接调用。
 package handler
 
 import (
@@ -29,107 +34,6 @@ func totalDeclaredSize(files []*multipart.FileHeader) int64 {
 		total += f.Size
 	}
 	return total
-}
-
-// ==================== 链接管理（登录用户） ====================
-
-// UserCreateFileRequest 创建投递链接
-func UserCreateFileRequest(ctx context.Context, c *app.RequestContext) {
-	svc := getRequestService()
-	if svc == nil {
-		c.JSON(consts.StatusInternalServerError, map[string]interface{}{"code": 500, "message": "request service 未就绪"})
-		return
-	}
-	uid, ok := userIDFromCtx(c)
-	if !ok {
-		resp.NewErrorWithMessage(c, 401, "请先登录")
-		return
-	}
-	var body struct {
-		Title       string `json:"title"`
-		MaxFiles    int    `json:"max_files"`
-		MaxBytes    int64  `json:"max_bytes"`
-		ExpireValue int    `json:"expire_value"`
-		ExpireStyle string `json:"expire_style"`
-	}
-	if err := c.BindJSON(&body); err != nil {
-		c.JSON(consts.StatusBadRequest, map[string]interface{}{"code": 400, "message": "请求体解析失败"})
-		return
-	}
-	fr, err := svc.Create(ctx, uid, requestApp.CreateReq{
-		Title:       body.Title,
-		MaxFiles:    body.MaxFiles,
-		MaxBytes:    body.MaxBytes,
-		ExpireValue: body.ExpireValue,
-		ExpireStyle: body.ExpireStyle,
-	})
-	if err != nil {
-		c.JSON(consts.StatusBadRequest, map[string]interface{}{"code": 400, "message": err.Error()})
-		return
-	}
-	resp.Success(c, fr)
-}
-
-// UserListFileRequests 我的投递链接列表
-func UserListFileRequests(ctx context.Context, c *app.RequestContext) {
-	svc := getRequestService()
-	if svc == nil {
-		c.JSON(consts.StatusInternalServerError, map[string]interface{}{"code": 500, "message": "request service 未就绪"})
-		return
-	}
-	uid, ok := userIDFromCtx(c)
-	if !ok {
-		resp.NewErrorWithMessage(c, 401, "请先登录")
-		return
-	}
-	list, err := svc.ListForUser(ctx, uid)
-	if err != nil {
-		c.JSON(consts.StatusInternalServerError, map[string]interface{}{"code": 500, "message": err.Error()})
-		return
-	}
-	resp.Success(c, list)
-}
-
-// UserDeleteFileRequest 撤销投递链接
-func UserDeleteFileRequest(ctx context.Context, c *app.RequestContext) {
-	svc := getRequestService()
-	if svc == nil {
-		c.JSON(consts.StatusInternalServerError, map[string]interface{}{"code": 500, "message": "request service 未就绪"})
-		return
-	}
-	uid, ok := userIDFromCtx(c)
-	if !ok {
-		resp.NewErrorWithMessage(c, 401, "请先登录")
-		return
-	}
-	token := c.Param("token")
-	deleted, err := svc.Delete(ctx, uid, token)
-	if err != nil {
-		c.JSON(consts.StatusInternalServerError, map[string]interface{}{"code": 500, "message": err.Error()})
-		return
-	}
-	if !deleted {
-		c.JSON(consts.StatusNotFound, map[string]interface{}{"code": 404, "message": "链接不存在"})
-		return
-	}
-	resp.Success(c, map[string]interface{}{"deleted": true})
-}
-
-// ==================== 访客侧 ====================
-
-// GetFileRequestPublic 访客取链接信息（GET /request/:token）
-func GetFileRequestPublic(ctx context.Context, c *app.RequestContext) {
-	svc := getRequestService()
-	if svc == nil {
-		c.JSON(consts.StatusInternalServerError, map[string]interface{}{"code": 500, "message": "request service 未就绪"})
-		return
-	}
-	view, err := svc.GetPublic(ctx, c.Param("token"))
-	if err != nil {
-		c.JSON(consts.StatusNotFound, map[string]interface{}{"code": 404, "message": err.Error()})
-		return
-	}
-	resp.Success(c, view)
 }
 
 // GuestSubmitFiles 访客投递（POST /api/v1/request/:token/upload，multipart files[]）。

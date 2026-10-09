@@ -65,8 +65,13 @@ done
 
 # 清理：模型临时目录 + handler 被追加的 hzmodel import 噪音（handler 归手工所有）
 rm -rf hzmodel
+# 仅摘除 hz update 追加的 hzmodel import 行（模型真相源在 contracts）。
+# 不可整文件 git checkout——会连带清掉未提交的手工 handler 实现
+# （2026-10-09 事故：用户分享组 5 个已实现 handler 被本循环整文件回退）。
 git diff --name-only -- gen/handler | while read -r f; do
-  git checkout -- "$f"
+  if grep -q 'hzmodel' "$f"; then
+    sed -i '' -e '/hzmodel/d' "$f"
+  fi
 done
 
 echo "✓ 已再生成 gen/router/。自检："

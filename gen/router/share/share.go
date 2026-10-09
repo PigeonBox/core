@@ -18,6 +18,26 @@ func Register(r *server.Hertz) {
 
 	root := r.Group("/", rootMw()...)
 	{
+		_api := root.Group("/api", _apiMw()...)
+		{
+			_v1 := _api.Group("/v1", _v1Mw()...)
+			{
+				_user := _v1.Group("/user", _userMw()...)
+				_user.GET("/shares", append(_usershareslistMw(), share.UserSharesList)...)
+				{
+					_shares := _user.Group("/shares", _sharesMw()...)
+					_shares.POST("/batch-delete", append(_usersharesbatchdeleteMw(), share.UserSharesBatchDelete)...)
+					_shares.POST("/batch-extend", append(_usersharesbatchextendMw(), share.UserSharesBatchExtend)...)
+					{
+						_code := _shares.Group("/:code", _codeMw()...)
+						_code.DELETE("/hard", append(_usersharesharddeleteMw(), share.UserSharesHardDelete)...)
+						_code.POST("/restore", append(_usersharesrestoreMw(), share.UserSharesRestore)...)
+					}
+				}
+			}
+		}
+	}
+	{
 		_share := root.Group("/share", _shareMw()...)
 		_share.GET("/download", append(_downloadfileMw(), share.DownloadFile)...)
 		{

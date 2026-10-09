@@ -28,6 +28,7 @@ func TestMintForShare(t *testing.T) {
 	}
 	seed("shareabc", false)
 	seed("sharepwd", true)
+	seed("shareperm", false)
 
 	t.Run("正常铸造并可解析", func(t *testing.T) {
 		pickup, err := svc.MintForShare(ctx, "shareabc", "demo.txt", 128, false, &expireAt)
@@ -43,10 +44,10 @@ func TestMintForShare(t *testing.T) {
 		assert.Equal(t, int64(128), meta.FileSize)
 	})
 
-	t.Run("永久分享不铸造", func(t *testing.T) {
+	t.Run("永久分享已解锁铸造（真相源在 DB，详见 TestMintForShare_Permanent）", func(t *testing.T) {
 		pickup, err := svc.MintForShare(ctx, "shareperm", "p.bin", 1, false, nil)
 		require.NoError(t, err)
-		assert.Empty(t, pickup, "永久分享 KV TTL 无法对齐，应返回空串跳过")
+		assert.Len(t, pickup, codeLength, "落库持久化后永久分享同权铸造")
 	})
 
 	t.Run("过期时间已过不铸造", func(t *testing.T) {
@@ -64,4 +65,77 @@ func TestMintForShare(t *testing.T) {
 		require.NoError(t, err)
 		assert.True(t, fc.RequireAuth)
 	})
+}
+
+// TestMintForShare_Permanent 永久分享铸造（2026-10-08 落库持久化解锁）：
+// 真相源在 DB pickup_code 列，KV 无法表达永久 TTL 的约束不再存在；
+// 铸造不写 KV，取件经 lookupShareCode 的 DB 回退路径解析。
+func TestMintForShare_Permanent(t *testing.T) {
+	svc, _, _ := newTestService(t)
+	ctx := context.Background()
+	require.NoError(t, svc.fileCodeRepo.Create(ctx, &model.FileCode{
+		Code: "shareperm", FilePath: "uploads/x/shareperm.bin", ExpiredCount: -1,
+	}))
+
+	pickup, err := svc.MintForShare(ctx, "shareperm", "p.bin", 1, false, nil)
+	require.NoError(t, err)
+	require.Len(t, pickup, codeLength)
+
+	// DB 列已落（真相源）
+	fc, err := svc.fileCodeRepo.GetByCode(ctx, "shareperm")
+	require.NoError(t, err)
+	require.NotNil(t, fc.PickupCode)
+	assert.Equal(t, pickup, *fc.PickupCode)
+
+	// 过期时间已过不铸造（永久 nil 之外的防御分支不受影响）
+	past := time.Now().Add(-time.Minute)
+	empty, err := svc.MintForShare(ctx, "shareperm", "p.bin", 1, false, &past)
+	require.NoError(t, err)
+	assert.Empty(t, empty)
+}
+
+// TestPickupCodeSurvivesKVFlush 取件码重启存活（落库持久化的核心价值）：
+// KV/memkv 全部清空（模拟单机内存模式重启）后，取件/Peek 经 DB 回退路径照常解析。
+func TestPickupCodeSurvivesKVFlush(t *testing.T) {
+	svc, mr, _ := newTestService(t)
+	ctx := context.Background()
+	require.NoError(t, svc.fileCodeRepo.Create(ctx, &model.FileCode{
+		Code:         "shareabc",
+		FilePath:     "uploads/x/shareabc.bin",
+		UUIDFileName: "demo.txt", // DB 回退路径的展示名来自 DisplayName()
+		ExpiredCount: -1,
+	}))
+	expireAt := time.Now().Add(time.Hour)
+	pickup, err := svc.MintForShare(ctx, "shareabc", "demo.txt", 128, false, &expireAt)
+	require.NoError(t, err)
+	require.Len(t, pickup, codeLength)
+
+	// 模拟重启：KV 全失（内存模式 memkv/Redis 均适用）
+	mr.FlushAll()
+
+	meta, fc, err := svc.Peek(ctx, pickup)
+	require.NoError(t, err)
+	assert.Equal(t, "shareabc", fc.Code)
+	assert.Equal(t, "shareabc", meta.ShareCode)
+	assert.Equal(t, "demo.txt", meta.FileName, "DB 回退路径经 enrichMetaFromDB 补齐展示信息")
+}
+
+// TestCancelClearsPickupColumn Cancel 作废：KV 映射与 DB 列同步清除。
+func TestCancelClearsPickupColumn(t *testing.T) {
+	svc, _, _ := newTestService(t)
+	ctx := context.Background()
+	require.NoError(t, svc.fileCodeRepo.Create(ctx, &model.FileCode{
+		Code: "shareabc", FilePath: "uploads/x/shareabc.bin", ExpiredCount: -1,
+	}))
+	expireAt := time.Now().Add(time.Hour)
+	pickup, err := svc.MintForShare(ctx, "shareabc", "demo.txt", 128, false, &expireAt)
+	require.NoError(t, err)
+
+	require.NoError(t, svc.Cancel(ctx, pickup))
+
+	fc, err := svc.fileCodeRepo.GetByCode(ctx, "shareabc")
+	require.NoError(t, err)
+	assert.Nil(t, fc.PickupCode, "DB 列应已清空")
+	_, _, err = svc.Peek(ctx, pickup)
+	assert.Error(t, err, "KV+DB 均清后取件应未命中")
 }

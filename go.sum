@@ -104,8 +104,8 @@ github.com/pelletier/go-toml/v2 v2.3.1 h1:MYEvvGnQjeNkRF1qUuGolNtNExTDwct51yp7ol
 github.com/pelletier/go-toml/v2 v2.3.1/go.mod h1:2gIqNv+qfxSVS7cM2xJQKtLSTLUE9V8t9Stt+h56mCY=
 github.com/philhofer/fwd v1.2.0 h1:e6DnBTl7vGY+Gz322/ASL4Gyp1FspeMvx1RNDoToZuM=
 github.com/philhofer/fwd v1.2.0/go.mod h1:RqIHx9QI14HlwKwm98g9Re5prTQ6LdeRQn+gXJFxsJM=
-github.com/pigeonbox/contracts v0.8.0 h1:w4+ZX00aCSkEK5ge3ZOWpkfcdplx0wVXcMTPhotU0W0=
-github.com/pigeonbox/contracts v0.8.0/go.mod h1:VnWrBQRPe6fajZaZQj9ofQBAmZOcP/s3u01vm513zAY=
+github.com/pigeonbox/contracts v0.9.0 h1:s5oigwdxyRf5FTjVKKS+lEoGVb3g90168UgLQlabKgc=
+github.com/pigeonbox/contracts v0.9.0/go.mod h1:VnWrBQRPe6fajZaZQj9ofQBAmZOcP/s3u01vm513zAY=
 github.com/pigeonbox/kit v0.3.1 h1:sJ7j0LmjVDwbU83Ht8SmwA7juM06pux1fq4Fp6Dbv9c=
 github.com/pigeonbox/kit v0.3.1/go.mod h1:TkI1CyUhijTyXnwOqRvTp94NgZVSUzhcInvSnN48mOo=
 github.com/pkg/sftp v1.13.11 h1:0N92SLTB8JqASJB14ZLHHzFnBV8mG9zw4K7jghEFWuE=
@@ -201,8 +201,6 @@ golang.org/x/image v0.0.0-20191009234506-e7c1f5e7dbb8/go.mod h1:FeLwcggjj3mMvU+o
 golang.org/x/image v0.43.0 h1:FLxcP4ec2350nTfOC8ysKtqYSIFbk/QGjw1ZHNP4tsY=
 golang.org/x/image v0.43.0/go.mod h1:rrpelvGFt+kLPAjPM4HeWPgrl0FtafueU//e5N0qk/Q=
 golang.org/x/net v0.0.0-20221014081412-f15817d10f9b/go.mod h1:YDH+HFinaLZZlnHAfSS6ZXJJ9M9t4Dl22yv3iI2vPwk=
-golang.org/x/net v0.59.0 h1:5zfYln+w5XCxwrnMMJPufRgNoXEaGxl0wo5GqPXyues=
-golang.org/x/net v0.59.0/go.mod h1:2DA/G1UfVbCpQPeWTmMPGY7Cs2PkBkwu743bVX5PIVg=
 golang.org/x/net v0.60.0 h1:79p50tfZlm0J9YfoDsSi639qSXNGVwEzOPLCxM2FsYU=
 golang.org/x/net v0.60.0/go.mod h1:2DA/G1UfVbCpQPeWTmMPGY7Cs2PkBkwu743bVX5PIVg=
 golang.org/x/sync v0.0.0-20210220032951-036812b2e83c/go.mod h1:RxMgew5VJxzue5/jJTE5uejpjVlOe/izrB70Jof72aM=

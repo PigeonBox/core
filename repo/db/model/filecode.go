@@ -62,6 +62,13 @@ type FileCode struct {
 	ViewerAt       *time.Time `json:"viewer_at"`                     // 最近一次取件时间
 	ViewerCount    int        `gorm:"default:0" json:"viewer_count"` // 累计取件次数
 	LastNotifiedAt *time.Time `json:"last_notified_at"`              // 最近一次给 owner 发通知的时间（用于去重）
+
+	// PickupCode 6 位取件码（2026-10-08 起落库持久化，"只保留 6 位码"呈现）：
+	//   - 本列为真相源；Redis/memkv 映射降级为加速缓存（TTL=分享过期时间），
+	//     单机内存模式重启后经 GetByPickupCode 回退解析，取件码不再失联
+	//   - 永久分享同样铸造（KV 无法表达永久 TTL，DB 无此约束）
+	//   - nil=未铸造（E2E 密文分享/历史数据）；可空唯一索引允许多行 NULL
+	PickupCode *string `gorm:"uniqueIndex;size:8" json:"pickup_code,omitempty"`
 }
 
 // IsExpired 检查是否过期

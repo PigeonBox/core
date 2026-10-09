@@ -29,7 +29,19 @@ func Register(r *server.Hertz) {
 		}
 	}
 	{
-		_notifies0 := root.Group("/notifies", _notifies0Mw()...)
-		_notifies0.GET("/active", append(_activeMw(), notify.Active)...)
+		_api := root.Group("/api", _apiMw()...)
+		{
+			_v1 := _api.Group("/v1", _v1Mw()...)
+			{
+				_notifies0 := _v1.Group("/notifies", _notifies0Mw()...)
+				_notifies0.POST("/mark-read", append(_markreadMw(), notify.MarkRead)...)
+				_notifies0.GET("/mine", append(_mineMw(), notify.Mine)...)
+				_notifies0.GET("/unread-count", append(_unreadcountMw(), notify.UnreadCount)...)
+			}
+		}
+	}
+	{
+		_notifies1 := root.Group("/notifies", _notifies1Mw()...)
+		_notifies1.GET("/active", append(_activeMw(), notify.Active)...)
 	}
 }

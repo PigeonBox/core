@@ -61,3 +61,55 @@ func _downloadfileMw() []app.HandlerFunc {
 	// your code...
 	return nil
 }
+
+func _apiMw() []app.HandlerFunc {
+	// /api 前缀（2026-10-09 用户分享组 IDL 化）：JWT / 用户级 API Key 二选一，
+	// 与迁移前自定义组 apiV1 的守卫一致（pb CLI 凭 Key 访问 /user/shares 依赖此）。
+	// 边界：此 mw 仅作用于 share 域路由树内的 /api 路径，/share/* 公开路由不受影响。
+	return []app.HandlerFunc{middleware.UserOrAPIKey()}
+}
+
+func _v1Mw() []app.HandlerFunc {
+	// your code...
+	return nil
+}
+
+func _userMw() []app.HandlerFunc {
+	// your code...
+	return nil
+}
+
+func _usershareslistMw() []app.HandlerFunc {
+	// your code...
+	return nil
+}
+
+func _sharesMw() []app.HandlerFunc {
+	// your code...
+	return nil
+}
+
+func _usersharesbatchdeleteMw() []app.HandlerFunc {
+	// your code...
+	return nil
+}
+
+func _usersharesbatchextendMw() []app.HandlerFunc {
+	// your code...
+	return nil
+}
+
+func _codeMw() []app.HandlerFunc {
+	// your code...
+	return nil
+}
+
+func _usersharesharddeleteMw() []app.HandlerFunc {
+	// your code...
+	return nil
+}
+
+func _usersharesrestoreMw() []app.HandlerFunc {
+	// your code...
+	return nil
+}

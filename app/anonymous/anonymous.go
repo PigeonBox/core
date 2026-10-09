@@ -6,7 +6,9 @@
 //  3. 系统：校验（DB 为准）→ 扣减次数（DB 原子）→ 返回下载信息
 //
 // 设计要点（DB 为唯一真相源）：
-//   - Redis 仅存 pickup_code → share_code 映射 + 展示信息（文件名等）
+//   - 6 位取件码落 file_codes.pickup_code 列（真相源，唯一索引防撞码）；
+//     Redis 仅存 pickup_code → share_code 映射 + 展示信息作为加速缓存
+//     （TTL=分享过期；永久分享不写 KV，经 DB 回退路径解析，重启不失联）
 //   - 过期时间、剩余次数、密码哈希全部以 file_codes 表为准
 //   - 取件码字符表去掉易混淆字符 0/O/1/I/L
 package anonymous
@@ -119,33 +121,60 @@ type CodeMeta struct {
 	FileSize    int64
 	ContentType string
 	RequireAuth bool // 仅展示"是否需要密码"
+	// ExpireAt 分享过期时间（Unix 秒；0=未设/长期）。Retrieve 成功回填，
+	// 供取件结果页展示（此前 handler 恒发 0，页面"过期时间 -"）。
+	ExpireAt int64
+	// RemainingCount 本次取件后剩余可取次数：-1=不限次，>0=剩余。
+	// 与 model.FileCode.ExpiredCount 语义一致（0=耗尽不会出现在成功响应里）。
+	RemainingCount int
+	// IsText 文本分享标记（Retrieve 时按 DB 回填，不进 KV meta 串）。
+	// 文本分享取件后前端跳详情页展示（结果页无文本渲染形态），handler 据此回传 share_code。
+	IsText bool
 }
 
-// GenerateCode 生成 6 位取件码，建立 pickup_code → share_code 映射。
-// expireAt 决定 Redis key 的 TTL（应与 DB 记录过期时间对齐）。
+// GenerateCode 生成 6 位取件码：落库 file_codes.pickup_code（真相源，唯一索引
+// 防跨分享撞码），有 TTL 时另写 KV 映射加速解析。expireAt 零值=永久分享（不写
+// KV，取件走 DB 回退）；过期时间应与 DB 记录对齐，已过期则拒绝铸造。
 func (s *Service) GenerateCode(ctx context.Context, meta CodeMeta, expireAt time.Time) (string, error) {
-	if s.rdb == nil {
-		return "", errors.New("redis 未配置，匿名取件功能不可用")
+	if s.fileCodeRepo == nil {
+		return "", errors.New("fileCodeRepo 未注入，取件码无法落库")
 	}
 	ttl := time.Until(expireAt)
-	if ttl <= 0 {
+	if !expireAt.IsZero() && ttl <= 0 {
 		return "", errors.New("expireAt 已过期")
 	}
 	for i := 0; i < 10; i++ {
 		code := randomCode()
-		// SetNX 已废弃（SA1019），改用 Set + NX 选项；NX 且键已存在时返回 redis.Nil
-		key := fmt.Sprintf(keyPickupCodeMapping, code)
-		_, err := s.rdb.SetArgs(ctx, key, meta.ShareCode, redis.SetArgs{TTL: ttl, Mode: "NX"}).Result()
-		if errors.Is(err, redis.Nil) {
-			continue // 已存在，重试
-		}
+		// 真相源落库（唯一索引 + 占用预查防跨分享撞码）；占用则换码重试
+		set, err := s.fileCodeRepo.SetPickupCode(ctx, meta.ShareCode, code)
 		if err != nil {
 			return "", err
 		}
+		if !set {
+			continue
+		}
+		// KV 映射是加速缓存：永久分享（零值 expireAt，无 TTL 可言）或 rdb 缺席时
+		// 跳过，取件经 lookupShareCode 的 DB 回退路径解析
+		if s.rdb == nil || ttl <= 0 {
+			return code, nil
+		}
 		metaStr := fmt.Sprintf("%s|%s|%d|%s|%t",
 			meta.ShareCode, meta.FileName, meta.FileSize, meta.ContentType, meta.RequireAuth)
+		// SetNX 已废弃（SA1019），改用 Set + NX 选项；NX 且键已存在时返回 redis.Nil
+		key := fmt.Sprintf(keyPickupCodeMapping, code)
+		_, err = s.rdb.SetArgs(ctx, key, meta.ShareCode, redis.SetArgs{TTL: ttl, Mode: "NX"}).Result()
+		if err != nil {
+			// KV 撞码（残留脏数据）或故障：回滚 DB 列后换码重试/报错，
+			// 防"DB 已落但 KV 指向他处"的错位映射
+			_ = s.fileCodeRepo.ClearPickupCode(ctx, code)
+			if errors.Is(err, redis.Nil) {
+				continue
+			}
+			return "", err
+		}
 		if err := s.rdb.Set(ctx, fmt.Sprintf(keyPickupCodeMeta, code), metaStr, ttl).Err(); err != nil {
-			s.rdb.Del(ctx, fmt.Sprintf(keyPickupCodeMapping, code))
+			s.rdb.Del(ctx, key)
+			_ = s.fileCodeRepo.ClearPickupCode(ctx, code)
 			return "", err
 		}
 		return code, nil
@@ -155,8 +184,8 @@ func (s *Service) GenerateCode(ctx context.Context, meta CodeMeta, expireAt time
 
 // lookupShareCode 把用户输入解析为分享码：
 // 6 位输入按取件码处理（容忍小写，规范化后查映射）；
-// 映射未命中且输入形如分享码时回源 DB 直查——
-// 文本分享没有取件码（不写 KV），用户手里只有分享成功弹窗里的 8 位码。
+// 映射未命中依次回源 DB——① pickup_code 列（真相源：KV 重启丢失/永久分享
+// 未写 KV 时由此解析）② code 列直查（8 位分享码/自定义口令直输）。
 // 回源路径带双向缓存：命中回填映射（短 TTL，重复查询不再打库）；
 // DB 也无此码则放负缓存标记（短 TTL，防取件码枚举穿透打库）。
 // 真实状态（过期/次数/密码）始终以 DB 为准，缓存仅加速"码→分享码"解析。
@@ -176,6 +205,14 @@ func (s *Service) lookupShareCode(ctx context.Context, code string) (string, err
 	// 负缓存快速路径：近期已确认"映射与 DB 均无此码"
 	if _, err := s.rdb.Get(ctx, fmt.Sprintf(keyPickupCodeNeg, trimmed)).Result(); err == nil {
 		return "", ErrCodeNotFound
+	}
+	// DB 回退 ①：6 位输入查 pickup_code 列（真相源；命中回填映射缓存）
+	if len(trimmed) == codeLength {
+		fc, dbErr := s.fileCodeRepo.GetByPickupCode(ctx, trimmed)
+		if dbErr == nil && fc != nil {
+			s.rdb.Set(ctx, mappingKey, fc.Code, dbBackfillTTL)
+			return fc.Code, nil
+		}
 	}
 	if isShareCodeShape(trimmed) {
 		fc, dbErr := s.fileCodeRepo.GetByCode(ctx, trimmed)
@@ -277,11 +314,27 @@ func (s *Service) Retrieve(ctx context.Context, code, password string) (*CodeMet
 		return nil, ErrCodeExhausted
 	}
 
+	// 回填取件结果页展示字段：过期时间 + 扣减后的剩余次数（-1=不限，恒发 0
+	// 时代页面显示"过期时间 -"、"剩余可取次数 0"，误导用户以为文件已失效）
+	if fc.ExpiredAt != nil {
+		meta.ExpireAt = fc.ExpiredAt.Unix()
+	}
+	meta.RemainingCount = fc.ExpiredCount
+	if fc.ExpiredCount > 0 {
+		meta.RemainingCount = fc.ExpiredCount - 1
+	}
+	meta.IsText = fc.IsTextShare()
+
 	return meta, nil
 }
 
-// Cancel 作废取件码（删 Redis 映射）
+// Cancel 作废取件码（KV 映射与 DB pickup_code 列同步清除，真相源一致）
 func (s *Service) Cancel(ctx context.Context, code string) error {
+	if s.fileCodeRepo != nil {
+		if err := s.fileCodeRepo.ClearPickupCode(ctx, strings.ToUpper(strings.TrimSpace(code))); err != nil {
+			return err
+		}
+	}
 	return s.cleanup(ctx, code)
 }
 
@@ -426,18 +479,27 @@ func (s *Service) CreateAnonymousShare(ctx context.Context, p AnonymousSharePara
 	return pickupCode, nil
 }
 
-// MintForShare 为既有文件分享铸造 6 位取件码（仅写 KV 映射，不动 DB 记录）。
-// 供 app/share 经窄接口在 CreateShare 成功后调用——直传/直传分片/秒传各通道
-// 的文件分享统一获得取件码（对齐上游"文件另有 N 位取件码"语义）。
-//   - expireAt nil（永久分享）→ 返回空串不铸造：映射 TTL 无法对齐永久语义，
-//     永久分享继续用 8 位分享码（lookupShareCode 的 DB 回退路径天然支持）。
-//   - KV 写失败返回错误但调用方应视为非致命（出码主流程不阻断）。
+// MintForShare 为既有分享铸造 6 位取件码（2026-10-08 起文本/文件/永久分享同权，
+// "只保留 6 位码"呈现；E2E 密文分享由调用方跳过——密钥只随链接，凭码取不到明文）。
+// 真相源落 DB pickup_code 列；有 TTL 时另写 KV 映射加速解析：
+//   - expireAt nil（永久分享）→ 零值传入 GenerateCode：不写 KV（无 TTL 可言），
+//     取件经 lookupShareCode 的 pickup_code 列回退路径解析，重启不失联
+//   - KV 写失败返回错误但调用方应视为非致命（出码主流程不阻断）
 func (s *Service) MintForShare(ctx context.Context, shareCode, fileName string, fileSize int64, requireAuth bool, expireAt *time.Time) (string, error) {
 	if s.rdb == nil {
 		return "", nil
 	}
-	if expireAt == nil || time.Until(*expireAt) <= 0 {
+	if expireAt != nil && time.Until(*expireAt) <= 0 {
 		return "", nil
+	}
+	if expireAt == nil {
+		return s.GenerateCode(ctx, CodeMeta{
+			ShareCode:   shareCode,
+			FileName:    fileName,
+			FileSize:    fileSize,
+			ContentType: "application/octet-stream",
+			RequireAuth: requireAuth,
+		}, time.Time{})
 	}
 	return s.GenerateCode(ctx, CodeMeta{
 		ShareCode:   shareCode,

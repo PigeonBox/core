@@ -61,6 +61,7 @@ import (
 	userHandler "github.com/pigeonbox/core/gen/handler/user"
 	"github.com/pigeonbox/core/repo/db/dao"
 	customHandler "github.com/pigeonbox/core/transport/http/handler"
+	requestgenhandler "github.com/pigeonbox/core/gen/handler/request"
 	customMw "github.com/pigeonbox/core/transport/http/middleware"
 )
 
@@ -1066,15 +1067,10 @@ func customizedRegister(r *server.Hertz) {
 		r.GET("/share/metadata/:code", customHandler.ShareMetadata)
 	}
 
-	// ===== 寄件码/反向收件（P2）：链接管理（JWT）+ 访客侧（公开） =====
-	// 服务实例在 initThriftIDLServices 装配（依赖 share/notify）（公开面）
-	if config.ServesPublicPlane() {
-		r.POST("/api/v1/user/requests", customMw.UserAuth(), customHandler.UserCreateFileRequest)
-		r.GET("/api/v1/user/requests", customMw.UserAuth(), customHandler.UserListFileRequests)
-		r.DELETE("/api/v1/user/requests/:token", customMw.UserAuth(), customHandler.UserDeleteFileRequest)
-		r.GET("/request/:token", customHandler.GetFileRequestPublic)
-		r.POST("/api/v1/request/:token/upload", customHandler.GuestSubmitFiles)
-	}
+	// ===== 寄件码/反向收件（P2）：2026-10-09 IDL 化（idl/request.thrift）， =====
+	// 由 gen/router/request 注册（public/standalone 面；JWT 组 mw 手工区 +
+	// 访客公开投递），customHandler 手写注册摘除；访客投递重管道桥接保留在
+	// customHandler.GuestSubmitFiles（gen handler 委托），service 双注入见下方。
 
 	// ===== NAS 本地文件免上传导入（P3；upload.local_import.enabled 开关在 service 内校验）=====（公开面）
 	if config.ServesPublicPlane() {
@@ -1232,23 +1228,9 @@ func customizedRegister(r *server.Hertz) {
 	r.GET("/readyz", readinessHandler)
 
 	// ===== 自定义 REST API（用户 JWT 或 API Key 认证）=====
-	// UserOrAPIKey：浏览器走 JWT（含黑名单），第三方脚本走 X-API-Key / Bearer pb_sk_。
-	// 覆盖我的分享管理与站内通知；Key 永不进入 /admin 与 /user/api-keys（Key 不能管 Key）。
-	apiV1 := r.Group("/api/v1", middleware.UserOrAPIKey())
-	{
-		// 我的分享管理（批量删除 / 批量延期 / 恢复 / 永久删除）
-		userShares := apiV1.Group("/user/shares")
-		userShares.GET("", customHandler.ListUserShares)
-		userShares.POST("/batch-delete", customHandler.BatchDeleteUserShares)
-		userShares.POST("/batch-extend", customHandler.BatchExtendUserShares)
-		userShares.POST("/:code/restore", customHandler.RestoreUserShare)
-		userShares.DELETE("/:code/hard", customHandler.HardDeleteUserShare)
-
-		// 用户站内通知（列表 / 未读数 / 标记已读）
-		apiV1.GET("/notifies/mine", customHandler.ListMyNotifications)
-		apiV1.GET("/notifies/unread-count", customHandler.UnreadNotifyCount)
-		apiV1.POST("/notifies/mark-read", customHandler.MarkNotifyRead)
-	}
+	// 我的通知 mine 三件套 2026-10-09 IDL 化（idl/notify.thrift Mine/UnreadCount/
+	// MarkRead），由 gen/router/notify 注册并挂 UserOrAPIKey（_apiMw 手工区），
+	// customHandler 手写注册摘除（wire 形态逐字段兼容）。
 
 	// ===== 前端 SPA 静态资源服务 =====
 	// Vite 构建的 index.html 使用根级绝对路径引用资源（/assets/xxx.js、/vite.svg），
@@ -1615,8 +1597,10 @@ func initThriftIDLServices(database *gorm.DB) {
 	shareSvc.SetQuotaChecker(userSvc)
 
 	// 2.4.1 寄件码/反向收件服务（P2）：经 ShareGateway 适配器依赖 share（消跨域 import）
+	// 双注入：gen/handler/request（IDL 化四端点）+ customHandler（访客投递重管道桥接）
 	requestSvcInstance = requestApp.NewService(requestShareGateway{shareSvc}, notifyApp)
 	customHandler.SetRequestService(requestSvcInstance)
+	requestgenhandler.SetRequestService(requestSvcInstance)
 
 	// 2.4.2 P2P 联邦（M2）：启用时注册进联邦注册中心并公告口令路由。
 	// 初始化失败降级为非联邦模式（单站功能不受影响）；resolve 代理路由

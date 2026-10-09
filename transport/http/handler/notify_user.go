@@ -1,14 +1,11 @@
+// 我的通知 mine 三件套已于 2026-10-09 IDL 化（idl/notify.thrift
+// Mine/UnreadCount/MarkRead），handler 迁至 core/gen/handler/notify/notify_service.go，
+// 路由由 gen/router/notify 注册并挂 UserOrAPIKey（_apiMw 手工区）。
+// 本文件仅保留 notify service 注入（notify_public 等消费方）。
 package handler
 
 import (
-	"context"
-	"strconv"
-
-	"github.com/cloudwego/hertz/pkg/app"
-	"github.com/cloudwego/hertz/pkg/protocol/consts"
-
 	notifyapp "github.com/pigeonbox/core/app/notify"
-	"github.com/pigeonbox/core/transport/http/middleware"
 )
 
 var notifySvc *notifyapp.Service
@@ -24,67 +21,3 @@ func getNotifyService() *notifyapp.Service {
 	}
 	return notifySvc
 }
-
-// ListMyNotifications 我的通知列表（含广播 + 定向）
-// GET /api/v1/notifies/mine?page=1&page_size=20
-func ListMyNotifications(ctx context.Context, c *app.RequestContext) {
-	uid, ok := requireLogin(c)
-	if !ok {
-		return
-	}
-	page, _ := strconv.Atoi(string(c.Query("page")))
-	pageSize, _ := strconv.Atoi(string(c.Query("page_size")))
-	data, err := getNotifyService().ListForUser(ctx, uid, page, pageSize)
-	if err != nil {
-		c.JSON(consts.StatusInternalServerError, map[string]interface{}{"code": 500, "message": err.Error()})
-		return
-	}
-	c.JSON(consts.StatusOK, map[string]interface{}{"code": 200, "message": "ok", "data": data})
-}
-
-// UnreadNotifyCount 未读数
-// GET /api/v1/notifies/unread-count
-func UnreadNotifyCount(ctx context.Context, c *app.RequestContext) {
-	uid, ok := userIDFromCtx(c)
-	if !ok {
-		c.JSON(consts.StatusOK, map[string]interface{}{"code": 200, "message": "ok", "data": map[string]int64{"unread": 0}})
-		return
-	}
-	n, err := getNotifyService().UnreadCountForUser(ctx, uid)
-	if err != nil {
-		c.JSON(consts.StatusInternalServerError, map[string]interface{}{"code": 500, "message": err.Error()})
-		return
-	}
-	c.JSON(consts.StatusOK, map[string]interface{}{"code": 200, "message": "ok", "data": map[string]int64{"unread": n}})
-}
-
-// MarkNotifyReq 标记已读请求
-type MarkNotifyReq struct {
-	All bool `json:"all"` // true=全部已读；忽略下面的 ids
-}
-
-// MarkNotifyRead 标记已读
-// POST /api/v1/notifies/mark-read
-func MarkNotifyRead(ctx context.Context, c *app.RequestContext) {
-	uid, ok := requireLogin(c)
-	if !ok {
-		return
-	}
-	var req MarkNotifyReq
-	// body 可为空，all=true 也行
-	_ = c.BindAndValidate(&req)
-	// 简化：只支持全部已读（per-id 已读前端基本不用）
-	if !req.All {
-		c.JSON(consts.StatusBadRequest, map[string]interface{}{"code": 400, "message": "仅支持 all=true"})
-		return
-	}
-	n, err := getNotifyService().MarkAllReadForUser(ctx, uid)
-	if err != nil {
-		c.JSON(consts.StatusInternalServerError, map[string]interface{}{"code": 500, "message": err.Error()})
-		return
-	}
-	c.JSON(consts.StatusOK, map[string]interface{}{"code": 200, "message": "ok", "data": map[string]int64{"marked": n}})
-}
-
-// 引用 middleware 包以保留 import
-var _ = middleware.ContextKeyUserID

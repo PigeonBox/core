@@ -4,6 +4,7 @@ package notify
 
 import (
 	"context"
+	"strconv"
 	"time"
 
 	"github.com/cloudwego/hertz/pkg/app"
@@ -267,4 +268,118 @@ func strDeref(p *string) string {
 		return ""
 	}
 	return *p
+}
+
+// ==================== 我的通知（2026-10-09 自 customHandler/notify_user.go 收敛进 IDL） ====================
+// 契约真相源：idl/notify.thrift Mine/UnreadCount/MarkRead。认证挂在路由 mw
+// 手工区 _apiMw（JWT/API Key 二选一，与迁移前 apiV1 组一致）。
+
+// Mine 我的通知列表（含广播 + 定向）
+// GET /api/v1/notifies/mine [GET]
+func Mine(ctx context.Context, c *app.RequestContext) {
+	uid, ok := requireUserID(c)
+	if !ok {
+		return
+	}
+	page, _ := strconv.Atoi(string(c.Query("page")))
+	pageSize, _ := strconv.Atoi(string(c.Query("page_size")))
+	data, err := getService().ListForUser(ctx, uid, page, pageSize)
+	if err != nil {
+		c.JSON(consts.StatusInternalServerError, map[string]interface{}{"code": 500, "message": err.Error()})
+		return
+	}
+	items := make([]*notifymodel.UserNotifyItemData, 0, len(data.Items))
+	for i := range data.Items {
+		it := &data.Items[i]
+		items = append(items, &notifymodel.UserNotifyItemData{
+			ID:        int64(it.ID),
+			Title:     it.Title,
+			Content:   it.Content,
+			Type:      it.Type,
+			Level:     it.Level,
+			ReadAt:    timePtrToString(it.ReadAt),
+			CreatedAt: it.CreatedAt.Format(time.RFC3339Nano),
+			IsRead:    it.IsRead,
+		})
+	}
+	c.JSON(consts.StatusOK, &notifymodel.MineResp{
+		Code:    200,
+		Message: "ok",
+		Data: &notifymodel.MineData{
+			Items:      items,
+			Total:      data.Total,
+			Unread:     data.Unread,
+			Page:       int32(data.Page),
+			PageSize:   int32(data.PageSize),
+			TotalPages: data.TotalPages,
+		},
+	})
+}
+
+// UnreadCount 未读数（未登录防御性返回 0——迁移前语义；路由层实际已拦截匿名）
+// GET /api/v1/notifies/unread-count [GET]
+func UnreadCount(ctx context.Context, c *app.RequestContext) {
+	uid, ok := userIDFromCtxNotify(c)
+	if !ok {
+		c.JSON(consts.StatusOK, &notifymodel.UnreadCountResp{
+			Code: 200, Message: "ok",
+			Data: &notifymodel.UnreadCountData{Unread: 0},
+		})
+		return
+	}
+	n, err := getService().UnreadCountForUser(ctx, uid)
+	if err != nil {
+		c.JSON(consts.StatusInternalServerError, map[string]interface{}{"code": 500, "message": err.Error()})
+		return
+	}
+	c.JSON(consts.StatusOK, &notifymodel.UnreadCountResp{
+		Code: 200, Message: "ok",
+		Data: &notifymodel.UnreadCountData{Unread: n},
+	})
+}
+
+// MarkRead 标记已读（当前仅支持 all=true）
+// POST /api/v1/notifies/mark-read [POST]
+func MarkRead(ctx context.Context, c *app.RequestContext) {
+	uid, ok := requireUserID(c)
+	if !ok {
+		return
+	}
+	var req notifymodel.MarkReadReq
+	// body 可为空（历史语义：只支持全部已读）
+	_ = c.BindAndValidate(&req)
+	if req.All == nil || !*req.All {
+		c.JSON(consts.StatusBadRequest, map[string]interface{}{"code": 400, "message": "仅支持 all=true"})
+		return
+	}
+	n, err := getService().MarkAllReadForUser(ctx, uid)
+	if err != nil {
+		c.JSON(consts.StatusInternalServerError, map[string]interface{}{"code": 500, "message": err.Error()})
+		return
+	}
+	c.JSON(consts.StatusOK, &notifymodel.MarkReadResp{
+		Code: 200, Message: "ok",
+		Data: &notifymodel.MarkReadData{Marked: n},
+	})
+}
+
+// requireUserID 提取登录用户 ID；未登录写 401 并返回 false（原 requireLogin 语义）
+func requireUserID(c *app.RequestContext) (uint, bool) {
+	if v, ok := c.Get("user_id"); ok {
+		if id, ok := v.(uint); ok {
+			return id, true
+		}
+	}
+	c.JSON(consts.StatusUnauthorized, map[string]interface{}{"code": 401, "message": "未登录"})
+	return 0, false
+}
+
+// userIDFromCtxNotify 只读不写响应（unread-count 对匿名返回 0 而非 401）
+func userIDFromCtxNotify(c *app.RequestContext) (uint, bool) {
+	v, ok := c.Get("user_id")
+	if !ok {
+		return 0, false
+	}
+	id, ok := v.(uint)
+	return id, ok
 }

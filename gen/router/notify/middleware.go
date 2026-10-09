@@ -59,3 +59,34 @@ func _activeMw() []app.HandlerFunc {
 	// your code...
 	return nil
 }
+
+func _apiMw() []app.HandlerFunc {
+	// /api 前缀（2026-10-09 我的通知组 IDL 化）：JWT / 用户级 API Key 二选一，
+	// 与迁移前 apiV1 自定义组守卫一致；admin/notifies 走 _adminMw，/notifies/active 公开不受影响。
+	return []app.HandlerFunc{middleware.UserOrAPIKey()}
+}
+
+func _v1Mw() []app.HandlerFunc {
+	// your code...
+	return nil
+}
+
+func _markreadMw() []app.HandlerFunc {
+	// your code...
+	return nil
+}
+
+func _mineMw() []app.HandlerFunc {
+	// your code...
+	return nil
+}
+
+func _unreadcountMw() []app.HandlerFunc {
+	// your code...
+	return nil
+}
+
+func _notifies1Mw() []app.HandlerFunc {
+	// your code...
+	return nil
+}

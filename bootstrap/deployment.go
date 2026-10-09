@@ -28,6 +28,7 @@ import (
 	gennotify "github.com/pigeonbox/core/gen/router/notify"
 	genpresign "github.com/pigeonbox/core/gen/router/presign"
 	genpreview "github.com/pigeonbox/core/gen/router/preview"
+	genrequest "github.com/pigeonbox/core/gen/router/request"
 	genqrcode "github.com/pigeonbox/core/gen/router/qrcode"
 	genratelimit "github.com/pigeonbox/core/gen/router/ratelimit"
 	gensetup "github.com/pigeonbox/core/gen/router/setup"
@@ -132,6 +133,9 @@ func registerGeneratedRoutes(h *server.Hertz) {
 		genuser.Register(h)
 		genshare.Register(h)
 		genpreview.Register(h)
+		// 寄件码域（2026-10-09 IDL 化）：链接管理（JWT）+ 访客公开投递，
+		// 原 customHandler 注册在 public 面条件内，语义保持
+		genrequest.Register(h)
 	case conf.DeployModeAdmin:
 		genratelimit.Register(h)
 		gensetup.Register(h)

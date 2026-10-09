@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/pigeonbox/contracts/errcode"
+	sharemodel "github.com/pigeonbox/contracts/gen/share"
 	"github.com/pigeonbox/core/app/moderation"
 	"github.com/pigeonbox/core/conf"
 	"github.com/pigeonbox/core/pkg/logger"
@@ -371,7 +372,36 @@ func (s *Service) ShareText(ctx context.Context, req *ShareTextReq) (*ShareResp,
 	// P2P 联邦公告（未启用为 no-op；实现方自滤低熵码）
 	s.federationCreated(fileCode.Code, fileCode.ExpiredAt)
 
-	return s.modelToResp(ctx, fileCode), nil
+	resp := s.modelToResp(ctx, fileCode)
+	// 6 位取件码铸造（2026-10-08 起文本分享与文件分享同权，前端"只保留 6 位码"
+	// 呈现）。E2E 密文跳过：解密密钥只随链接传递，凭码取件拿到的只是密文。
+	// 非致命——铸造失败仅少一个快捷码，8 位分享码链路不受影响。
+	if s.pickupMinter != nil && !req.Encrypted {
+		if pickup, err := s.pickupMinter.MintForShare(ctx, fileCode.Code,
+			textPreview(req.Text), int64(len(req.Text)), req.RequireAuth, req.ExpiredAt); err != nil {
+			logger.Warn("mint pickup code failed (non-fatal)",
+				zap.String("code", fileCode.Code), zap.Error(err))
+		} else {
+			resp.PickupCode = pickup
+		}
+	}
+	return resp, nil
+}
+
+// textPreview 文本分享的取件码展示名：首行截断 32 rune。取件码 meta 按 '|' 分隔
+// 存储（parseMeta），换行与竖线会破坏解析，一律折叠成空格。
+func textPreview(text string) string {
+	preview := strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\r' || r == '|' {
+			return ' '
+		}
+		return r
+	}, text)
+	runes := []rune(strings.TrimSpace(preview))
+	if len(runes) > 32 {
+		runes = append(runes[:32], []rune("…")...)
+	}
+	return string(runes)
 }
 
 // ShareTextWithAuth 带认证的文本分享（用于 Handler）。
@@ -900,32 +930,9 @@ func (s *Service) modelToResp(ctx context.Context, fileCode *model.FileCode) *Sh
 	}
 }
 
-// UserShareListItem 用户分享列表项（包含 viewer 追踪字段）
-type UserShareListItem struct {
-	ID           uint       `json:"id"`
-	Code         string     `json:"code"`
-	Prefix       string     `json:"prefix"`
-	Suffix       string     `json:"suffix"`
-	FileName     string     `json:"file_name"`
-	FilePath     string     `json:"file_path"`
-	Size         int64      `json:"size"`
-	Text         string     `json:"text"`
-	ExpiredAt    *time.Time `json:"expired_at"`
-	ExpiredCount int        `json:"expired_count"`
-	UsedCount    int        `json:"used_count"`
-	RequireAuth  bool       `json:"require_auth"`
-	UploadType   string     `json:"upload_type"`
-	CreatedAt    time.Time  `json:"created_at"`
-	UpdatedAt    time.Time  `json:"updated_at"`
-	DeletedAt    *time.Time `json:"deleted_at,omitempty"`
-	ViewerIP     string     `json:"viewer_ip"`
-	ViewerAt     *time.Time `json:"viewer_at"`
-	ViewerCount  int        `json:"viewer_count"`
-	IsExpired    bool       `json:"is_expired"`
-	IsTextShare  bool       `json:"is_text_share"`
-	Status       string     `json:"status"`     // 管控状态：owner 有权知道自己被禁用/待审
-	FileCount    int        `json:"file_count"` // P0 多文件：子文件数（0=旧单文件无子表行）
-}
+// UserShareListItem 已删除（2026-10-09 IDL 化）：列表项 wire 契约收敛为
+// contracts 生成模型 sharemodel.UserShareItemData（idl/share.thrift
+// UserShareItemData），此前 Go/TS 双手抄在 pickup_code 变更时被迫三处同步。
 
 // deletedAtToPtr gorm.DeletedAt → *time.Time（nil 表示未删除）
 func deletedAtToPtr(d gorm.DeletedAt) *time.Time {
@@ -936,9 +943,10 @@ func deletedAtToPtr(d gorm.DeletedAt) *time.Time {
 }
 
 // ListUserShares 获取用户的分享列表（带筛选）。
-// status 取值：all/active/expired/text/file/deleted/viewed；search 模糊匹配 code/文件名。
+// status 取值：all/active/expired/text/file/deleted/viewed；search 模糊匹配 code/文件名/取件码。
 // 筛选条件收散参由本域转换，transport 无需感知 dao.UserShareFilter。
-func (s *Service) ListUserShares(ctx context.Context, userID uint, status, search string, page, pageSize int) ([]*UserShareListItem, int64, error) {
+// 返回契约生成模型（wire 形态由 idl/share.thrift 定义，handler 只组信封）。
+func (s *Service) ListUserShares(ctx context.Context, userID uint, status, search string, page, pageSize int) ([]*sharemodel.UserShareItemData, int64, error) {
 	s.ensureRepository()
 	files, total, err := s.fileCodeRepo.GetUserSharesWithFilter(ctx, userID, dao.UserShareFilter{
 		Status:   status,
@@ -949,7 +957,7 @@ func (s *Service) ListUserShares(ctx context.Context, userID uint, status, searc
 	if err != nil {
 		return nil, 0, err
 	}
-	items := make([]*UserShareListItem, 0, len(files))
+	items := make([]*sharemodel.UserShareItemData, 0, len(files))
 	// 批量取子文件数（P0 多文件；一次 GROUP BY，避免列表页 N+1）
 	ids := make([]uint, 0, len(files))
 	for _, f := range files {
@@ -960,9 +968,9 @@ func (s *Service) ListUserShares(ctx context.Context, userID uint, status, searc
 		counts = nil // 计数失败降级为 0，不阻断列表
 	}
 	for _, f := range files {
-		item := toUserShareListItem(f)
+		item := toUserShareItemData(f)
 		if counts != nil {
-			item.FileCount = int(counts[f.ID])
+			item.FileCount = int32(counts[f.ID])
 		}
 		items = append(items, item)
 	}
@@ -1047,31 +1055,34 @@ func (s *Service) RecordViewer(ctx context.Context, code, viewerIP string) (*mod
 }
 
 // toUserShareListItem model → 列表项
-func toUserShareListItem(f *model.FileCode) *UserShareListItem {
+func toUserShareItemData(f *model.FileCode) *sharemodel.UserShareItemData {
 	isTextShare := f.IsTextShare()
-	item := &UserShareListItem{
-		ID:           f.ID,
+	item := &sharemodel.UserShareItemData{
+		ID:           int64(f.ID),
 		Code:         f.Code,
 		Prefix:       f.Prefix,
 		Suffix:       f.Suffix,
 		FilePath:     f.FilePath,
 		Size:         f.Size,
 		Text:         f.Text,
-		ExpiredAt:    f.ExpiredAt,
-		ExpiredCount: f.ExpiredCount,
-		UsedCount:    f.UsedCount,
+		ExpiredAt:    formatTimePtr(f.ExpiredAt),
+		ExpiredCount: int32(f.ExpiredCount),
+		UsedCount:    int32(f.UsedCount),
 		RequireAuth:  f.RequireAuth,
 		UploadType:   f.UploadType,
-		CreatedAt:    f.CreatedAt,
-		UpdatedAt:    f.UpdatedAt,
-		DeletedAt:    deletedAtToPtr(f.DeletedAt),
+		CreatedAt:    f.CreatedAt.Format(time.RFC3339Nano),
+		UpdatedAt:    f.UpdatedAt.Format(time.RFC3339Nano),
+		DeletedAt:    formatTimePtr(deletedAtToPtr(f.DeletedAt)),
 		ViewerIP:     f.ViewerIP,
-		ViewerAt:     f.ViewerAt,
-		ViewerCount:  f.ViewerCount,
+		ViewerAt:     formatTimePtr(f.ViewerAt),
+		ViewerCount:  int32(f.ViewerCount),
 		IsExpired:    f.IsExpired(),
 		Status:       f.Status,
 		// 文件分享的 Text 存原始文件名（非空），须用 IsTextShare 判定（Text 非空且无文件路径）
 		IsTextShare: isTextShare,
+	}
+	if f.PickupCode != nil {
+		item.PickupCode = f.PickupCode
 	}
 	// 文件名提取：文件分享依次取原始文件名（Text）、UUID 名、路径尾段；
 	// 纯文本分享的 Text 是内容，不留文件名
@@ -1090,4 +1101,14 @@ func toUserShareListItem(f *model.FileCode) *UserShareListItem {
 	}
 	item.FileName = fileName
 	return item
+}
+
+// formatTimePtr *time.Time → RFC3339Nano 字符串（nil 透传；与 time.Time 原生
+// JSON 序列化同格式，wire 兼容手写契约时代的历史输出）
+func formatTimePtr(t *time.Time) *string {
+	if t == nil {
+		return nil
+	}
+	s := t.Format(time.RFC3339Nano)
+	return &s
 }

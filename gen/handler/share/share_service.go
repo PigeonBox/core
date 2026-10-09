@@ -29,7 +29,6 @@ import (
 
 var shareSvc *shareService.Service
 
-
 // strPtrIfNotEmpty 空串转 nil（契约 optional 字段不外发空串）
 func strPtrIfNotEmpty(s string) *string {
 	if s == "" {
@@ -427,140 +426,6 @@ func ShareFile(ctx context.Context, c *app.RequestContext) {
 	c.JSON(consts.StatusOK, resp)
 }
 
-// GetUserShares 获取用户的分享列表
-// @router /share/user [GET]
-func GetUserShares(ctx context.Context, c *app.RequestContext) {
-	// 获取用户ID（需要登录）
-	userIDVal, exists := c.Get("user_id")
-	if !exists {
-		c.JSON(consts.StatusUnauthorized, map[string]interface{}{
-			"code":    401,
-			"message": "请先登录",
-		})
-		return
-	}
-
-	userID, ok := userIDVal.(uint)
-	if !ok {
-		c.JSON(consts.StatusInternalServerError, map[string]interface{}{
-			"code":    500,
-			"message": "用户ID格式错误",
-		})
-		return
-	}
-
-	// 获取分页参数
-	page := 1
-	pageSize := 10
-	if p := c.Query("page"); p != "" {
-		_, _ = fmt.Sscanf(p, "%d", &page)
-	}
-	if ps := c.Query("page_size"); ps != "" {
-		_, _ = fmt.Sscanf(ps, "%d", &pageSize)
-	}
-
-	// 调用 service
-	files, total, err := getShareService().GetFilesByUserID(ctx, userID, page, pageSize)
-	if err != nil {
-		c.JSON(consts.StatusInternalServerError, map[string]interface{}{
-			"code":    500,
-			"message": err.Error(),
-		})
-		return
-	}
-
-	// 转换为响应格式
-	items := make([]map[string]interface{}, len(files))
-	for i, f := range files {
-		items[i] = map[string]interface{}{
-			"code":           f.Code,
-			"filename":       f.DisplayName(),
-			"file_size":      f.Size,
-			"content_type":   f.UploadType,
-			"download_count": f.UsedCount,
-			"created_at":     f.CreatedAt.Format("2006-01-02 15:04:05"),
-		}
-		if f.ExpiredAt != nil {
-			items[i]["expire_time"] = f.ExpiredAt.Format("2006-01-02 15:04:05")
-		}
-	}
-
-	c.JSON(consts.StatusOK, map[string]interface{}{
-		"code":    200,
-		"message": "获取成功",
-		"data": map[string]interface{}{
-			"items":     items,
-			"total":     total,
-			"page":      page,
-			"page_size": pageSize,
-		},
-	})
-}
-
-// DeleteShare 删除分享
-// @router /share/:code [DELETE]
-func DeleteShare(ctx context.Context, c *app.RequestContext) {
-	// 获取用户ID（需要登录）
-	userIDVal, exists := c.Get("user_id")
-	if !exists {
-		c.JSON(consts.StatusUnauthorized, map[string]interface{}{
-			"code":    401,
-			"message": "请先登录",
-		})
-		return
-	}
-
-	userID, ok := userIDVal.(uint)
-	if !ok {
-		c.JSON(consts.StatusInternalServerError, map[string]interface{}{
-			"code":    500,
-			"message": "用户ID格式错误",
-		})
-		return
-	}
-
-	code := c.Param("code")
-	if code == "" {
-		c.JSON(consts.StatusBadRequest, map[string]interface{}{
-			"code":    400,
-			"message": "请提供分享码",
-		})
-		return
-	}
-
-	// 调用 service 删除分享
-	err := getShareService().DeleteFileByCode(ctx, code, userID)
-	if err != nil {
-		// 根据错误类型返回不同的状态码
-		errMsg := err.Error()
-		if errMsg == "分享不存在" {
-			c.JSON(consts.StatusNotFound, map[string]interface{}{
-				"code":    404,
-				"message": errMsg,
-			})
-			return
-		}
-		if errMsg == "无权限删除此分享" {
-			c.JSON(consts.StatusForbidden, map[string]interface{}{
-				"code":    403,
-				"message": errMsg,
-			})
-			return
-		}
-
-		c.JSON(consts.StatusInternalServerError, map[string]interface{}{
-			"code":    500,
-			"message": fmt.Sprintf("删除失败: %s", errMsg),
-		})
-		return
-	}
-
-	c.JSON(consts.StatusOK, map[string]interface{}{
-		"code":    200,
-		"message": "删除成功",
-	})
-}
-
 // GetShare .
 // @router /share/select/ [GET]
 func GetShare(ctx context.Context, c *app.RequestContext) {
@@ -944,4 +809,191 @@ func apiKeyIDPtr(ctx context.Context) *uint {
 		return &id
 	}
 	return nil
+}
+
+// ==================== 用户分享管理（2026-10-09 自 customHandler/share_user.go 收敛进 IDL） ====================
+// 契约真相源：idl/share.thrift UserShares*（wire 形态与手写契约时代逐字段兼容）。
+// 认证保持原 requireLogin 语义（全局身份中间件注入 user_id，未登录 401 JSON），
+// 不上移到路由中间件，保证迁移前后行为一致。
+// ⚠️ 本文件手工区：scripts/gen-router.sh 的去噪循环只摘 hzmodel import 行，
+// 但手工实现务必随列车提交——未提交状态跑旧版脚本会被整文件回退。
+
+// requireUserID 提取登录用户 ID；未登录写 401 响应并返回 false
+func requireUserID(c *app.RequestContext) (uint, bool) {
+	if v, ok := c.Get("user_id"); ok {
+		if id, ok := v.(uint); ok {
+			return id, true
+		}
+	}
+	c.JSON(consts.StatusUnauthorized, map[string]interface{}{"code": 401, "message": "未登录"})
+	return 0, false
+}
+
+// UserSharesList 我的分享列表
+// GET /api/v1/user/shares?status=&search=&page=&page_size=
+func UserSharesList(ctx context.Context, c *app.RequestContext) {
+	uid, ok := requireUserID(c)
+	if !ok {
+		return
+	}
+
+	page, _ := strconv.Atoi(string(c.Query("page")))
+	pageSize, _ := strconv.Atoi(string(c.Query("page_size")))
+
+	items, total, err := getShareService().ListUserShares(ctx, uid,
+		string(c.Query("status")), string(c.Query("search")), page, pageSize)
+	if err != nil {
+		c.JSON(consts.StatusInternalServerError, map[string]interface{}{
+			"code": 500, "message": "获取分享列表失败: " + err.Error(),
+		})
+		return
+	}
+
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 {
+		pageSize = 20
+	}
+	totalPages := (total + int64(pageSize) - 1) / int64(pageSize)
+	if totalPages < 1 {
+		totalPages = 1
+	}
+
+	c.JSON(consts.StatusOK, &sharemodel.UserSharesListResp{
+		Code:    200,
+		Message: "ok",
+		Data: &sharemodel.UserSharesListData{
+			Items:      items,
+			Total:      total,
+			Page:       int32(page),
+			PageSize:   int32(pageSize),
+			TotalPages: totalPages,
+			HasNext:    int64(page) < totalPages,
+			HasPrev:    int64(page) > 1,
+		},
+	})
+}
+
+// UserSharesBatchDelete 批量软删除我的分享
+// POST /api/v1/user/shares/batch-delete
+func UserSharesBatchDelete(ctx context.Context, c *app.RequestContext) {
+	uid, ok := requireUserID(c)
+	if !ok {
+		return
+	}
+	var req sharemodel.UserShareCodesReq
+	if err := c.BindAndValidate(&req); err != nil {
+		c.JSON(consts.StatusBadRequest, map[string]interface{}{"code": 400, "message": err.Error()})
+		return
+	}
+	if len(req.Codes) == 0 {
+		c.JSON(consts.StatusBadRequest, map[string]interface{}{"code": 400, "message": "codes 不能为空"})
+		return
+	}
+	n, err := getShareService().BatchDeleteUserShares(ctx, uid, req.Codes)
+	if err != nil {
+		c.JSON(consts.StatusInternalServerError, map[string]interface{}{"code": 500, "message": "删除失败: " + err.Error()})
+		return
+	}
+	c.JSON(consts.StatusOK, &sharemodel.UserShareOpResp{
+		Code:    200,
+		Message: "ok",
+		Data:    map[string]int32{"deleted": int32(n)},
+	})
+}
+
+// UserSharesBatchExtend 批量延期我的分享
+// POST /api/v1/user/shares/batch-extend
+func UserSharesBatchExtend(ctx context.Context, c *app.RequestContext) {
+	uid, ok := requireUserID(c)
+	if !ok {
+		return
+	}
+	var req sharemodel.UserShareBatchExtendReq
+	if err := c.BindAndValidate(&req); err != nil {
+		c.JSON(consts.StatusBadRequest, map[string]interface{}{"code": 400, "message": err.Error()})
+		return
+	}
+	if len(req.Codes) == 0 {
+		c.JSON(consts.StatusBadRequest, map[string]interface{}{"code": 400, "message": "codes 不能为空"})
+		return
+	}
+	var newExpire *time.Time
+	if req.Forever != nil && *req.Forever {
+		// nil 表示永久（清空 expired_at 字段）
+		newExpire = nil
+	} else if req.Hours != nil && *req.Hours > 0 {
+		t := time.Now().Add(time.Duration(*req.Hours) * time.Hour)
+		newExpire = &t
+	} else {
+		c.JSON(consts.StatusBadRequest, map[string]interface{}{"code": 400, "message": "hours 必须 > 0 或 forever=true"})
+		return
+	}
+	n, err := getShareService().BatchExtendUserShares(ctx, uid, req.Codes, newExpire)
+	if err != nil {
+		c.JSON(consts.StatusInternalServerError, map[string]interface{}{"code": 500, "message": "延期失败: " + err.Error()})
+		return
+	}
+	c.JSON(consts.StatusOK, &sharemodel.UserShareOpResp{
+		Code:    200,
+		Message: "ok",
+		Data:    map[string]int32{"extended": int32(n)},
+	})
+}
+
+// UserSharesRestore 恢复软删除的分享
+// POST /api/v1/user/shares/:code/restore
+func UserSharesRestore(ctx context.Context, c *app.RequestContext) {
+	uid, ok := requireUserID(c)
+	if !ok {
+		return
+	}
+	var req sharemodel.UserShareCodeReq
+	if err := c.BindAndValidate(&req); err != nil {
+		c.JSON(consts.StatusBadRequest, map[string]interface{}{"code": 400, "message": err.Error()})
+		return
+	}
+	if req.Code == "" {
+		c.JSON(consts.StatusBadRequest, map[string]interface{}{"code": 400, "message": "code 必填"})
+		return
+	}
+	if err := getShareService().RestoreUserShare(ctx, uid, req.Code); err != nil {
+		// 不在回收站（已硬删/不存在/本就活跃）：显式 400，替代 200 静默 no-op
+		if errors.Is(err, shareService.ErrNotInRecycleBin) {
+			c.JSON(consts.StatusBadRequest, map[string]interface{}{"code": 400, "message": err.Error()})
+			return
+		}
+		c.JSON(consts.StatusInternalServerError, map[string]interface{}{"code": 500, "message": "恢复失败: " + err.Error()})
+		return
+	}
+	c.JSON(consts.StatusOK, &sharemodel.UserShareOpResp{Code: 200, Message: "ok"})
+}
+
+// UserSharesHardDelete 永久删除（仅已软删除的）
+// DELETE /api/v1/user/shares/:code/hard
+func UserSharesHardDelete(ctx context.Context, c *app.RequestContext) {
+	uid, ok := requireUserID(c)
+	if !ok {
+		return
+	}
+	var req sharemodel.UserShareCodeReq
+	if err := c.BindAndValidate(&req); err != nil {
+		c.JSON(consts.StatusBadRequest, map[string]interface{}{"code": 400, "message": err.Error()})
+		return
+	}
+	if req.Code == "" {
+		c.JSON(consts.StatusBadRequest, map[string]interface{}{"code": 400, "message": "code 必填"})
+		return
+	}
+	if err := getShareService().HardDeleteUserShare(ctx, uid, req.Code); err != nil {
+		// 不在回收站（未软删/不存在）：显式 400，替代 200 静默 no-op
+		if errors.Is(err, shareService.ErrNotInRecycleBin) {
+			c.JSON(consts.StatusBadRequest, map[string]interface{}{"code": 400, "message": err.Error()})
+			return
+		}
+		c.JSON(consts.StatusInternalServerError, map[string]interface{}{"code": 500, "message": "永久删除失败: " + err.Error()})
+		return
+	}
+	c.JSON(consts.StatusOK, &sharemodel.UserShareOpResp{Code: 200, Message: "ok"})
 }
