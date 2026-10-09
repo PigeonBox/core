@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/glebarez/sqlite"
 	"github.com/pigeonbox/core/repo/db"
 	"github.com/pigeonbox/core/repo/db/dao"
 	"github.com/pigeonbox/core/repo/db/model"
-	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
@@ -136,7 +136,7 @@ func TestLookupShareCode_NegativeCache(t *testing.T) {
 	assert.ErrorIs(t, err, ErrCodeNotFound)
 
 	mkv := svc.rdb.(memoryKV)
-	_, marked := mkv.s.Get(fmt.Sprintf(keyPickupCodeNeg, strings.ToUpper(code)))
+	_, marked := mkv.Store.Get(fmt.Sprintf(keyPickupCodeNeg, strings.ToUpper(code)))
 	assert.True(t, marked, "DB 未命中后应放负缓存标记")
 
 	_, err = svc.lookupShareCode(ctx, code)
@@ -162,7 +162,7 @@ func TestLookupShareCode_DBBackfill(t *testing.T) {
 	assert.Equal(t, "abcdefgh", shareCode)
 
 	mkv := svc.rdb.(memoryKV)
-	cached, ok := mkv.s.Get(fmt.Sprintf(keyPickupCodeMapping, "abcdefgh"))
+	cached, ok := mkv.Store.Get(fmt.Sprintf(keyPickupCodeMapping, "abcdefgh"))
 	require.True(t, ok, "回源命中应回填映射缓存")
 	assert.Equal(t, "abcdefgh", cached)
 
