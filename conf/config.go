@@ -506,15 +506,22 @@ type OneDriveConfig struct {
 // Background/AccentColor 构成安全版主题：仅接受 http(s) 图片 URL 与 #RGB/#RRGGBB
 // 颜色值（serve 时校验，非白名单内容整体忽略）——不接受自由 CSS，杜绝旧单体
 // background 配置的 CSS 注入面（上游 2.6.0 同类修复）。showAdminAddr：公开页脚
-// 是否展示管理后台入口（默认隐藏；/admin 始终可直达，此键仅控制入口可见性）。
+// 是否展示管理后台入口（缺省展示，用 ShowAdminAddrEnabled 取值；/admin 始终可
+// 直达，此键仅控制入口可见性）。
 type UIConfig struct {
-	RobotsText    string `mapstructure:"robots_text" json:"robots_text"`
-	ShowAdminAddr bool   `mapstructure:"show_admin_addr" json:"show_admin_addr"`
+	RobotsText string `mapstructure:"robots_text" json:"robots_text"`
+	// ShowAdminAddr 缺省（nil/未配置）= 展示页脚管理入口；显式 false 才隐藏。
+	ShowAdminAddr *bool  `mapstructure:"show_admin_addr" json:"show_admin_addr"`
 	Background    string `mapstructure:"background" json:"background"`
 	AccentColor   string `mapstructure:"accent_color" json:"accent_color"`
 	// ExposeOpenAPI 是否公开 /openapi.json（默认 true，前端 /api-docs 页依赖）；
 	// 生产部署可置 false 收缩端点清单侦察面（env: PB_UI_EXPOSE_OPENAPI）。
 	ExposeOpenAPI bool `mapstructure:"expose_openapi" json:"expose_openapi"`
+}
+
+// ShowAdminAddrEnabled 页脚管理入口是否展示（nil 视为展示）。
+func (c *UIConfig) ShowAdminAddrEnabled() bool {
+	return c.ShowAdminAddr == nil || *c.ShowAdminAddr
 }
 
 // ObservabilityConfig 可观测性配置（metrics；分布式追踪见路线图，未实现前不暴露配置）

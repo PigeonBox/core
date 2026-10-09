@@ -395,7 +395,8 @@ var envBindings = map[string][]string{
 	"mcp.enabled":       {"PB_MCP_ENABLED"},
 	"mcp.max_file_size": {"PB_MCP_MAX_FILE_SIZE"},
 	// ui
-	"ui.expose_openapi": {"PB_UI_EXPOSE_OPENAPI"},
+	"ui.expose_openapi":  {"PB_UI_EXPOSE_OPENAPI"},
+	"ui.show_admin_addr": {"PB_UI_SHOW_ADMIN_ADDR"},
 	// moderation（内容审核，治理 2026-10-03）
 	"moderation.enabled":       {"PB_MODERATION_ENABLED"},
 	"moderation.blocked_words": {"PB_MODERATION_BLOCKED_WORDS"},
@@ -1373,8 +1374,8 @@ func publicConfigHandler(ctx context.Context, c *app.RequestContext) {
 		"initialized": initialized,
 		// OIDC 登录按钮开关（P2 SSO；security.oidc.enabled）
 		"oidcEnabled": conf.GetGlobalConfig().Security.OIDC.Enabled,
-		// 管理入口可见性（ui.show_admin_addr；/admin 路由始终可达，仅控制页脚入口展示）
-		"showAdminAddr": config.UI.ShowAdminAddr,
+		// 管理入口可见性（ui.show_admin_addr，缺省=展示；/admin 路由始终可达，仅控制页脚入口展示）
+		"showAdminAddr": config.UI.ShowAdminAddrEnabled(),
 		// 直传设置下发（前端通道决策）：匿名 presign 直传开关 + 直传阈值(MB)。
 		// 管理后台持久化段优先，无记录回退全局 conf（缺省=开启/100MB）
 		"presignPolicy":      effectiveDownload.PresignPolicyOrDefault(),
