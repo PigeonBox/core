@@ -2,6 +2,8 @@ module github.com/pigeonbox/core
 
 go 1.26.5
 
+toolchain go1.26.9
+
 require (
 	github.com/alicebob/miniredis/v2 v2.38.0
 	github.com/cloudwego/hertz v0.9.6
@@ -30,7 +32,7 @@ require (
 	github.com/pigeonbox/kit v0.3.1
 	github.com/pkg/sftp v1.13.11
 	github.com/studio-b12/gowebdav v0.13.0
-	golang.org/x/net v0.59.0
+	golang.org/x/net v0.60.0
 )
 
 require (
