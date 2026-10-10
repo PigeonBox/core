@@ -92,14 +92,21 @@ type ListReq struct {
 	Status   *int
 }
 
+// clampPage 分页参数钳制（List 与 ListForUser 同规格：page ≥ 1，
+// pageSize ∈ [1,100] 否则默认 20——此前同域两处手写重复）。
+func clampPage(page, pageSize int) (int, int) {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 || pageSize > 100 {
+		pageSize = 20
+	}
+	return page, pageSize
+}
+
 // List 列表
 func (s *Service) List(ctx context.Context, req ListReq) (*ListData, error) {
-	if req.Page <= 0 {
-		req.Page = 1
-	}
-	if req.PageSize <= 0 || req.PageSize > 100 {
-		req.PageSize = 20
-	}
+	req.Page, req.PageSize = clampPage(req.Page, req.PageSize)
 	tx := s.notifyRepo.Query(ctx)
 	if req.Type != "" {
 		tx = tx.Where("type = ?", req.Type)
@@ -322,12 +329,7 @@ type UserNotifyListData struct {
 
 // ListForUser 列出某用户的通知（含广播 + 定向给该用户）
 func (s *Service) ListForUser(ctx context.Context, userID uint, page, pageSize int) (*UserNotifyListData, error) {
-	if page < 1 {
-		page = 1
-	}
-	if pageSize < 1 || pageSize > 100 {
-		pageSize = 20
-	}
+	page, pageSize = clampPage(page, pageSize)
 	q := s.notifyRepo.Query(ctx).
 		Where("status = 1").
 		Where("target_user_id IS NULL OR target_user_id = ?", userID)

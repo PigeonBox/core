@@ -5,7 +5,6 @@ package bootstrap
 
 import (
 	"fmt"
-	"os"
 	"sync"
 
 	"go.uber.org/zap"
@@ -62,11 +61,9 @@ func initThriftIDLServices(database *gorm.DB) {
 	// 禁止回退到 host:port 拼接——server.host 是监听地址（0.0.0.0），
 	// 拼进分享链接对外不可达（2026-10-07 真机事故：分享成功弹窗 0.0.0.0 链接）。
 	baseURL := config.Server.BaseURL
-	// presign 签名密钥：优先专用 PB_PRESIGN_SIGNING_KEY，否则复用 jwt_secret
-	signingKey := os.Getenv("PB_PRESIGN_SIGNING_KEY")
-	if signingKey == "" {
-		signingKey = config.User.JWTSecret
-	}
+	// presign 签名密钥：conf.PresignSigningKey 单源（PB_PRESIGN_SIGNING_KEY
+	// 优先，缺省回退 jwt_secret；chunk 会话令牌同键，取用语义收口一处）
+	signingKey := conf.PresignSigningKey()
 	presignHandler.SetService(redis.GetClient(),
 		baseURL,
 		signingKey)

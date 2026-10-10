@@ -9,7 +9,6 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
-	"os"
 
 	"github.com/pigeonbox/core/conf"
 	"github.com/pigeonbox/core/repo/db/model"
@@ -17,15 +16,11 @@ import (
 
 // SessionToken 分片会话令牌：HMAC("chunk-session:"+uploadID, key)。客户端从
 // init 响应头 X-Upload-Token 取得并在后续请求回传，即可在 IP 漂移（移动网络/
-// CGNAT）后仍通过归属校验。密钥复用 presign 签名密钥（PB_PRESIGN_SIGNING_KEY，
-// 缺省回退 jwt_secret）；无密钥返回空串（令牌通道关闭，仅 IP/用户匹配生效）。
+// CGNAT）后仍通过归属校验。密钥复用 presign 签名密钥（conf.PresignSigningKey
+// 单源：PB_PRESIGN_SIGNING_KEY 优先，缺省回退 jwt_secret）；无密钥返回空串
+// （令牌通道关闭，仅 IP/用户匹配生效）。
 func SessionToken(uploadID string) string {
-	key := os.Getenv("PB_PRESIGN_SIGNING_KEY")
-	if key == "" {
-		if cfg := conf.GetGlobalConfig(); cfg != nil {
-			key = cfg.User.JWTSecret
-		}
-	}
+	key := conf.PresignSigningKey()
 	if key == "" {
 		return ""
 	}

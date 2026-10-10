@@ -47,12 +47,14 @@ func (s *Service) SetRuntime(rt Runtime) { s.runtime = rt }
 // SetPersister 注入持久化（在线切换写穿 DB，重启不丢）
 func (s *Service) SetPersister(p RuntimePersister) { s.persister = p }
 
-// baseURL 对外基础地址（与 presign 同规则：server.base_url 优先）
+// baseURL 对外基础地址（server.base_url）。未配置时如实返回空串，不再回退
+// 拼 http://server.host:port——host 是监听地址（常为 0.0.0.0），对外不可达，
+// 拼出的 URL 是坏链（与 2026-10-07 分享链接 0.0.0.0 事故同根因；share 域
+// ResolveBase 明文禁止该回退，同仓两套 base 推导规则的矛盾在此收口）。
+// 消费链 ConfigFromConf→StorageConfig.BaseURL→GetFileURL：base 空时显式报错
+// （该链路当前无生产消费方），不产虚构地址。
 func (s *Service) baseURL() string {
-	if s.config.Server.BaseURL != "" {
-		return s.config.Server.BaseURL
-	}
-	return fmt.Sprintf("http://%s:%d", s.config.Server.Host, s.config.Server.Port)
+	return s.config.Server.BaseURL
 }
 
 // candidateFor 复制全局存储段并覆盖目标类型（切换/更新的候选配置）
