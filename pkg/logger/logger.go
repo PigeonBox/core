@@ -60,15 +60,19 @@ func Init(cfg *Config) error {
 	consoleEncoder := zapcore.NewConsoleEncoder(encoderConfig)
 	consoleCore := zapcore.NewCore(consoleEncoder, zapcore.AddSync(os.Stdout), level)
 
+	// 环形缓冲旁路（管理端「系统日志」页数据源，见 ring.go）：与控制台/文件
+	// 链同级别 Tee，业务代码零改动。惰性兜底路径（get 的 NewProduction）不
+	// 经 Init，不挂环——面板只呈现 bootstrap 之后的运行日志。
+	ring := newRingCore(level)
 	if cfg.Filename != "" {
 		file, err := os.OpenFile(cfg.Filename, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
 		if err != nil {
 			return err
 		}
 		fileCore := zapcore.NewCore(encoder, zapcore.AddSync(file), level)
-		core = zapcore.NewTee(consoleCore, fileCore)
+		core = zapcore.NewTee(consoleCore, fileCore, ring)
 	} else {
-		core = consoleCore
+		core = zapcore.NewTee(consoleCore, ring)
 	}
 
 	Logger = zap.New(core, zap.AddCaller(), zap.AddCallerSkip(1))
