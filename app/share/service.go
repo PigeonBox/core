@@ -278,6 +278,10 @@ func validCustomCode(code string) bool {
 // createWithCode 带可选自定义码的写库（CustomCode 合法时直接占用；冲突报错不重试；
 // 空/非法时回退随机码）。customCode 仅登录用户可指定（handler 侧把关，防匿名抢注）。
 func (s *Service) createWithCode(ctx context.Context, customCode string, build func(code string) *model.FileCode) (*model.FileCode, error) {
+	// 懒初始化守卫：本方法与 createWithRetry 是仅有的不经公开入口直用
+	// s.fileCodeRepo 的写库路径，此前 nil repo 靠零尺寸 struct 的 nil receiver
+	// 巧合可跑（dao 注入化改造后必炸，2026-10-10 随改造真修）。
+	s.ensureRepository()
 	if customCode == "" {
 		return s.createWithRetry(ctx, build)
 	}
@@ -314,6 +318,7 @@ func (s *Service) GenerateCode() string {
 
 // createWithRetry 通用写库重试（code 唯一冲突时换码重试，最多 5 次）。
 func (s *Service) createWithRetry(ctx context.Context, build func(code string) *model.FileCode) (*model.FileCode, error) {
+	s.ensureRepository()
 	var fc *model.FileCode
 	err := retry.Do(ctx, retry.Config{
 		Attempts:  5,

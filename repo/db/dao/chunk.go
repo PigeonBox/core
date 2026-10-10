@@ -10,13 +10,22 @@ import (
 )
 
 type ChunkRepository struct {
+	conn *gorm.DB // nil = 走全局 db.GetDB()（兼容历史无参构造）；非 nil = 注入实例
 }
 
-func NewChunkRepository() *ChunkRepository {
-	return &ChunkRepository{}
+// NewChunkRepository 构造 repository；可选注入 *gorm.DB（测试隔离/嵌入式场景），缺省走全局 db.GetDB()。注入约定见 doc.go。
+func NewChunkRepository(gormDB ...*gorm.DB) *ChunkRepository {
+	r := &ChunkRepository{}
+	if len(gormDB) > 0 {
+		r.conn = gormDB[0]
+	}
+	return r
 }
 
 func (r *ChunkRepository) db() *gorm.DB {
+	if r != nil && r.conn != nil { // r != nil 守卫：兼容历史 nil receiver 直调，见 doc.go
+		return r.conn
+	}
 	return db.GetDB()
 }
 
