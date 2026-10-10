@@ -13,6 +13,7 @@ import (
 	"github.com/pigeonbox/contracts/errcode"
 	notifymodel "github.com/pigeonbox/contracts/gen/notify"
 	notifyapp "github.com/pigeonbox/core/app/notify"
+	"github.com/pigeonbox/core/pkg/middleware"
 	"github.com/pigeonbox/core/pkg/resp"
 )
 
@@ -89,6 +90,14 @@ func Get(ctx context.Context, c *app.RequestContext) {
 	resp.Success(c, toNotifyItem(*item))
 }
 
+// authorIDFromCtx 从 JWT 上下文取当前操作者 ID（未登录态回退 0=系统）。
+func authorIDFromCtx(ctx context.Context) uint {
+	if uid, ok := middleware.UserIDFromContext(ctx); ok {
+		return uid
+	}
+	return 0
+}
+
 // Create .
 // @router /admin/notifies [POST]
 func Create(ctx context.Context, c *app.RequestContext) {
@@ -118,7 +127,7 @@ func Create(ctx context.Context, c *app.RequestContext) {
 		Status:   int32ToInt(req.Status),
 		StartAt:  startAt,
 		EndAt:    endAt,
-		AuthorID: 0, // TODO: 从 JWT context 拿
+		AuthorID: authorIDFromCtx(ctx), // 广播作者=创建公告的管理员（JWT 身份）
 	})
 	if err != nil {
 		if err == notifyapp.ErrInvalidParam {

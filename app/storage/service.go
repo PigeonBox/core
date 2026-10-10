@@ -476,9 +476,11 @@ func (s *Service) getS3Config() *S3Config {
 	return &S3Config{}
 }
 
-// getNFSConfig 获取 NFS 配置
+// getNFSConfig 获取 NFS 配置。
+// NFS 不是受支持的存储后端（14 种后端清单见 storage/backends.go 注册表，
+// 无 nfs scheme；conf 亦无 NFS 配置段）——本结构是管理面展示层的预留占位，
+// 恒返回空值如实表达"未配置/不支持"，接入真实 NFS 后端时再行填充。
 func (s *Service) getNFSConfig() *NFSConfig {
-	// TODO: 从配置中读取 NFS 配置
 	return &NFSConfig{
 		Server:     "",
 		Path:       "",
