@@ -94,6 +94,11 @@ type ListReq struct {
 
 // clampPage 分页参数钳制（List 与 ListForUser 同规格：page ≥ 1，
 // pageSize ∈ [1,100] 否则默认 20——此前同域两处手写重复）。
+//
+// 有意不迁 kit/pagination（2026-10-10 评估）：全仓三套分页方言——本域与
+// mcp 超限"回落 20"、dao/page.go 上限 200"截断"、kit 上限 500"截断"。
+// 任何迁移都改变既有 API 的 pageSize 契约（前端/MCP 消费方可见），属有损
+// 变更须随契约版本走；统一留待专项列车，此处维持现状。
 func clampPage(page, pageSize int) (int, int) {
 	if page < 1 {
 		page = 1
