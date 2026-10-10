@@ -68,9 +68,12 @@ rm -rf hzmodel
 # 仅摘除 hz update 追加的 hzmodel import 行（模型真相源在 contracts）。
 # 不可整文件 git checkout——会连带清掉未提交的手工 handler 实现
 # （2026-10-09 事故：用户分享组 5 个已实现 handler 被本循环整文件回退）。
+# 仅删 import 规格行(可带别名的 "…/hzmodel" 字面量独占一行);含 hzmodel
+# 字样的手写注释必须存活——旧 /hzmodel/d 全行匹配会误删(2026-10-10 IDL
+# 迁移实测吞掉一句手工注释)。
 git diff --name-only -- gen/handler | while read -r f; do
   if grep -q 'hzmodel' "$f"; then
-    sed -i '' -e '/hzmodel/d' "$f"
+    sed -i '' -E '/^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*[[:space:]]+)?"[^"]*hzmodel"[[:space:]]*$/d' "$f"
   fi
 done
 
