@@ -59,3 +59,15 @@ func (s *StorageService) LocalAbsPath(rel string) string {
 	}
 	return p
 }
+
+// NewLocalFallback 构造本地后端兜底实例（未注入统一存储时的测试/降级路径；
+// share/chunk 两域各自懒加载缓存一份，DataPath 沿用各自历史约定——
+// ./data/uploads 与 ./data 的差异是 2026-10 修复后的刻意参数，勿"统一"）。
+// 构造收口此处：兜底语义演进（如 BaseURL 策略）只改一点。
+func NewLocalFallback(dataPath, baseURL string) *StorageService {
+	return NewStorageService(&StorageConfig{
+		Type:     StorageTypeLocal,
+		DataPath: dataPath,
+		BaseURL:  baseURL,
+	})
+}

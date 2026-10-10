@@ -145,11 +145,7 @@ func (s *Service) storageClient() (storage.StorageInterface, error) {
 		return s.storage, nil
 	}
 	s.fallbackOnce.Do(func() {
-		s.fallbackStorage = storage.NewStorageService(&storage.StorageConfig{
-			Type:     storage.StorageTypeLocal,
-			DataPath: "./data/uploads",
-			BaseURL:  "http://localhost:12345",
-		})
+		s.fallbackStorage = storage.NewLocalFallback("./data/uploads", "http://localhost:12345")
 	})
 	return s.fallbackStorage, nil
 }
