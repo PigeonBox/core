@@ -167,9 +167,9 @@ func TestGetByHashAndSize_GovernanceFilter(t *testing.T) {
 	ctx := context.Background()
 
 	fixtures := []*model.FileCode{
-		{Code: "QOKAAAAA", FileHash: "h1", Size: 100, Status: model.StatusNormal},
-		{Code: "QBLKBBBB", FileHash: "h2", Size: 100, Status: model.StatusBlocked},
-		{Code: "QPWCCCCC", FileHash: "h3", Size: 100, Status: model.StatusNormal, RequireAuth: true, PasswordHash: "x"},
+		{Code: "QOKAAAAA", FileHash: "h1", Size: 100, Status: model.StatusNormal, ExpiredCount: -1},
+		{Code: "QBLKBBBB", FileHash: "h2", Size: 100, Status: model.StatusBlocked, ExpiredCount: -1},
+		{Code: "QPWCCCCC", FileHash: "h3", Size: 100, Status: model.StatusNormal, ExpiredCount: -1, RequireAuth: true, PasswordHash: "x"},
 	}
 	for _, f := range fixtures {
 		require.NoError(t, repo.Create(ctx, f))
@@ -183,4 +183,34 @@ func TestGetByHashAndSize_GovernanceFilter(t *testing.T) {
 	assert.Error(t, err, "blocked 分享不得作为秒传源")
 	_, err = repo.GetByHashAndSize(ctx, "h3", 100)
 	assert.Error(t, err, "密码分享不得作为秒传源")
+}
+
+func TestGetByHashAndSize_SkipsExpiredPicksNewestUsable(t *testing.T) {
+	// 回归二（2026-10-10 冒烟 S11b 暴露）：同哈希的过期旧记录不得永久遮蔽
+	// 后来的有效分享——此前 First() 按 id 升序取最旧且不过滤过期，一条过期
+	// 记录在库即令该文件秒传对所有人永久失效。
+	newGovernanceTestDB(t)
+	repo := NewFileCodeRepository()
+	ctx := context.Background()
+
+	expired := time.Now().Add(-24 * time.Hour)
+	fixtures := []*model.FileCode{
+		{Code: "QEXPOLD1", FileHash: "hx", Size: 7, Status: model.StatusNormal, ExpiredCount: -1, ExpiredAt: &expired}, // 时间过期
+		{Code: "QEXPOLD2", FileHash: "hx", Size: 7, Status: model.StatusNormal, ExpiredCount: 0},                       // 次数耗尽
+		{Code: "QFRESH01", FileHash: "hx", Size: 7, Status: model.StatusNormal, ExpiredCount: -1},                      // 有效
+	}
+	for _, f := range fixtures {
+		require.NoError(t, repo.Create(ctx, f))
+	}
+
+	fc, err := repo.GetByHashAndSize(ctx, "hx", 7)
+	require.NoError(t, err)
+	assert.Equal(t, "QFRESH01", fc.Code, "应跳过过期候选命中最新有效分享")
+
+	// 全部过期 → 未命中，契约与旧 First 未命中一致（ErrRecordNotFound）
+	require.NoError(t, repo.Create(ctx, &model.FileCode{
+		Code: "QEXPALL1", FileHash: "hy", Size: 7, Status: model.StatusNormal, ExpiredCount: -1, ExpiredAt: &expired,
+	}))
+	_, err = repo.GetByHashAndSize(ctx, "hy", 7)
+	assert.ErrorIs(t, err, gorm.ErrRecordNotFound)
 }

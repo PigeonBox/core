@@ -56,20 +56,34 @@ func (r *FileCodeRepository) GetByCodeFolded(ctx context.Context, code string) (
 	return &fileCode, nil
 }
 
-// GetByHashAndSize 秒传检索：仅命中"正常态 + 无密码"的分享。
+// GetByHashAndSize 秒传检索：仅命中"正常态 + 无密码 + 未过期"的分享。
 // 回归（2026-10-03）：不过滤 status 会把 blocked/待审分享当秒传源（存在性
 // oracle + 假成功 UX）；不过滤 require_auth 会让持同哈希文件者借令牌穿透
 // 原分享的密码校验。
+// 回归二（2026-10-10，冒烟 S11b 暴露）：此前 First() 按 id 升序取最旧一条
+// 且不过滤过期——库里只要留有一条同哈希的过期记录，它就永远挡在后来全部
+// 有效分享前面，命中即 IsExpired 报错放弃，该文件秒传对所有人永久失效。
+// 现取候选集按 id 降序（新在前），Go 侧用 model.IsExpired() 挑最新可用一条
+// ——不在 SQL 复制过期语义（时间+次数双维度）防双源漂移；同 hash+size 候选
+// 天然少，Limit 32 封顶防恶意同哈希堆积拖查询。无可用候选返回
+// gorm.ErrRecordNotFound（与旧 First 未命中同契约，消费方按"未命中"处理）。
 func (r *FileCodeRepository) GetByHashAndSize(ctx context.Context, fileHash string, size int64) (*model.FileCode, error) {
-	var fileCode model.FileCode
+	var candidates []model.FileCode
 	err := r.db().WithContext(ctx).
 		Where("file_hash = ? AND size = ? AND deleted_at IS NULL AND status = ? AND require_auth = ?",
 			fileHash, size, model.StatusNormal, false).
-		First(&fileCode).Error
+		Order("id DESC").
+		Limit(32).
+		Find(&candidates).Error
 	if err != nil {
 		return nil, err
 	}
-	return &fileCode, nil
+	for i := range candidates {
+		if !candidates[i].IsExpired() {
+			return &candidates[i], nil
+		}
+	}
+	return nil, gorm.ErrRecordNotFound
 }
 
 // GetByHash 已删除：与 GetByHashAndSize SQL 逐字重复且全库无调用方（秒传走 GetByHashAndSize）。
