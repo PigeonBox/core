@@ -286,10 +286,4 @@ func TestLoadPersisted_LegacyRecordWithoutUserSection(t *testing.T) {
 	assert.NotNil(t, cfg.User)
 }
 
-// TestValidateUserSettings 校验
-func TestValidateUserSettings(t *testing.T) {
-	require.Error(t, validateUserSettings(&UserSettings{UserUploadSize: -1}))
-	require.Error(t, validateUserSettings(&UserSettings{SessionExpiryHours: -5}))
-	require.Error(t, validateUserSettings(&UserSettings{SessionExpiryHours: 100000}))
-	require.NoError(t, validateUserSettings(&UserSettings{SessionExpiryHours: 168}))
-}
+// TestValidateUserSettings 已随配置中心迁 app/config/config_test.go（2026-10-10 域独立）。

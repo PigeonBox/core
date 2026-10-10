@@ -36,6 +36,7 @@ var pkgForbidden = []string{"app", "bootstrap", "gen", "repo", "storage", "trans
 var appCrossDomainAllow = map[string]map[string]string{
 	"presign": {"share": "约定允许的唯一跨域边（预签名完成写分享表）"},
 	"share":   {"moderation": "内容审核横切钩子（fail-closed 通道）"},
+	"admin":   {"config": "管理面是配置域（app/config，2026-10-10 自 admin 独立）的 API 门面：委派方法+类型别名；装配层与新代码直指 config 域"},
 }
 
 // transportRepoAllow 规则 4：transport 直连 repo/db 的文件白名单（值为收口 TODO）。

@@ -9,6 +9,7 @@ import (
 	"fmt"
 
 	adminApp "github.com/pigeonbox/core/app/admin"
+	configApp "github.com/pigeonbox/core/app/config"
 	federationApp "github.com/pigeonbox/core/app/federation"
 	mcpApp "github.com/pigeonbox/core/app/mcp"
 	requestApp "github.com/pigeonbox/core/app/request"
@@ -192,13 +193,13 @@ func (g requestShareGateway) CreateFromFileEntries(ctx context.Context, req *req
 type adminDefaultsAdapter struct{}
 
 func (adminDefaultsAdapter) DefaultStorageQuota(ctx context.Context) int64 {
-	return adminApp.EffectiveUserSettings(ctx).UserStorageQuota
+	return configApp.EffectiveUserSettings(ctx).UserStorageQuota
 }
 
 func (adminDefaultsAdapter) DefaultUploadSize(ctx context.Context) int64 {
-	return adminApp.EffectiveUserSettings(ctx).UserUploadSize
+	return configApp.EffectiveUserSettings(ctx).UserUploadSize
 }
 
 func (adminDefaultsAdapter) AllowUserRegistration(ctx context.Context) bool {
-	return adminApp.EffectiveUserSettings(ctx).AllowUserRegistration
+	return configApp.EffectiveUserSettings(ctx).AllowUserRegistration
 }

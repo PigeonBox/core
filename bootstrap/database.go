@@ -13,7 +13,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 
-	adminApp "github.com/pigeonbox/core/app/admin"
+	configApp "github.com/pigeonbox/core/app/config"
 	"github.com/pigeonbox/core/conf"
 	"github.com/pigeonbox/core/pkg/logger"
 	"github.com/pigeonbox/core/repo/db"
@@ -130,7 +130,7 @@ func CreateDefaultAdmin(database *gorm.DB, cfg *conf.AppConfiguration) error {
 // 优先级：env（PB_STORAGE_TYPE/PB_STORAGE_PATH）> DB（管理端在线修改的意图，
 // 晚于 yaml）> yaml。DB 无记录时不动 conf（yaml/env 生效）。
 func restoreRuntimeStorage() {
-	rs := adminApp.Default().LoadRuntimeStorage(context.Background()) // DB 已于 InitDatabase 就绪
+	rs := configApp.Default().LoadRuntimeStorage(context.Background()) // DB 已于 InitDatabase 就绪
 	if rs == nil {
 		return
 	}

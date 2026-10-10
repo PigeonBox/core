@@ -12,6 +12,7 @@ import (
 
 	adminApp "github.com/pigeonbox/core/app/admin"
 	chunkApp "github.com/pigeonbox/core/app/chunk"
+	configApp "github.com/pigeonbox/core/app/config"
 	federationApp "github.com/pigeonbox/core/app/federation"
 	mcpApp "github.com/pigeonbox/core/app/mcp"
 	moderationApp "github.com/pigeonbox/core/app/moderation"
@@ -46,7 +47,7 @@ import (
 func initThriftIDLServices(database *gorm.DB) {
 	// 0. 恢复 DB 持久化的运行时存储配置（管理端在线切换的后端类型/s3/webdav）
 	restoreRuntimeStorage()
-	adminApp.Default().RestoreAdminSettings()
+	configApp.Default().RestoreAdminSettings()
 
 	// 1. notify service（走 DAO，内部用全局 db.GetDB()）
 	notifyApp := notifyAppService.NewService()
@@ -103,7 +104,7 @@ func initThriftIDLServices(database *gorm.DB) {
 	// 2.3.1/2.3.2 Webhook + SMTP 渠道装配（抽 applyNotifyConfig 供运行时热重建复用）
 	applyNotifyConfig(notifyApp, &config.Notify)
 	// 管理端通知/OIDC 设置保存 → 组件热重建（SystemConfig 新段）
-	adminApp.Default().SetReconfigureHooks(&adminApp.ReconfigureHooks{
+	configApp.Default().SetReconfigureHooks(&configApp.ReconfigureHooks{
 		OnNotifyChanged: func(n *conf.NotifyConfig) {
 			applyNotifyConfig(notifyApp, n)
 		},
@@ -183,7 +184,7 @@ func initThriftIDLServices(database *gorm.DB) {
 	// 4.6.1 storage 管理 service（连接测试/在线切换：认证级 Probe + 热重载 + 持久化）
 	storageSvc := storageApp.NewService()
 	storageSvc.SetRuntime(getBootstrapStorageService())
-	storageSvc.SetPersister(adminSvc)
+	storageSvc.SetPersister(configApp.Default()) // RuntimePersister=config 域(运行时存储段唯一写者)
 	storageHandler.SetService(storageSvc)
 
 	// 4.7 管理端增强服务注入（用户 CRUD/文件管理/富统计）
@@ -255,7 +256,7 @@ func initThriftIDLServices(database *gorm.DB) {
 
 	// 8. 多副本：admin 实例持久化配置后发布变更广播（public 副本订阅热应用）
 	if config.IsAdminReplica() {
-		adminSvc.SetOnConfigPersisted(publishConfigChanged)
+		configApp.Default().SetOnConfigPersisted(publishConfigChanged)
 	}
 }
 

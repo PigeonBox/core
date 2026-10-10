@@ -41,7 +41,7 @@ import (
 	"github.com/pigeonbox/core/storage"
 	"go.uber.org/zap"
 
-	adminApp "github.com/pigeonbox/core/app/admin"
+	configApp "github.com/pigeonbox/core/app/config"
 	oidcApp "github.com/pigeonbox/core/app/oidc"
 	customHandler "github.com/pigeonbox/core/transport/http/handler"
 )
@@ -200,7 +200,7 @@ const (
 var propagatedRevision atomic.Int64
 
 // publishConfigChanged admin 实例侧：配置持久化后发布变更通知
-// （经 adminApp.Service.SetOnConfigPersisted 注入）。
+// （经 configApp.Service.SetOnConfigPersisted 注入）。
 func publishConfigChanged() {
 	rdb := redis.GetClient()
 	if rdb == nil {
@@ -275,10 +275,10 @@ func maybeApplyConfig(source string) {
 // 与管理端本进程保存路径（UpdateConfig + applySystemConfigOverlayLocked +
 // ReconfigureHooks）逐项同构；域服务持有同一存储单例指针，Reload 原地生效。
 func applyPropagatedConfig() {
-	adminSvc := adminApp.Default()
-	adminSvc.InvalidateRuntimeConfig()
-	adminSvc.RestoreAdminSettings() // 重读 DB → 内存缓存 + 全局 conf overlay + 会话时长
-	restoreRuntimeStorage()         // DB 存储段 → 全局 conf（env 覆盖优先级保持）
+	cfgSvc := configApp.Default()
+	cfgSvc.InvalidateRuntimeConfig()
+	cfgSvc.RestoreAdminSettings() // 重读 DB → 内存缓存 + 全局 conf overlay + 会话时长
+	restoreRuntimeStorage()       // DB 存储段 → 全局 conf（env 覆盖优先级保持）
 	if svc := getBootstrapStorageService(); svc != nil {
 		if err := svc.Reload(storage.ConfigFromConf(&config.Storage, bootstrapBaseURL())); err != nil {
 			logger.Error("propagated storage reload failed", zap.Error(err))

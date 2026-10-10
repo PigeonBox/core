@@ -14,7 +14,7 @@ import (
 	"github.com/prometheus/common/expfmt"
 	"go.uber.org/zap"
 
-	adminApp "github.com/pigeonbox/core/app/admin"
+	configApp "github.com/pigeonbox/core/app/config"
 	setupApp "github.com/pigeonbox/core/app/setup"
 	"github.com/pigeonbox/core/conf"
 	"github.com/pigeonbox/core/pkg/logger"
@@ -36,7 +36,7 @@ func publicConfigHandler(ctx context.Context, c *app.RequestContext) {
 	// 无记录回退 yaml app 段（修复首页展示 yaml 旧品牌名的分裂）
 	name, description := config.App.Name, config.App.Description
 	effectiveDownload := config.Download
-	if cfg, err := adminApp.Default().GetConfig(ctx); err == nil && cfg != nil {
+	if cfg, err := configApp.Default().GetConfig(ctx); err == nil && cfg != nil {
 		if cfg.Base.Name != "" {
 			name = cfg.Base.Name
 		}
@@ -55,7 +55,7 @@ func publicConfigHandler(ctx context.Context, c *app.RequestContext) {
 		"openUpload":  config.Upload.OpenUpload,
 		// 注册开关走生效值：管理后台"用户配置"持久化段优先，
 		// 无记录回退 yaml（与 /user/register 判定同源）
-		"registerEnabled": adminApp.EffectiveUserSettings(ctx).AllowUserRegistration,
+		"registerEnabled": configApp.EffectiveUserSettings(ctx).AllowUserRegistration,
 		// 前端 expireStyle 下拉选项：管理台"允许的过期样式"裁剪优先（对标上游
 		// expire_style 白名单驱动前端可选集），未配置=全量
 		"expireStyle": effectiveExpireStyles(),
