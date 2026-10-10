@@ -18,6 +18,7 @@ import (
 	sharemodel "github.com/pigeonbox/contracts/gen/share"
 	shareService "github.com/pigeonbox/core/app/share"
 	"github.com/pigeonbox/core/conf"
+	"github.com/pigeonbox/core/pkg/baseurl"
 	"github.com/pigeonbox/core/pkg/gate"
 	"github.com/pigeonbox/core/pkg/middleware"
 	"github.com/pigeonbox/core/pkg/resp"
@@ -71,7 +72,7 @@ func publicShareURL(ctx context.Context, code string) string {
 	if cfg := conf.GetGlobalConfig(); cfg != nil {
 		configured = cfg.Server.BaseURL
 	}
-	return fmt.Sprintf("%s/share/%s", shareService.ResolveBase(ctx, configured), code)
+	return fmt.Sprintf("%s/share/%s", baseurl.Resolve(ctx, configured), code)
 }
 
 // ShareText .

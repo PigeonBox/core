@@ -18,18 +18,19 @@ import (
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
+	"github.com/google/uuid"
 	"github.com/pigeonbox/contracts/errcode"
 	chunkmodel "github.com/pigeonbox/contracts/gen/chunk"
 	chunkService "github.com/pigeonbox/core/app/chunk"
 	shareService "github.com/pigeonbox/core/app/share"
 	"github.com/pigeonbox/core/conf"
+	"github.com/pigeonbox/core/pkg/baseurl"
 	"github.com/pigeonbox/core/pkg/gate"
 	"github.com/pigeonbox/core/pkg/middleware"
 	"github.com/pigeonbox/core/pkg/resp"
 	"github.com/pigeonbox/core/pkg/security"
 	"github.com/pigeonbox/core/pkg/utils"
 	"github.com/pigeonbox/core/repo/db/model"
-	"github.com/google/uuid"
 )
 
 var chunkSvc *chunkService.Service
@@ -72,7 +73,7 @@ func publicShareURL(ctx context.Context, code string) string {
 	if cfg := conf.GetGlobalConfig(); cfg != nil {
 		configured = cfg.Server.BaseURL
 	}
-	return fmt.Sprintf("%s/share/%s", shareService.ResolveBase(ctx, configured), code)
+	return fmt.Sprintf("%s/share/%s", baseurl.Resolve(ctx, configured), code)
 }
 
 // ChunkUploadInit .

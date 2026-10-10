@@ -12,9 +12,9 @@ import (
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/app/server"
 	"github.com/pigeonbox/contracts/openapi"
-	shareService "github.com/pigeonbox/core/app/share"
 	"github.com/pigeonbox/core/conf"
 	"github.com/pigeonbox/core/pkg/auth"
+	"github.com/pigeonbox/core/pkg/baseurl"
 	"github.com/pigeonbox/core/pkg/gate"
 	"github.com/pigeonbox/core/pkg/logger"
 	"github.com/pigeonbox/core/pkg/middleware"
@@ -262,7 +262,7 @@ func BootstrapWithOptions(configPath string, opts ...Option) (*server.Hertz, err
 				if string(c.Request.Header.Peek("X-Forwarded-Proto")) == "https" {
 					scheme = "https"
 				}
-				c.Set(shareService.PublicBaseCtxKey, scheme+"://"+host)
+				c.Set(baseurl.PublicBaseCtxKey, scheme+"://"+host)
 			}
 		})
 	}

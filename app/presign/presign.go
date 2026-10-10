@@ -27,7 +27,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	"github.com/pigeonbox/core/app/share"
+	"github.com/pigeonbox/core/pkg/baseurl"
 	"github.com/pigeonbox/core/pkg/utils"
 	"github.com/pigeonbox/core/repo/db/dao"
 )
@@ -116,11 +116,39 @@ type PickupBinder interface {
 	BindFilePath(ctx context.Context, shareCode, filePath string, size int64) error
 }
 
-// ShareServiceInterface share service 接口（避免循环依赖）。
-// 与 share.Service.ShareFile / CreateShare 签名保持一致。
+// ShareCreateReq 经 share 域建分享的窄化请求（消费侧词汇表）。
+// 此前本域直接 import share.ShareFileReq/ShareResp 构成唯一约定 app 跨域边
+// （presign→share），2026-10-10 消解：字段与 share.CreateShare 对齐，
+// bootstrap 适配器（presignShareAdapter）转换到 share 域类型——与
+// requestShareGateway/mcpShareAdapter 同款装配点转换模式。
+type ShareCreateReq struct {
+	Channel      string // 上传通道（metrics 用；presign 恒 "presign"）
+	FilePath     string
+	Size         int64
+	Text         string
+	ExpiredAt    *time.Time
+	ExpiredCount int
+	RequireAuth  bool
+	PasswordHash string
+	UserID       *uint
+	UploadType   string
+	OwnerIP      string
+	FileHash     string
+	UploadID     string
+}
+
+// ShareCreateResp share 域建分享结果的窄视图（presign 消费字段）。
+type ShareCreateResp struct {
+	Code         string
+	ShareURL     string
+	FullShareURL string
+	PickupCode   string
+}
+
+// ShareServiceInterface share service 接口（消费侧窄接口，bootstrap 注入
+// share 域适配器；避免 app 跨域 import）。
 type ShareServiceInterface interface {
-	ShareFile(ctx context.Context, req *share.ShareFileReq) (*share.ShareResp, error)
-	CreateShare(ctx context.Context, req *share.ShareFileReq) (*share.ShareResp, error)
+	CreateShare(ctx context.Context, req *ShareCreateReq) (*ShareCreateResp, error)
 }
 
 // NewService 创建 service。rdb nil 归一化：typed-nil 接口会骗过
@@ -244,7 +272,7 @@ func (s *Service) Init(ctx context.Context, meta InitMeta) (*InitResult, error) 
 	//    - 否则回退自家中转 URL（X-Upload-Token）
 	//    模式由服务端判定并无条件覆写（客户端传入的 scheme 不可信）
 	token := s.signToken(uploadID, meta.ObjectKey, meta.ExpireAt)
-	uploadURL := fmt.Sprintf("%s/api/v1/presign/upload-direct/%s", share.ResolveBase(ctx, s.baseURL), uploadID)
+	uploadURL := fmt.Sprintf("%s/api/v1/presign/upload-direct/%s", baseurl.Resolve(ctx, s.baseURL), uploadID)
 	headers := map[string]string{"X-Upload-Token": token}
 	meta.Scheme = SchemeSelf
 	if s.objects != nil {
@@ -428,7 +456,7 @@ func (s *Service) createShareRecord(ctx context.Context, meta *InitMeta, ownerIP
 	}
 	if s.shareService == nil {
 		// share service 未注入：返回 mock 数据（用于单测 / 未配置场景）
-		return "mock_" + meta.UploadID, "/share/mock", share.ResolveBase(ctx, s.baseURL) + "/share/mock", "", nil
+		return "mock_" + meta.UploadID, "/share/mock", baseurl.Resolve(ctx, s.baseURL) + "/share/mock", "", nil
 	}
 
 	// 计算过期时间（与 share.ShareTextWithAuth 行为一致）
@@ -448,7 +476,7 @@ func (s *Service) createShareRecord(ctx context.Context, meta *InitMeta, ownerIP
 		return "", "", "", "", errors.New("该上传未设置访问密码，无法完成分享")
 	}
 
-	req := &share.ShareFileReq{
+	req := &ShareCreateReq{
 		Channel:      "presign",
 		FilePath:     meta.ObjectKey,
 		Size:         meta.FileSize,
@@ -629,7 +657,7 @@ func (s *Service) CheckQuickUpload(ctx context.Context, fileHash string, fileSiz
 	}
 	return &QuickUploadResult{
 		ShareCode:    fc.Code,
-		FullShareURL: share.ResolveBase(ctx, s.baseURL) + "/share/" + fc.Code,
+		FullShareURL: baseurl.Resolve(ctx, s.baseURL) + "/share/" + fc.Code,
 	}, nil
 }
 

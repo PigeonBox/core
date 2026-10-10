@@ -14,26 +14,20 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/pigeonbox/core/app/share"
 )
 
 // mockShareService 用于单测的 share service mock
 type mockShareService struct {
 	mu         sync.Mutex
 	called     int
-	lastReq    *share.ShareFileReq
+	lastReq    *ShareCreateReq
 	returnCode string
 	returnURL  string
 	returnFull string
 	returnErr  error
 }
 
-func (m *mockShareService) ShareFile(ctx context.Context, req *share.ShareFileReq) (*share.ShareResp, error) {
-	return m.CreateShare(ctx, req)
-}
-
-func (m *mockShareService) CreateShare(ctx context.Context, req *share.ShareFileReq) (*share.ShareResp, error) {
+func (m *mockShareService) CreateShare(ctx context.Context, req *ShareCreateReq) (*ShareCreateResp, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.called++
@@ -41,7 +35,7 @@ func (m *mockShareService) CreateShare(ctx context.Context, req *share.ShareFile
 	if m.returnErr != nil {
 		return nil, m.returnErr
 	}
-	return &share.ShareResp{
+	return &ShareCreateResp{
 		Code:         m.returnCode,
 		ShareURL:     m.returnURL,
 		FullShareURL: m.returnFull,

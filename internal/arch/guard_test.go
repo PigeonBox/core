@@ -7,7 +7,8 @@
 //
 // 规则（违例即测试失败；白名单只允许删除条目，新增违规必须改代码）：
 //  1. pkg/** 不 import app/bootstrap/gen/repo/storage/transport（最底层共享库）
-//  2. app 域间禁止互 import，白名单只登记既有边（约定边须注明收口条件）
+//  2. app 域间禁止互 import，白名单只登记既有边（约定边须注明收口条件）。
+//     2026-10-10 presign→share 边已消解（消费侧窄类型+baseurl 下沉），白名单减员。
 //  3. app/** 不 import repo/db 根包（裸 gorm 会话绕过 DAO，禁止回归）
 //  4. transport/** 直连 repo/db 仅限白名单文件（目标：清空，全部收口到 service）
 //  5. repo/**、storage/** 不向上 import app/transport/gen/bootstrap
@@ -34,9 +35,8 @@ var pkgForbidden = []string{"app", "bootstrap", "gen", "repo", "storage", "trans
 
 // appCrossDomainAllow 规则 2：app/<from> → app/<to> 白名单（值为收口条件 TODO）。
 var appCrossDomainAllow = map[string]map[string]string{
-	"presign": {"share": "约定允许的唯一跨域边（预签名完成写分享表）"},
-	"share":   {"moderation": "内容审核横切钩子（fail-closed 通道）"},
-	"admin":   {"config": "管理面是配置域（app/config，2026-10-10 自 admin 独立）的 API 门面：委派方法+类型别名；装配层与新代码直指 config 域"},
+	"share": {"moderation": "内容审核横切钩子（fail-closed 通道）"},
+	"admin": {"config": "管理面是配置域（app/config，2026-10-10 自 admin 独立）的 API 门面：委派方法+类型别名；装配层与新代码直指 config 域"},
 }
 
 // transportRepoAllow 规则 4：transport 直连 repo/db 的文件白名单（值为收口 TODO）。

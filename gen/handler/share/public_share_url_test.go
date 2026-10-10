@@ -8,11 +8,11 @@ package share
 
 import (
 	"context"
+	"github.com/pigeonbox/core/pkg/baseurl"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 
-	shareService "github.com/pigeonbox/core/app/share"
 	"github.com/pigeonbox/core/conf"
 )
 
@@ -25,7 +25,7 @@ func TestPublicShareURL(t *testing.T) {
 
 	// 2. base_url 未配置时取请求来源（bootstrap 中间件写入 ctx）
 	conf.SetGlobalConfig(&conf.AppConfiguration{})
-	ctx := context.WithValue(context.Background(), shareService.PublicBaseCtxKey, "http://10.10.30.253:12345") //nolint:staticcheck // SA1029:hertz RequestContext.Value 只解析 string 键
+	ctx := context.WithValue(context.Background(), baseurl.PublicBaseCtxKey, "http://10.10.30.253:12345") //nolint:staticcheck // SA1029:hertz RequestContext.Value 只解析 string 键
 	assert.Equal(t, "http://10.10.30.253:12345/share/AbCdEfGh", publicShareURL(ctx, "AbCdEfGh"))
 
 	// 3. 双缺省退相对路径（前端可由 location.origin 补全）

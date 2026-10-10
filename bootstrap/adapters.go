@@ -12,6 +12,7 @@ import (
 	configApp "github.com/pigeonbox/core/app/config"
 	federationApp "github.com/pigeonbox/core/app/federation"
 	mcpApp "github.com/pigeonbox/core/app/mcp"
+	presignApp "github.com/pigeonbox/core/app/presign"
 	requestApp "github.com/pigeonbox/core/app/request"
 	shareService "github.com/pigeonbox/core/app/share"
 	"github.com/pigeonbox/core/pkg/middleware"
@@ -186,6 +187,39 @@ func (g requestShareGateway) CreateFromFileEntries(ctx context.Context, req *req
 		return nil, err
 	}
 	return &requestApp.ShareResult{ID: resp.ID, Code: resp.Code, Size: resp.Size}, nil
+}
+
+// presignShareAdapter presign.ShareServiceInterface 的 share 域适配器
+// （此前 presign 直接 import share.ShareFileReq/ShareResp 构成唯一约定
+// app 跨域边，2026-10-10 消解——消费侧窄类型 + 装配点转换，与
+// requestShareGateway/mcpShareAdapter 同款模式）。
+type presignShareAdapter struct{ svc *shareService.Service }
+
+func (a presignShareAdapter) CreateShare(ctx context.Context, req *presignApp.ShareCreateReq) (*presignApp.ShareCreateResp, error) {
+	resp, err := a.svc.CreateShare(ctx, &shareService.ShareFileReq{
+		Channel:      req.Channel,
+		FilePath:     req.FilePath,
+		Size:         req.Size,
+		Text:         req.Text,
+		ExpiredAt:    req.ExpiredAt,
+		ExpiredCount: req.ExpiredCount,
+		RequireAuth:  req.RequireAuth,
+		PasswordHash: req.PasswordHash,
+		UserID:       req.UserID,
+		UploadType:   req.UploadType,
+		OwnerIP:      req.OwnerIP,
+		FileHash:     req.FileHash,
+		UploadID:     req.UploadID,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &presignApp.ShareCreateResp{
+		Code:         resp.Code,
+		ShareURL:     resp.ShareURL,
+		FullShareURL: resp.FullShareURL,
+		PickupCode:   resp.PickupCode,
+	}, nil
 }
 
 // adminDefaultsAdapter user.DefaultsProvider 的 admin 域适配器

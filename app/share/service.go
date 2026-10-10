@@ -12,6 +12,7 @@ import (
 	sharemodel "github.com/pigeonbox/contracts/gen/share"
 	"github.com/pigeonbox/core/app/moderation"
 	"github.com/pigeonbox/core/conf"
+	"github.com/pigeonbox/core/pkg/baseurl"
 	pkgerrors "github.com/pigeonbox/core/pkg/errors"
 	"github.com/pigeonbox/core/pkg/gate"
 	"github.com/pigeonbox/core/pkg/logger"
@@ -114,26 +115,8 @@ type Service struct {
 	pickupMinter PickupCodeMinter
 }
 
-// PublicBaseCtxKey hertz ctx 中请求级公开 base 的键。bootstrap 在
-// server.base_url 未配置时挂中间件，把每条请求的来源(scheme://host)写入
-// ctx（hertz RequestContext.Value 读取 Set 的 kv）。
-const PublicBaseCtxKey = "pb.public_base"
-
-// ResolveBase 公开链接 base 解析：显式配置 > 请求来源（中间件注入）> 空串。
-// 禁止回退到 server.host——那是监听地址（0.0.0.0），拼进分享链接对外不可达
-// （2026-10-07 iStoreOS 真机事故：分享成功弹窗给出 http://0.0.0.0:12345/#/s/x）。
-// 双缺省时退相对路径（/share/CODE），浏览器侧可由 location.origin 补全。
-func ResolveBase(ctx context.Context, configured string) string {
-	if configured != "" {
-		return configured
-	}
-	if ctx != nil {
-		if v, ok := ctx.Value(PublicBaseCtxKey).(string); ok && v != "" {
-			return v
-		}
-	}
-	return ""
-}
+// 公开链接 base 解析已下沉 pkg/baseurl（Resolve/PublicBaseCtxKey 单源，
+// 2026-10-10 消解 presign→share 跨域边时迁出）。
 
 // NotifyServiceInterface 取件通知接口（避免 share → notify 直接依赖）
 type NotifyServiceInterface interface {
@@ -462,7 +445,7 @@ func (s *Service) ShareTextWithAuth(ctx context.Context, text string, expireValu
 
 	// 生成分享 URL
 	resp.ShareURL = fmt.Sprintf("/share/%s", resp.Code)
-	resp.FullShareURL = fmt.Sprintf("%s/share/%s", ResolveBase(ctx, s.baseURL), resp.Code)
+	resp.FullShareURL = fmt.Sprintf("%s/share/%s", baseurl.Resolve(ctx, s.baseURL), resp.Code)
 
 	return resp, nil
 }
@@ -933,7 +916,7 @@ func (s *Service) modelToResp(ctx context.Context, fileCode *model.FileCode) *Sh
 		OwnerIP:      fileCode.OwnerIP,
 		// 分享链接三通道统一在此生成（文本通道尾部原有一份同值覆盖，保持无害）
 		ShareURL:     fmt.Sprintf("/share/%s", fileCode.Code),
-		FullShareURL: fmt.Sprintf("%s/share/%s", ResolveBase(ctx, s.baseURL), fileCode.Code),
+		FullShareURL: fmt.Sprintf("%s/share/%s", baseurl.Resolve(ctx, s.baseURL), fileCode.Code),
 	}
 }
 
