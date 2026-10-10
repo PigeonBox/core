@@ -41,11 +41,23 @@ type StorageProvider interface {
 type Janitor struct {
 	svc           StorageProvider
 	retentionDays int // 0 = 永久保留日志
+
+	fileCodeRepo *dao.FileCodeRepository
+	chunkRepo    *dao.ChunkRepository
+	transferRepo *dao.TransferLogRepository
+	adminLogRepo *dao.AdminOperationLogRepository
 }
 
 // NewJanitor 创建 janitor。
 func NewJanitor(svc StorageProvider, retentionDays int) *Janitor {
-	return &Janitor{svc: svc, retentionDays: retentionDays}
+	return &Janitor{
+		svc:           svc,
+		retentionDays: retentionDays,
+		fileCodeRepo:  dao.NewFileCodeRepository(),
+		chunkRepo:     dao.NewChunkRepository(),
+		transferRepo:  dao.NewTransferLogRepository(),
+		adminLogRepo:  dao.NewAdminOperationLogRepository(),
+	}
 }
 
 // ReconcileOrphans 物理文件对账。返回 (扫描文件数, 清理文件数, error)。
@@ -63,7 +75,7 @@ func (j *Janitor) ReconcileOrphans(ctx context.Context) (int, int, error) {
 	}
 
 	// 1. 收集 DB 引用集（含软删记录——可恢复的分享其物理文件不算孤儿）
-	rows, err := dao.NewFileCodeRepository().ListAllIncludingDeleted(ctx)
+	rows, err := j.fileCodeRepo.ListAllIncludingDeleted(ctx)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -75,7 +87,7 @@ func (j *Janitor) ReconcileOrphans(ctx context.Context) (int, int, error) {
 	}
 
 	// 2. 收集分片会话集合
-	uploadIDs, err := dao.NewChunkRepository().ListSessionIDs(ctx)
+	uploadIDs, err := j.chunkRepo.ListSessionIDs(ctx)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -155,12 +167,12 @@ func (j *Janitor) CleanupLogs(ctx context.Context) (int64, error) {
 	}
 	cutoff := time.Now().AddDate(0, 0, -j.retentionDays)
 	var total int64
-	n, err := dao.NewTransferLogRepository().DeleteOlderThan(ctx, cutoff)
+	n, err := j.transferRepo.DeleteOlderThan(ctx, cutoff)
 	if err != nil {
 		return total, err
 	}
 	total += n
-	if n, err = dao.NewAdminOperationLogRepository().DeleteOlderThan(ctx, cutoff); err != nil {
+	if n, err = j.adminLogRepo.DeleteOlderThan(ctx, cutoff); err != nil {
 		return total, err
 	}
 	total += n
@@ -176,7 +188,7 @@ func (j *Janitor) CleanupLogs(ctx context.Context) (int64, error) {
 // 手动清理在非 SQLite 库上直接 SQL 报错。incomplete 超龄 → 删目录 + 删行；
 // 已完成会话旧行单独清理（防 upload_chunks 表无限膨胀）。
 func (j *Janitor) CleanupStaleUploads(ctx context.Context, maxAge time.Duration) (dirsRemoved int, err error) {
-	repo := dao.NewChunkRepository()
+	repo := j.chunkRepo
 
 	stale, err := repo.GetIncompleteUploads(ctx, maxAge)
 	if err != nil {
@@ -266,7 +278,7 @@ func (j *Janitor) ScanRemotePresignOrphans(ctx context.Context, olderThan time.D
 	// presign 孤儿 key 的 basename 恒为 up_<uuid>.<ext>，不可能出现在合法引用里
 	//（uuid v4 字符集不含 u/p），故 up_ 前缀+无引用 即可判定孤儿。
 	referenced := make(map[string]bool)
-	rows, err := dao.NewFileCodeRepository().ListAllIncludingDeleted(ctx)
+	rows, err := j.fileCodeRepo.ListAllIncludingDeleted(ctx)
 	if err != nil {
 		return nil, err
 	}

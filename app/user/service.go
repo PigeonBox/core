@@ -629,7 +629,8 @@ func (s *Service) DeleteAPIKey(ctx context.Context, userID, id uint) error {
 
 // GetUserFiles 获取用户文件列表（支持分页）
 func (s *Service) GetUserFiles(ctx context.Context, userID uint, page, pageSize int) (*usermodel.UserFileList, error) {
-	fileCodeRepo := dao.NewFileCodeRepository()
+	s.ensureRepository()
+	fileCodeRepo := s.fileCodeRepo
 
 	// 获取文件列表
 	files, total, err := fileCodeRepo.GetFilesByUserIDWithPagination(ctx, userID, page, pageSize)

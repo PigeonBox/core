@@ -23,6 +23,8 @@ type Service struct {
 	transferLogRepo    *dao.TransferLogRepository
 	adminOperationRepo *dao.AdminOperationLogRepository
 	chunkRepo          *dao.ChunkRepository
+	fileFileRepo       *dao.FileCodeFileRepository // 多文件子表（files/maintenance 消费）
+	sysConfigRepo      *dao.SystemConfigRepository // 仅 OptimizeDatabase 表维护用（配置读写归 app/config 域）
 	storage            storage.StorageInterface
 	federation         FederationNotifier // P2P 联邦口令路由钩子（nil = 非联邦模式）
 
@@ -49,6 +51,8 @@ func NewService() *Service {
 		transferLogRepo:    dao.NewTransferLogRepository(),
 		adminOperationRepo: dao.NewAdminOperationLogRepository(),
 		chunkRepo:          dao.NewChunkRepository(),
+		fileFileRepo:       dao.NewFileCodeFileRepository(),
+		sysConfigRepo:      dao.NewSystemConfigRepository(),
 		cfg:                appconfig.NewService(),
 	}
 }

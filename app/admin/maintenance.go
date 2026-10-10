@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/pigeonbox/core/pkg/logger"
-	"github.com/pigeonbox/core/repo/db/dao"
 	"go.uber.org/zap"
 )
 
@@ -65,7 +64,7 @@ func (s *Service) CleanExpiredFiles(ctx context.Context) (int64, int64, error) {
 	}
 
 	freedSpace := int64(0)
-	childRepo := dao.NewFileCodeFileRepository()
+	childRepo := s.fileFileRepo
 	for _, file := range expiredFiles {
 		// 多文件分享子文件一并清理（P0 多文件；失败不阻断 DB 删除）
 		if s.storage != nil {
@@ -131,5 +130,5 @@ func (s *Service) CleanTempFiles(ctx context.Context) (int64, int64, error) {
 // 返回 (实际优化的驱动, 执行说明)。
 func (s *Service) OptimizeDatabase(ctx context.Context) (string, string, error) {
 	// VACUUM/ANALYZE 等方言细节下沉 DAO（架构规则 3：app 层不裸引 gorm）
-	return dao.NewSystemConfigRepository().Optimize(ctx)
+	return s.sysConfigRepo.Optimize(ctx)
 }

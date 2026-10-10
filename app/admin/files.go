@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/pigeonbox/core/pkg/logger"
-	"github.com/pigeonbox/core/repo/db/dao"
 	"github.com/pigeonbox/core/repo/db/model"
 	"go.uber.org/zap"
 )
@@ -132,7 +131,7 @@ func (s *Service) GetFileDetail(ctx context.Context, id uint) (*model.FileCode, 
 	if err != nil {
 		return nil, nil, err
 	}
-	children, err := dao.NewFileCodeFileRepository().ListByFileCodeID(ctx, fc.ID)
+	children, err := s.fileFileRepo.ListByFileCodeID(ctx, fc.ID)
 	if err != nil {
 		return fc, nil, err
 	}
@@ -141,7 +140,7 @@ func (s *Service) GetFileDetail(ctx context.Context, id uint) (*model.FileCode, 
 
 // ChildFileCounts 批量取子文件数（一次 GROUP BY；失败返回 nil 由调用方降级为 0）。
 func (s *Service) ChildFileCounts(ctx context.Context, ids []uint) map[uint]int64 {
-	counts, err := dao.NewFileCodeFileRepository().CountByFileCodeIDs(ctx, ids)
+	counts, err := s.fileFileRepo.CountByFileCodeIDs(ctx, ids)
 	if err != nil {
 		return nil
 	}
@@ -170,7 +169,7 @@ func (s *Service) BatchDeleteFiles(ctx context.Context, ids []uint) (int, error)
 	// 物理文件清理（含多文件子文件）。此前纯 DB 删除：本地后端靠每日对账
 	// 兜底，远端后端（s3/webdav/多云）上即永久孤儿对象——2026-10-06 215
 	// COS 实测确认。失败不阻断 DB 删除（记日志）。
-	childRepo := dao.NewFileCodeFileRepository()
+	childRepo := s.fileFileRepo
 	for _, id := range ids {
 		fc, err := s.fileCodeRepo.GetByID(ctx, id)
 		if err != nil {

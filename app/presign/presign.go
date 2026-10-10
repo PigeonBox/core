@@ -67,6 +67,8 @@ type Service struct {
 	storage StorageWriter
 	// objects 真预签名直传能力（s3 后端可用；nil 或不支持时回退自家中转）
 	objects ObjectStore
+	// fileCodeRepo 秒传检索用（此前 CheckQuickUpload 方法体内联现建）
+	fileCodeRepo *dao.FileCodeRepository
 }
 
 // 直传模式标记（meta.Scheme / InitResult.Scheme，服务端判定为准）
@@ -137,6 +139,7 @@ func NewService(rdb *redis.Client, baseURL string, signingKey string) *Service {
 		defaultExpire: 1 * time.Hour,
 		signingKey:    []byte(signingKey),
 		baseURL:       baseURL,
+		fileCodeRepo:  dao.NewFileCodeRepository(),
 	}
 }
 
@@ -617,7 +620,7 @@ func (s *Service) CheckQuickUpload(ctx context.Context, fileHash string, fileSiz
 	if fileHash == "" || fileSize <= 0 || s.shareService == nil {
 		return nil, errors.New("no quick upload candidate")
 	}
-	fc, err := dao.NewFileCodeRepository().GetByHashAndSize(ctx, fileHash, fileSize)
+	fc, err := s.fileCodeRepo.GetByHashAndSize(ctx, fileHash, fileSize)
 	if err != nil || fc == nil {
 		return nil, errors.New("not found")
 	}

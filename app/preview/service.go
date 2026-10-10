@@ -49,12 +49,18 @@ var previewGenSlots = make(chan struct{}, 2)
 // Service 预览域服务。存储实例由 bootstrap 注入；nil 时预览生成不可用
 // （回归 2026-10-03：此前硬编码 data/uploads 路径基，与统一存储不一致）。
 type Service struct {
-	storageSvc storage.StorageInterface
+	storageSvc   storage.StorageInterface
+	fileCodeRepo *dao.FileCodeRepository            // 取件校验读分享记录（此前方法体内联现建）
+	previewRepo  *dao_preview.FilePreviewRepository // 预览读写
 }
 
 // NewService 构造预览域服务。
 func NewService(st storage.StorageInterface) *Service {
-	return &Service{storageSvc: st}
+	return &Service{
+		storageSvc:   st,
+		fileCodeRepo: dao.NewFileCodeRepository(),
+		previewRepo:  dao_preview.NewFilePreviewRepository(),
+	}
 }
 
 // GetReq 预览获取请求。HTTP 关注点（取件码/密码/客户端 IP/登录态）由
@@ -75,8 +81,7 @@ func (s *Service) GetOrCreate(ctx context.Context, req GetReq) (*model.FilePrevi
 	}
 
 	// 获取文件信息
-	fileCodeRepo := dao.NewFileCodeRepository()
-	fileCode, err := fileCodeRepo.GetByCode(ctx, req.Code)
+	fileCode, err := s.fileCodeRepo.GetByCode(ctx, req.Code)
 	if err != nil {
 		return nil, ErrShareNotFound
 	}
@@ -108,8 +113,7 @@ func (s *Service) GetOrCreate(ctx context.Context, req GetReq) (*model.FilePrevi
 	}
 
 	// 取预览；不存在则生成
-	previewRepo := dao_preview.NewFilePreviewRepository()
-	preview, err := previewRepo.GetByFileCodeID(ctx, fileCode.ID)
+	preview, err := s.previewRepo.GetByFileCodeID(ctx, fileCode.ID)
 	if err == nil {
 		return preview, nil
 	}
@@ -224,8 +228,7 @@ func (s *Service) generatePreviewFromPath(ctx context.Context, fileCode *model.F
 		FileSize:    previewData.FileSize,
 	}
 
-	previewRepo := dao_preview.NewFilePreviewRepository()
-	if err := previewRepo.Create(ctx, preview); err != nil {
+	if err := s.previewRepo.Create(ctx, preview); err != nil {
 		return nil, fmt.Errorf("failed to save preview: %w", err)
 	}
 
