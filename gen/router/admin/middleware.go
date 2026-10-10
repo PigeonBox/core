@@ -107,3 +107,123 @@ func _getstoragestatusMw() []app.HandlerFunc {
 	// your code...
 	return nil
 }
+
+func _admincreateuserMw() []app.HandlerFunc {
+	// your code...
+	return nil
+}
+
+func _configMw() []app.HandlerFunc {
+	// your code...
+	return nil
+}
+
+func _admingetusersettingsMw() []app.HandlerFunc {
+	// your code...
+	return nil
+}
+
+func _adminupdateusersettingsMw() []app.HandlerFunc {
+	// your code...
+	return nil
+}
+
+func _adminbatchdeletefilesMw() []app.HandlerFunc {
+	// your code...
+	return nil
+}
+
+func _adminbatchextendfilesMw() []app.HandlerFunc {
+	// your code...
+	return nil
+}
+
+func _adminbatchsetfilesstatusMw() []app.HandlerFunc {
+	// your code...
+	return nil
+}
+
+func _adminlistfilesfilteredMw() []app.HandlerFunc {
+	// your code...
+	return nil
+}
+
+func _adminfiledetailMw() []app.HandlerFunc {
+	// your code...
+	return nil
+}
+
+func _adminupdatefileMw() []app.HandlerFunc {
+	// your code...
+	return nil
+}
+
+func _adminpurgefilesMw() []app.HandlerFunc {
+	// your code...
+	return nil
+}
+
+func _adminrestorefilesMw() []app.HandlerFunc {
+	// your code...
+	return nil
+}
+
+func _admindownloadfileMw() []app.HandlerFunc {
+	// your code...
+	return nil
+}
+
+func _adminsetfilestatusMw() []app.HandlerFunc {
+	// your code...
+	return nil
+}
+
+func _logsMw() []app.HandlerFunc {
+	// your code...
+	return nil
+}
+
+func _admintransferlogsMw() []app.HandlerFunc {
+	// your code...
+	return nil
+}
+
+func _statsMw() []app.HandlerFunc {
+	// your code...
+	return nil
+}
+
+func _adminenhancedstatsMw() []app.HandlerFunc {
+	// your code...
+	return nil
+}
+
+func _adminstatstrendMw() []app.HandlerFunc {
+	// your code...
+	return nil
+}
+
+func _adminlistusersfilteredMw() []app.HandlerFunc {
+	// your code...
+	return nil
+}
+
+func _admindeleteuserMw() []app.HandlerFunc {
+	// your code...
+	return nil
+}
+
+func _adminupdateuserMw() []app.HandlerFunc {
+	// your code...
+	return nil
+}
+
+func _id0Mw() []app.HandlerFunc {
+	// your code...
+	return nil
+}
+
+func _adminresetuserpasswordMw() []app.HandlerFunc {
+	// your code...
+	return nil
+}

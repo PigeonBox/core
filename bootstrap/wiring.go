@@ -24,6 +24,7 @@ import (
 	storageApp "github.com/pigeonbox/core/app/storage"
 	userService "github.com/pigeonbox/core/app/user"
 	"github.com/pigeonbox/core/conf"
+	adminGenHandler "github.com/pigeonbox/core/gen/handler/admin"
 	chunkHandler "github.com/pigeonbox/core/gen/handler/chunk"
 	presignHandler "github.com/pigeonbox/core/gen/handler/presign"
 	previewHandler "github.com/pigeonbox/core/gen/handler/preview"
@@ -187,8 +188,11 @@ func initThriftIDLServices(database *gorm.DB) {
 	storageSvc.SetPersister(configApp.Default()) // RuntimePersister=config 域(运行时存储段唯一写者)
 	storageHandler.SetService(storageSvc)
 
-	// 4.7 管理端增强服务注入（用户 CRUD/文件管理/富统计）
-	customHandler.SetManageServices(adminSvc, userSvc, getBootstrapStorageService())
+	// 4.7 管理端增强服务注入（用户 CRUD/文件管理/富统计）：
+	//   - adminSvc/userSvc → gen/handler/admin（2026-10-10 IDL 化 20 端点）
+	//   - storage → transport/http/handler（share 多文件/寄件码上传落盘依赖面）
+	adminGenHandler.SetManageServices(adminSvc, userSvc)
+	customHandler.SetManageStorage(getBootstrapStorageService())
 
 	// 5. 自动迁移 notify 表 + file_codes viewer 字段
 	//    （迁移只在 standalone/admin：public 副本的 database.auto_migrate 已被

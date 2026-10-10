@@ -25,15 +25,47 @@ func Register(r *server.Hertz) {
 		_admin.POST("/login", append(_adminloginMw(), admin.AdminLogin)...)
 		_admin.GET("/stats", append(_adminstatsMw(), admin.AdminStats)...)
 		_admin.GET("/users", append(_adminlistusersMw(), admin.AdminListUsers)...)
+		_admin.POST("/users", append(_admincreateuserMw(), admin.AdminCreateUser)...)
+		{
+			_config := _admin.Group("/config", _configMw()...)
+			_config.GET("/user", append(_admingetusersettingsMw(), admin.AdminGetUserSettings)...)
+			_config.PUT("/user", append(_adminupdateusersettingsMw(), admin.AdminUpdateUserSettings)...)
+		}
 		{
 			_files := _admin.Group("/files", _filesMw()...)
+			_files.POST("/batch-delete", append(_adminbatchdeletefilesMw(), admin.AdminBatchDeleteFiles)...)
+			_files.POST("/batch-extend", append(_adminbatchextendfilesMw(), admin.AdminBatchExtendFiles)...)
+			_files.POST("/batch-status", append(_adminbatchsetfilesstatusMw(), admin.AdminBatchSetFilesStatus)...)
+			_files.GET("/filter", append(_adminlistfilesfilteredMw(), admin.AdminListFilesFiltered)...)
 			_files.DELETE("/:id", append(_admindeletefileMw(), admin.AdminDeleteFile)...)
+			_files.GET("/:id", append(_adminfiledetailMw(), admin.AdminFileDetail)...)
+			_files.PUT("/:id", append(_adminupdatefileMw(), admin.AdminUpdateFile)...)
+			_files.POST("/purge", append(_adminpurgefilesMw(), admin.AdminPurgeFiles)...)
+			_files.POST("/restore", append(_adminrestorefilesMw(), admin.AdminRestoreFiles)...)
+			{
+				_id := _files.Group("/:id", _idMw()...)
+				_id.GET("/download", append(_admindownloadfileMw(), admin.AdminDownloadFile)...)
+				_id.PUT("/status", append(_adminsetfilestatusMw(), admin.AdminSetFileStatus)...)
+			}
+		}
+		{
+			_logs := _admin.Group("/logs", _logsMw()...)
+			_logs.GET("/transfer", append(_admintransferlogsMw(), admin.AdminTransferLogs)...)
+		}
+		{
+			_stats := _admin.Group("/stats", _statsMw()...)
+			_stats.GET("/enhanced", append(_adminenhancedstatsMw(), admin.AdminEnhancedStats)...)
+			_stats.GET("/trend", append(_adminstatstrendMw(), admin.AdminStatsTrend)...)
 		}
 		{
 			_users := _admin.Group("/users", _usersMw()...)
+			_users.GET("/filter", append(_adminlistusersfilteredMw(), admin.AdminListUsersFiltered)...)
+			_users.DELETE("/:id", append(_admindeleteuserMw(), admin.AdminDeleteUser)...)
+			_users.PUT("/:id", append(_adminupdateuserMw(), admin.AdminUpdateUser)...)
 			{
-				_id := _users.Group("/:id", _idMw()...)
-				_id.PUT("/status", append(_adminupdateuserstatusMw(), admin.AdminUpdateUserStatus)...)
+				_id0 := _users.Group("/:id", _id0Mw()...)
+				_id0.POST("/reset-password", append(_adminresetuserpasswordMw(), admin.AdminResetUserPassword)...)
+				_id0.PUT("/status", append(_adminupdateuserstatusMw(), admin.AdminUpdateUserStatus)...)
 			}
 		}
 	}

@@ -241,40 +241,9 @@ func customizedRegister(r *server.Hertz) {
 				resp.Page(c, logs, total, page, pageSize)
 			})
 
-			// 用户管理 CRUD（此前只有 list + status 切换）
-			adminAPI.POST("/users", customHandler.AdminCreateUser)
-			adminAPI.PUT("/users/:id", customHandler.AdminUpdateUser)
-			adminAPI.DELETE("/users/:id", customHandler.AdminDeleteUser)
-			adminAPI.POST("/users/:id/reset-password", customHandler.AdminResetUserPassword)
-			adminAPI.GET("/users/filter", customHandler.AdminListUsersFiltered)
-
-			// 文件管理（此前只有 list + 单删）
-			adminAPI.GET("/files/:id/download", customHandler.AdminDownloadFile)
-			adminAPI.GET("/files/:id", customHandler.AdminFileDetail)
-			adminAPI.PUT("/files/:id", customHandler.AdminUpdateFile)
-			adminAPI.POST("/files/batch-delete", customHandler.AdminBatchDeleteFiles)
-			// 回收站（2026-10-06）：软删恢复 / 彻底删除（DB 硬删+存储对象删除）
-			adminAPI.POST("/files/restore", customHandler.AdminRestoreFiles)
-			adminAPI.POST("/files/purge", customHandler.AdminPurgeFiles)
-			adminAPI.POST("/files/batch-extend", customHandler.AdminBatchExtendFiles)
-
-			// 分享治理（2026-10-03）：组合过滤列表（含 owner_ip/status/upload_type）
-			// + 管控状态机（单个/批量禁用、恢复）
-			adminAPI.GET("/files/filter", customHandler.AdminListFilesFiltered)
-			// 用户配置（注册开关/配额默认/会话时长）：读写 system_configs 的
-			// user 段并即时生效（2026-10-03 假开关接线；IDL 契约不含该段，
-			// 手写端点模式同 /users CRUD，重生成 IDL 后需同步）
-			adminAPI.GET("/config/user", customHandler.AdminGetUserSettings)
-			adminAPI.PUT("/config/user", customHandler.AdminUpdateUserSettings)
-			adminAPI.PUT("/files/:id/status", customHandler.AdminSetFileStatus)
-			adminAPI.POST("/files/batch-status", customHandler.AdminBatchSetFilesStatus)
-
-			// Dashboard 富指标
-			adminAPI.GET("/stats/enhanced", customHandler.AdminEnhancedStats)
-			adminAPI.GET("/stats/trend", customHandler.AdminStatsTrend)
-
-			// 传输日志（此前前端调用的端点不存在、表无写入方，页面一直空数据）
-			adminAPI.GET("/logs/transfer", customHandler.AdminTransferLogs)
+			// 管理端增强（用户 CRUD / 文件管理 / 富统计 / 传输日志 / 分享治理 /
+			// 用户配置）2026-10-10 IDL 化（idl/admin.thrift），由 gen/router/admin
+			// 注册，customHandler 手写注册摘除（wire 形态逐字段保形）。
 		}
 	}
 

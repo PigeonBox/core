@@ -12,9 +12,9 @@ import (
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
 	admin "github.com/pigeonbox/contracts/gen/admin"
 	adminsvc "github.com/pigeonbox/core/app/admin"
-	"github.com/pigeonbox/core/repo/db/model"
 	"github.com/pigeonbox/core/pkg/auth"
 	"github.com/pigeonbox/core/pkg/middleware"
+	"github.com/pigeonbox/core/repo/db/model"
 )
 
 var adminService *adminsvc.Service

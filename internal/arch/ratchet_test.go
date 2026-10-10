@@ -87,12 +87,11 @@ var singletonWatch = []struct {
 		pkg:   "app/admin",
 		funcs: map[string]bool{"Default": true, "EffectiveUserSettings": true, "Audit": true},
 		allow: map[string]string{
-			"app/admin/":                             "域内部（单例宿主）",
-			"bootstrap/":                             "装配层（单例的唯一合法接线点）",
-			"gen/handler/admin/":                     "管理面适配层（同面消费）",
-			"gen/handler/maintenance/":               "维护面适配层（管理面的一部分）",
-			"gen/handler/setup/":                     "首启向导面（写 SystemConfig 属管理职责）",
-			"transport/http/handler/admin_manage.go": "管理面手工 handler 区（同面消费；收口 TODO：随 IDL 化迁 gen）",
+			"app/admin/":               "域内部（单例宿主）",
+			"bootstrap/":               "装配层（单例的唯一合法接线点）",
+			"gen/handler/admin/":       "管理面适配层（同面消费）",
+			"gen/handler/maintenance/": "维护面适配层（管理面的一部分）",
+			"gen/handler/setup/":       "首启向导面（写 SystemConfig 属管理职责）",
 		},
 	},
 	{

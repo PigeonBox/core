@@ -42,12 +42,12 @@ func TestRegisteredRoutesMatchContract(t *testing.T) {
 	expected := []string{
 		// ===== admin（IDL）=====
 		"GET /admin/config", "PUT /admin/config",
-		// 用户配置运行时读写（手写，e3f16f2 管理端用户配置接通运行时）
+		// 用户配置运行时读写（IDL，2026-10-10 收编；e3f16f2 管理端用户配置接通运行时）
 		"GET /admin/config/user", "PUT /admin/config/user",
 		"GET /admin/files", "DELETE /admin/files/:id",
 		"POST /admin/login", "GET /admin/stats",
 		"GET /admin/users", "PUT /admin/users/:id/status",
-		// ===== admin 增强（手写，均受 AdminMiddleware 保护）=====
+		// ===== admin 增强（均受 AdminMiddleware 保护）：用户/文件/统计/日志 2026-10-10 IDL 化，local-files/smtp/oidc/activities 手写 =====
 		"GET /admin/activities",
 		// 本地文件管理（对标上游 2.7.0 data/local 管理）
 		"GET /admin/local-files", "DELETE /admin/local-files", "POST /admin/local-files/import",
