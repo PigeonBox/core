@@ -198,3 +198,7 @@ func (adminDefaultsAdapter) DefaultStorageQuota(ctx context.Context) int64 {
 func (adminDefaultsAdapter) DefaultUploadSize(ctx context.Context) int64 {
 	return adminApp.EffectiveUserSettings(ctx).UserUploadSize
 }
+
+func (adminDefaultsAdapter) AllowUserRegistration(ctx context.Context) bool {
+	return adminApp.EffectiveUserSettings(ctx).AllowUserRegistration
+}

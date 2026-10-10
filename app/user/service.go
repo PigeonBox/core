@@ -44,6 +44,8 @@ type DefaultsProvider interface {
 	DefaultStorageQuota(ctx context.Context) int64
 	// DefaultUploadSize 单次上传大小默认上限（字节，0 = 不限）
 	DefaultUploadSize(ctx context.Context) int64
+	// AllowUserRegistration 是否开放注册（管理后台"用户配置"持久化值优先）
+	AllowUserRegistration(ctx context.Context) bool
 }
 
 type Service struct {
@@ -89,6 +91,26 @@ func (s *Service) defaultUploadSize(ctx context.Context) int64 {
 	}
 	_, u := systemDefaults(ctx)
 	return u
+}
+
+// RegistrationAllowed 是否开放注册（系统级设置来源：注入 provider 的管理后台
+// 持久化值优先，未注入回退 yaml）。gen/handler/user 的 Register 入口经此消费，
+// 不再直接 import admin 域包级单例（跨面依赖收口为装配点，2026-10-10）。
+func (s *Service) RegistrationAllowed(ctx context.Context) bool {
+	if s.defaults != nil {
+		return s.defaults.AllowUserRegistration(ctx)
+	}
+	if cfg := conf.GetGlobalConfig(); cfg != nil {
+		return cfg.User.AllowUserRegistration
+	}
+	return false
+}
+
+// SystemDefaultStorageQuota 系统级默认存储配额（字节，0 = 不限）。
+// 与域内配额闸（defaultStorageQuota）同源；供 handler 展示层消费
+// （用户级 max_storage_quota 覆盖仍由调用方自行优先）。
+func (s *Service) SystemDefaultStorageQuota(ctx context.Context) int64 {
+	return s.defaultStorageQuota(ctx)
 }
 
 // ensureRepository 确保repository已初始化

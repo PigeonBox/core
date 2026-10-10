@@ -32,6 +32,7 @@ import (
 	shareHandler "github.com/pigeonbox/core/gen/handler/share"
 	anonHandler "github.com/pigeonbox/core/gen/handler/share_anonymous"
 	storageHandler "github.com/pigeonbox/core/gen/handler/storage"
+	userHandler "github.com/pigeonbox/core/gen/handler/user"
 	"github.com/pigeonbox/core/pkg/auth"
 	"github.com/pigeonbox/core/pkg/logger"
 	"github.com/pigeonbox/core/pkg/middleware"
@@ -130,6 +131,9 @@ func initThriftIDLServices(database *gorm.DB) {
 	userSvc.SetDefaultsProvider(adminDefaultsAdapter{})
 	shareSvc.SetUserService(userSvc)
 	shareSvc.SetQuotaChecker(userSvc)
+	// user 面 handler 同实例注入：注册开关/配额默认值经 DefaultsProvider 桥到
+	// admin 持久化配置（此前 handler 直连 admin 包级单例，跨面依赖绕过装配点）
+	userHandler.SetUserService(userSvc)
 
 	// 2.4.1 寄件码/反向收件服务（P2）：经 ShareGateway 适配器依赖 share（消跨域 import）
 	// 双注入：gen/handler/request（IDL 化四端点）+ customHandler（访客投递重管道桥接）

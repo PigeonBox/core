@@ -12,7 +12,6 @@ import (
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
 	"github.com/pigeonbox/contracts/errcode"
 	usermodel "github.com/pigeonbox/contracts/gen/user"
-	admin "github.com/pigeonbox/core/app/admin"
 	userservice "github.com/pigeonbox/core/app/user"
 	"github.com/pigeonbox/core/pkg/auth"
 	"github.com/pigeonbox/core/pkg/middleware"
@@ -20,12 +19,23 @@ import (
 
 var userService = userservice.NewService()
 
+// SetUserService 注入装配级 user 服务（bootstrap 调用）。注入实例带
+// DefaultsProvider（桥到 admin 域持久化配置）——注册开关/配额默认值等
+// 管理后台在线设置由此生效；未注入时用包级默认实例，回退 yaml 语义。
+// 此前本文件直接 import admin 域调包级单例 EffectiveUserSettings（user 面
+// → admin 域的隐形跨面依赖，app 层 import 图上不可见），2026-10-10 收编。
+func SetUserService(s *userservice.Service) {
+	if s != nil {
+		userService = s
+	}
+}
+
 // Register .
 // @router /user/register [POST]
 func Register(ctx context.Context, c *app.RequestContext) {
 	// 检查是否允许用户注册：管理后台"用户配置"持久化值优先，
-	// 无记录回退 yaml（EffectiveUserSettings，修复管理端开关不生效）
-	if !admin.EffectiveUserSettings(ctx).AllowUserRegistration {
+	// 无记录回退 yaml（经注入的 DefaultsProvider，修复管理端开关不生效）
+	if !userService.RegistrationAllowed(ctx) {
 		c.JSON(consts.StatusForbidden, map[string]interface{}{
 			"code":    403,
 			"message": "用户注册已关闭",
@@ -319,7 +329,7 @@ func UserStats(ctx context.Context, c *app.RequestContext) {
 	// 配额：用户级覆盖 > 系统默认（0 = 不限）
 	quotaUsed := stats.TotalStorage
 	quotaLimit := int64(0)
-	quotaLimit = admin.EffectiveUserSettings(ctx).UserStorageQuota
+	quotaLimit = userService.SystemDefaultStorageQuota(ctx)
 	if u, err := userService.GetByID(ctx, userID); err == nil && u != nil && u.MaxStorageQuota > 0 {
 		quotaLimit = u.MaxStorageQuota
 	}
